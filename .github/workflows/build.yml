@@ -170,8 +170,20 @@ jobs:
           cp dist/Installer_BUD_Premium.command "$OUT/Installer_BUD_Premium-$V.command"
 
           ls -lh "$OUT"
-          shasum -a 256 "$OUT"/* | sed 's|.*/||' > "$OUT/SHA256.txt"
+
+          # Les empreintes sont calculées depuis le dossier lui-même, sans
+          # chemin à nettoyer après coup : un « sed s|.*/|| » est glouton et
+          # avale l'empreinte avec le chemin, ce qui produisait un fichier
+          # ne contenant que des noms de fichiers.
+          ( cd "$OUT" && shasum -a 256 \
+              "BUD-Premium-$V.dmg" \
+              "BUD-Premium-$V.zip" \
+              "Installer_BUD_Premium-$V.command" > SHA256.txt )
           cat "$OUT/SHA256.txt"
+
+          # Un fichier d'empreintes qui n'en contient aucune a l'air de
+          # garantir quelque chose : mieux vaut échouer ici.
+          grep -qE '^[0-9a-f]{64}  ' "$OUT/SHA256.txt"
 
       - name: Rédiger les notes
         if: steps.v.outputs.publish == 'true'

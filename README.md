@@ -4,7 +4,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie, aucune donnée qui quitte votre Mac sauf celles que vous adressez explicitement à Google.
 
-**Version 23.1** · by Lahbib.AI
+**Version 23.2** · by Lahbib.AI
 
 [![build](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml/badge.svg)](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml)
 

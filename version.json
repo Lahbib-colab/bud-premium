@@ -1,5 +1,5 @@
 {
-  "version": "23.1",
+  "version": "23.2",
   "notes": "Canal de repli. BUD interroge désormais les releases GitHub : https://github.com/Lahbib-colab/bud-premium/releases/latest",
   "url": "https://github.com/Lahbib-colab/bud-premium/releases/latest"
 }
