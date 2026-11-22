@@ -1,0 +1,27 @@
+#!/bin/bash
+# bud-ask "Titre" "Détail" [chemin]
+# Dépose une demande dans BUD, attend la réponse, l'affiche puis sort.
+# Code de sortie : 0 = validé, 1 = refusé, 2 = délai dépassé.
+DIR="$HOME/Library/Application Support/BUD-Assistant/agents"
+mkdir -p "$DIR"
+ID=$(uuidgen)
+SRC_NAME="${BUD_SOURCE:-$(basename "${SHELL:-agent}")}"
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\n'; }
+printf '{"id":"%s","source":"%s","title":"%s","detail":"%s","path":"%s","kind":"%s","created":%s}\n' \
+  "$ID" "$(esc "$SRC_NAME")" "$(esc "${1:-Validation requise}")" "$(esc "${2:-}")" \
+  "$(esc "${3:-}")" "${BUD_KIND:-approval}" "$(date +%s)" > "$DIR/$ID.json"
+TIMEOUT="${BUD_TIMEOUT:-600}"
+WAITED=0
+while [ ! -f "$DIR/$ID.reply" ]; do
+  sleep 1
+  WAITED=$((WAITED+1))
+  if [ "$WAITED" -ge "$TIMEOUT" ]; then
+    rm -f "$DIR/$ID.json"
+    echo "timeout"
+    exit 2
+  fi
+done
+REPLY=$(cat "$DIR/$ID.reply")
+rm -f "$DIR/$ID.reply"
+echo "$REPLY"
+[ "$REPLY" = "approved" ] && exit 0 || exit 1
