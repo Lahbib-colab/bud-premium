@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 23.0 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 23.1 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -3944,7 +3944,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.0"
+let budVersion = "23.1"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -10688,21 +10688,47 @@ cat << 'EOF_BUDUPDATE_SWIFT' > "$SRC_DIR/BudUpdate.swift"
 import Cocoa
 
 // ═══════════════════════════════════════════════════════════
-//  Vérification de mise à jour
-//  BUD interroge un petit fichier JSON hébergé où vous voulez :
-//  { "version": "14.1", "notes": "…", "url": "https://…/Installer.command" }
+//  Mise à jour
+//
+//  BUD interroge l'API des releases GitHub, qui est la seule
+//  source de vérité : la release porte à la fois le numéro de
+//  version et les installeurs. Plus de fichier de version à
+//  tenir en parallèle, donc plus de risque de divergence.
+//
+//  Le bouton télécharge l'archive de l'application, remplace
+//  le paquet et relance BUD. Il n'ouvre plus de page web.
+//
+//  Un canal personnalisé au vieux format reste accepté :
+//  { "version": "…", "notes": "…", "url": "…" }
 // ═══════════════════════════════════════════════════════════
 
 struct UpdateInfo {
     let version: String
     let notes: String
-    let url: String
+    let url: String            // l'archive que BUD télécharge
+    var pageURL: String = ""   // la page de la release, pour la lire
+
+    /// Une archive s'installe sans intervention ; tout autre format
+    /// (.dmg, .command) demande l'utilisateur, donc on l'ouvre.
+    var installable: Bool { url.lowercased().hasSuffix(".zip") }
 }
 
 enum BudUpdater {
 
+    static let repo = "Lahbib-colab/bud-premium"
+
     static let defaultChannel =
-        "https://raw.githubusercontent.com/Lahbib-colab/bud-premium/main/version.json"
+        "https://api.github.com/repos/Lahbib-colab/bud-premium/releases/latest"
+
+    /// L'architecture de CE binaire, décidée à la compilation : c'est la
+    /// seule façon fiable de savoir ce qu'il faut retrouver dans l'archive.
+    static var myArch: String {
+        #if arch(arm64)
+        return "arm64"
+        #else
+        return "x86_64"
+        #endif
+    }
 
     /// Compare « 14.10 » et « 14.9 » correctement, segment par segment.
     static func isNewer(_ candidate: String, than current: String) -> Bool {
@@ -10724,16 +10750,46 @@ enum BudUpdater {
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.timeoutInterval = 20
+        // L'API GitHub refuse les requêtes sans identification de client.
+        req.setValue("BUD-Premium/\(budVersion)", forHTTPHeaderField: "User-Agent")
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+
         URLSession.shared.dataTask(with: req) { data, resp, err in
             DispatchQueue.main.async {
                 if let e = err { done(nil, e.localizedDescription); return }
                 if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
-                    done(nil, "canal introuvable (code \(http.statusCode))")
+                    done(nil, http.statusCode == 404
+                            ? "aucune version publiée pour l'instant"
+                            : "canal introuvable (code \(http.statusCode))")
                     return
                 }
                 guard let d = data,
-                      let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                      let v = j["version"] as? String else {
+                      let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+                    done(nil, "réponse illisible")
+                    return
+                }
+
+                // Forme 1 : une release GitHub.
+                if let tag = j["tag_name"] as? String {
+                    let v = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+                    var zip = "", other = ""
+                    if let assets = j["assets"] as? [[String: Any]] {
+                        for a in assets {
+                            guard let name = (a["name"] as? String)?.lowercased(),
+                                  let u = a["browser_download_url"] as? String else { continue }
+                            if name.hasSuffix(".zip") { zip = u }
+                            else if name.hasSuffix(".dmg") && other.isEmpty { other = u }
+                        }
+                    }
+                    done(UpdateInfo(version: v,
+                                    notes: j["body"] as? String ?? "",
+                                    url: zip.isEmpty ? other : zip,
+                                    pageURL: j["html_url"] as? String ?? ""), nil)
+                    return
+                }
+
+                // Forme 2 : un canal personnalisé à l'ancien format.
+                guard let v = j["version"] as? String else {
                     done(nil, "fichier de version illisible")
                     return
                 }
@@ -10742,6 +10798,126 @@ enum BudUpdater {
                                 url: j["url"] as? String ?? ""), nil)
             }
         }.resume()
+    }
+
+    // ═══════ Installation ═══════
+
+    /// Télécharge l'archive, vérifie qu'elle contient bien l'architecture
+    /// de cette machine, remplace le paquet et relance BUD.
+    ///
+    /// Le remplacement est confié à un petit script : une application ne
+    /// peut pas se réécrire proprement pendant qu'elle tourne. Le script
+    /// attend la fin de BUD, échange les paquets, et restaure l'ancien si
+    /// le nouveau ne démarre pas.
+    static func install(_ info: UpdateInfo,
+                        progress: @escaping (Double) -> Void,
+                        done: @escaping (String?) -> Void) {
+        guard let url = URL(string: info.url), info.installable else {
+            done("Cette version ne fournit pas d'archive installable.")
+            return
+        }
+
+        let session = URLSession(configuration: .default)
+        let task = session.downloadTask(with: url) { tmp, resp, err in
+            if let e = err { DispatchQueue.main.async { done(e.localizedDescription) }; return }
+            if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                DispatchQueue.main.async { done("téléchargement refusé (code \(http.statusCode))") }
+                return
+            }
+            guard let tmp = tmp else {
+                DispatchQueue.main.async { done("archive introuvable") }
+                return
+            }
+            let err2 = unpackAndSwap(tmp)
+            DispatchQueue.main.async { done(err2) }
+        }
+
+        // Progression du téléchargement, relayée telle quelle.
+        let obs = task.progress.observe(\.fractionCompleted) { p, _ in
+            DispatchQueue.main.async { progress(p.fractionCompleted) }
+        }
+        progressTokens.append(obs)
+        task.resume()
+    }
+
+    private static var progressTokens: [NSKeyValueObservation] = []
+
+    /// Renvoie nil si tout s'est bien passé, sinon le motif de l'échec.
+    private static func unpackAndSwap(_ archive: URL) -> String? {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("bud-update-\(UUID().uuidString)")
+        do { try fm.createDirectory(at: work, withIntermediateDirectories: true) }
+        catch { return "dossier de travail impossible" }
+
+        // ditto plutôt que unzip : il restitue les attributs étendus et la
+        // signature du paquet, ce qu'unzip ne garantit pas.
+        let out = runShell("/usr/bin/ditto", ["-x", "-k", archive.path, work.path])
+        guard let items = try? fm.contentsOfDirectory(atPath: work.path) else {
+            return "archive illisible"
+        }
+        guard let appName = items.first(where: { $0.hasSuffix(".app") }) else {
+            return "aucune application dans l'archive\(out.isEmpty ? "" : " — \(out)")"
+        }
+        let newApp = work.appendingPathComponent(appName)
+        let newBin = newApp.appendingPathComponent("Contents/MacOS/BUD")
+        guard fm.isExecutableFile(atPath: newBin.path) else {
+            return "l'archive ne contient pas d'exécutable BUD"
+        }
+
+        // Garde-fou décisif : une version compilée pour la seule autre
+        // architecture serait tuée au lancement, sans explication.
+        let archs = runShell("/usr/bin/lipo", ["-archs", newBin.path])
+        if !archs.isEmpty && !archs.contains(myArch) {
+            return "cette version ne contient pas \(myArch) (mais \(archs.trimmingCharacters(in: .whitespacesAndNewlines)))"
+        }
+
+        let appPath = Bundle.main.bundlePath
+        let script = work.appendingPathComponent("swap.sh")
+        let body = """
+        #!/bin/bash
+        APP=\(shellQuote(appPath))
+        NEW=\(shellQuote(newApp.path))
+        WORK=\(shellQuote(work.path))
+
+        # Laisser BUD se fermer de lui-même avant de toucher au paquet.
+        for i in $(seq 1 60); do
+          pgrep -x BUD >/dev/null 2>&1 || break
+          sleep 0.2
+        done
+        pkill -x BUD 2>/dev/null
+        sleep 0.5
+
+        rm -rf "$APP.old"
+        [ -d "$APP" ] && mv "$APP" "$APP.old"
+        /usr/bin/ditto "$NEW" "$APP"
+        /usr/bin/xattr -cr "$APP" 2>/dev/null
+        /usr/bin/codesign --force --sign - "$APP" 2>/dev/null
+
+        if [ -x "$APP/Contents/MacOS/BUD" ]; then
+          rm -rf "$APP.old"
+        else
+          # Le nouveau paquet est inutilisable : on remet l'ancien.
+          rm -rf "$APP"
+          [ -d "$APP.old" ] && mv "$APP.old" "$APP"
+        fi
+        /usr/bin/open "$APP"
+        sleep 2
+        rm -rf "$WORK"
+        """
+        do { try body.write(to: script, atomically: true, encoding: .utf8) }
+        catch { return "script de remplacement impossible" }
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [script.path]
+        do { try p.run() } catch { return "lancement du remplacement impossible" }
+        return nil
+    }
+
+    /// Insère un chemin dans un script sans se faire piéger par une
+    /// apostrophe ou une espace.
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
@@ -10800,12 +10976,74 @@ final class UpdateCardView: NSView {
     }
 
     private func primaryAction() {
-        if phase == .available, let f = found, let u = URL(string: f.url), !f.url.isEmpty {
-            NSWorkspace.shared.open(u)
-            onStatus?("Téléchargement de la version \(f.version)")
+        guard phase == .available, let f = found, !f.url.isEmpty else { check(); return }
+
+        // Une archive s'installe seule. Tout autre format — .dmg, .command —
+        // demande un geste de l'utilisateur : on ouvre la page de la version.
+        guard f.installable else {
+            let target = f.pageURL.isEmpty ? f.url : f.pageURL
+            if let u = URL(string: target) { NSWorkspace.shared.open(u) }
+            onStatus?("Version \(f.version) ouverte dans le navigateur")
             return
         }
-        check()
+
+        let a = NSAlert()
+        a.messageText = "Installer la version \(f.version) ?"
+        var text = "BUD va télécharger la nouvelle version, remplacer l'application "
+                 + "et redémarrer. Vos réglages, notes et rappels sont conservés."
+        if !f.notes.isEmpty {
+            text += "\n\n" + String(f.notes.prefix(600))
+        }
+        a.informativeText = text
+        a.addButton(withTitle: "Installer et redémarrer")
+        a.addButton(withTitle: "Annuler")
+        a.addButton(withTitle: "Voir les notes")
+        NSApp.activate(ignoringOtherApps: true)
+        let r = a.runModal()
+
+        if r == .alertThirdButtonReturn {
+            let target = f.pageURL.isEmpty ? f.url : f.pageURL
+            if let u = URL(string: target) { NSWorkspace.shared.open(u) }
+            return
+        }
+        guard r == .alertFirstButtonReturn else { return }
+
+        // La phase « checking » fait tourner l'indicateur : inutile d'en
+        // ajouter une, le message porte la progression.
+        phase = .checking
+        pop = 0
+        message = "Téléchargement…"
+        actionBtn.enabledFlag = false
+        actionBtn.title = "En cours"
+        startTicking()
+        needsDisplay = true
+        onStatus?("Téléchargement de la version \(f.version)")
+
+        BudUpdater.install(f, progress: { [weak self] p in
+            guard let s = self else { return }
+            s.message = "Téléchargement… \(Int((p * 100).rounded())) %"
+            s.needsDisplay = true
+        }, done: { [weak self] err in
+            guard let s = self else { return }
+            if let e = err {
+                s.phase = .failed
+                s.pop = 1
+                s.message = "Installation impossible : \(e)"
+                s.actionBtn.title = "Réessayer"
+                s.actionBtn.enabledFlag = true
+                s.onStatus?("Mise à jour échouée")
+                s.needsDisplay = true
+                return
+            }
+            s.message = "Redémarrage de BUD…"
+            s.needsDisplay = true
+            s.onStatus?("BUD redémarre sur la version \(f.version)")
+            // Le script de remplacement attend la fin du processus :
+            // c'est à nous de le lui offrir.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                NSApp.terminate(nil)
+            }
+        })
     }
 
     func check(silent: Bool = false) {
@@ -11101,6 +11339,9 @@ cat << 'EOF_BUDBUILD_7K2' > "$SUPPORT_DIR/build.sh"
 #    --tools DIR   dossier des outils annexes     (défaut : ./Tools)
 #    --app DIR     paquet .app à produire         (défaut : ~/Applications/BUD.app)
 #    --no-open     ne pas lancer l'application à la fin
+#    --universal   binaire pour arm64 ET x86_64, fusionné par lipo
+#                  (ce que produit la CI : la machine GitHub est en
+#                   arm64, mais l'application doit tourner sur Intel)
 #
 #  Ce fichier est le seul endroit où vit la logique de compilation.
 #  L'installeur en un seul fichier (dist/) embarque les sources puis
@@ -11109,6 +11350,7 @@ cat << 'EOF_BUDBUILD_7K2' > "$SUPPORT_DIR/build.sh"
 set -euo pipefail
 
 MODE="install"
+UNIVERSAL=0
 SRC_DIR=""
 TOOLS_DIR=""
 APP_DIR="$HOME/Applications/BUD.app"
@@ -11121,6 +11363,7 @@ while [ $# -gt 0 ]; do
     --tools) TOOLS_DIR="$2"; shift 2 ;;
     --app)   APP_DIR="$2"; shift 2 ;;
     --no-open) DO_OPEN=0; shift ;;
+    --universal) UNIVERSAL=1; shift ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^#//'; exit 0 ;;
     *) echo "Option inconnue : $1" >&2; exit 2 ;;
   esac
@@ -11285,10 +11528,17 @@ DIAG
   fi
 fi
 
-TARGET=""
-for T in "${ARCH}-apple-macos12.0" "${ARCH}-apple-macosx12.0"; do
-  if probe_compile "$T"; then TARGET="$T"; break; fi
-done
+# Quelle orthographe de cible pour une architecture donnée ?
+target_for() {
+  local a="$1"
+  local t
+  for t in "${a}-apple-macos12.0" "${a}-apple-macosx12.0"; do
+    if probe_compile "$t"; then echo "$t"; return 0; fi
+  done
+  echo ""
+}
+
+TARGET="$(target_for "$ARCH")"
 if [ -n "$TARGET" ]; then
   echo "Cible      : $TARGET"
 else
@@ -11320,11 +11570,33 @@ pkill -x BUD 2>/dev/null || true
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-echo "Compilation native…"
-# shellcheck disable=SC2086
-run_swiftc -O -suppress-warnings -swift-version 5 ${TARGET:+-target "$TARGET"} \
-  "$SRC_DIR"/*.swift "${FRAMEWORKS[@]}" \
-  -o "$APP_DIR/Contents/MacOS/BUD"
+BIN="$APP_DIR/Contents/MacOS/BUD"
+
+if [ "$UNIVERSAL" -eq 1 ]; then
+  # Le SDK macOS porte les deux tranches : on compile chaque
+  # architecture depuis la même machine, puis lipo les réunit.
+  echo "Compilation universelle (arm64 + x86_64)…"
+  SLICES=()
+  for A in arm64 x86_64; do
+    T="$(target_for "$A")"
+    if [ -z "$T" ]; then
+      echo "Cible introuvable pour $A : ce SDK ne sait pas compiler cette architecture." >&2
+      exit 1
+    fi
+    echo "  · $T"
+    # shellcheck disable=SC2086
+    run_swiftc -O -suppress-warnings -swift-version 5 -target "$T" \
+      "$SRC_DIR"/*.swift "${FRAMEWORKS[@]}" -o "$BUILD_TMP/BUD-$A"
+    SLICES+=("$BUILD_TMP/BUD-$A")
+  done
+  lipo -create "${SLICES[@]}" -output "$BIN"
+  echo "Binaire universel : $(lipo -archs "$BIN")"
+else
+  echo "Compilation native…"
+  # shellcheck disable=SC2086
+  run_swiftc -O -suppress-warnings -swift-version 5 ${TARGET:+-target "$TARGET"} \
+    "$SRC_DIR"/*.swift "${FRAMEWORKS[@]}" -o "$BIN"
+fi
 
 # ── Icône ──
 if [ -f "$TOOLS_DIR/MakeIcon.swift" ]; then

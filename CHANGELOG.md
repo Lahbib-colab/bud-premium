@@ -2,6 +2,15 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.1
+
+- **Les releases GitHub deviennent le canal de mise à jour.** Le bouton télécharge l'archive de l'application, remplace le paquet et redémarre BUD. Il n'ouvre plus de page web. Une confirmation précède toujours le remplacement, et un troisième bouton permet de lire les notes d'abord.
+- **Binaire universel.** Les machines GitHub sont en arm64 ; un installeur compilé tel quel ne démarrerait pas sur un Mac Intel. `build.sh --universal` compile les deux architectures depuis la même machine et les fusionne avec `lipo`. La CI vérifie que les deux tranches sont présentes avant de publier.
+- **Garde-fou à l'installation** : BUD lit `lipo -archs` sur le binaire téléchargé et refuse une version qui ne contient pas son architecture, plutôt que de se faire tuer au lancement sans explication.
+- **Remplacement réversible** : une application ne peut pas se réécrire pendant qu'elle tourne. Un script attend la fin de BUD, échange les paquets, et restaure l'ancien si le nouveau ne démarre pas.
+- La publication se déclenche sur un changement de `budVersion` dans `Sources/BudCore.swift` — pas de tag à créer à la main. Trois fichiers sont joints : le `.dmg` à glisser, le `.zip` que l'updater consomme, et l'installeur par les sources, plus les empreintes SHA-256.
+- L'API des releases est désormais la source de vérité : la release porte le numéro et les installeurs, il n'y a plus de fichier de version à tenir en parallèle. `version.json` reste accepté comme canal personnalisé.
+
 ## 23.0
 
 - **Capture d'écran** — tout l'écran, une fenêtre, ou une sélection, vers le Bureau ou le presse-papiers. BUD délègue à `screencapture`, l'outil du système, qui sait déjà gérer les écrans multiples, le Retina et l'espace colorimétrique. Le notch se replie avant la prise, sinon il figurerait sur chaque capture. Une image de moins de 4 Ko trahit l'autorisation « Enregistrement de l'écran » manquante : BUD le dit au lieu de laisser un fichier noir sur le Bureau.

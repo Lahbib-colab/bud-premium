@@ -12,6 +12,9 @@
 #    --tools DIR   dossier des outils annexes     (défaut : ./Tools)
 #    --app DIR     paquet .app à produire         (défaut : ~/Applications/BUD.app)
 #    --no-open     ne pas lancer l'application à la fin
+#    --universal   binaire pour arm64 ET x86_64, fusionné par lipo
+#                  (ce que produit la CI : la machine GitHub est en
+#                   arm64, mais l'application doit tourner sur Intel)
 #
 #  Ce fichier est le seul endroit où vit la logique de compilation.
 #  L'installeur en un seul fichier (dist/) embarque les sources puis
@@ -20,6 +23,7 @@
 set -euo pipefail
 
 MODE="install"
+UNIVERSAL=0
 SRC_DIR=""
 TOOLS_DIR=""
 APP_DIR="$HOME/Applications/BUD.app"
@@ -32,6 +36,7 @@ while [ $# -gt 0 ]; do
     --tools) TOOLS_DIR="$2"; shift 2 ;;
     --app)   APP_DIR="$2"; shift 2 ;;
     --no-open) DO_OPEN=0; shift ;;
+    --universal) UNIVERSAL=1; shift ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^#//'; exit 0 ;;
     *) echo "Option inconnue : $1" >&2; exit 2 ;;
   esac
@@ -196,10 +201,17 @@ DIAG
   fi
 fi
 
-TARGET=""
-for T in "${ARCH}-apple-macos12.0" "${ARCH}-apple-macosx12.0"; do
-  if probe_compile "$T"; then TARGET="$T"; break; fi
-done
+# Quelle orthographe de cible pour une architecture donnée ?
+target_for() {
+  local a="$1"
+  local t
+  for t in "${a}-apple-macos12.0" "${a}-apple-macosx12.0"; do
+    if probe_compile "$t"; then echo "$t"; return 0; fi
+  done
+  echo ""
+}
+
+TARGET="$(target_for "$ARCH")"
 if [ -n "$TARGET" ]; then
   echo "Cible      : $TARGET"
 else
@@ -231,11 +243,33 @@ pkill -x BUD 2>/dev/null || true
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-echo "Compilation native…"
-# shellcheck disable=SC2086
-run_swiftc -O -suppress-warnings -swift-version 5 ${TARGET:+-target "$TARGET"} \
-  "$SRC_DIR"/*.swift "${FRAMEWORKS[@]}" \
-  -o "$APP_DIR/Contents/MacOS/BUD"
+BIN="$APP_DIR/Contents/MacOS/BUD"
+
+if [ "$UNIVERSAL" -eq 1 ]; then
+  # Le SDK macOS porte les deux tranches : on compile chaque
+  # architecture depuis la même machine, puis lipo les réunit.
+  echo "Compilation universelle (arm64 + x86_64)…"
+  SLICES=()
+  for A in arm64 x86_64; do
+    T="$(target_for "$A")"
+    if [ -z "$T" ]; then
+      echo "Cible introuvable pour $A : ce SDK ne sait pas compiler cette architecture." >&2
+      exit 1
+    fi
+    echo "  · $T"
+    # shellcheck disable=SC2086
+    run_swiftc -O -suppress-warnings -swift-version 5 -target "$T" \
+      "$SRC_DIR"/*.swift "${FRAMEWORKS[@]}" -o "$BUILD_TMP/BUD-$A"
+    SLICES+=("$BUILD_TMP/BUD-$A")
+  done
+  lipo -create "${SLICES[@]}" -output "$BIN"
+  echo "Binaire universel : $(lipo -archs "$BIN")"
+else
+  echo "Compilation native…"
+  # shellcheck disable=SC2086
+  run_swiftc -O -suppress-warnings -swift-version 5 ${TARGET:+-target "$TARGET"} \
+    "$SRC_DIR"/*.swift "${FRAMEWORKS[@]}" -o "$BIN"
+fi
 
 # ── Icône ──
 if [ -f "$TOOLS_DIR/MakeIcon.swift" ]; then

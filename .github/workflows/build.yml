@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ─────────────────────────────────────────────────────────────
+  #  1. La compilation doit passer avant toute publication.
+  # ─────────────────────────────────────────────────────────────
   compile:
     name: Compiler sur ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -37,8 +40,8 @@ jobs:
       #
       # Chaque erreur du compilateur est réémise en ANNOTATION GitHub.
       # Les journaux d'exécution exigent une connexion, les annotations non :
-      # c'est le seul canal par lequel un lecteur non connecté — ou un
-      # assistant sans compte — peut voir ce qui a cassé.
+      # c'est le seul canal par lequel un lecteur non connecté peut voir
+      # ce qui a cassé.
       - name: Compiler BUD
         run: |
           set +e
@@ -62,7 +65,6 @@ jobs:
               echo "::error file=${file},line=${lineno},col=${col}::${msg}"
             done
           elif [ "$STATUS" -ne 0 ]; then
-            # Échec sans erreur Swift : chaîne d'outils, SDK, ou script.
             TAIL="$(tail -20 "$RUNNER_TEMP/build.log" | tr '\n' ' ' | tr -s ' ')"
             echo "::error title=Échec sans erreur Swift::${TAIL}"
           fi
@@ -92,3 +94,116 @@ jobs:
             exit 1
           fi
           echo "Installeur à jour."
+
+  # ─────────────────────────────────────────────────────────────
+  #  2. Publication : déclenchée par un changement de budVersion.
+  #
+  #  Pas de tag à créer à la main. Vous modifiez budVersion dans
+  #  Sources/BudCore.swift, vous poussez, et si aucune release ne
+  #  porte déjà ce numéro, elle est créée avec ses installeurs.
+  # ─────────────────────────────────────────────────────────────
+  release:
+    name: Publier la version
+    needs: compile
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 40
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lire la version et décider
+        id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="$(sed -n 's/^let budVersion = "\(.*\)"/\1/p' Sources/BudCore.swift | head -1)"
+          if [ -z "$V" ]; then
+            echo "::error::budVersion introuvable dans Sources/BudCore.swift"
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "La release v$V existe déjà — rien à publier." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Nouvelle version détectée : **$V**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Le point crucial : la machine GitHub est en arm64, mais
+      # l'application doit tourner aussi sur les Mac Intel. Sans binaire
+      # universel, l'installeur publié serait inutilisable sur x86_64.
+      - name: Compiler en binaire universel
+        if: steps.v.outputs.publish == 'true'
+        run: |
+          bash build.sh install --universal --no-open --app "$RUNNER_TEMP/BUD.app"
+          echo "Architectures : $(lipo -archs "$RUNNER_TEMP/BUD.app/Contents/MacOS/BUD")"
+          lipo -archs "$RUNNER_TEMP/BUD.app/Contents/MacOS/BUD" | grep -q arm64
+          lipo -archs "$RUNNER_TEMP/BUD.app/Contents/MacOS/BUD" | grep -q x86_64
+
+      - name: Fabriquer l'archive et le disque
+        if: steps.v.outputs.publish == 'true'
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          OUT="$RUNNER_TEMP/assets"
+          mkdir -p "$OUT"
+
+          # ZIP : ce que le bouton de mise à jour de BUD télécharge.
+          # ditto préserve la signature et les attributs du paquet, ce que
+          # « zip » ne garantit pas.
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/BUD.app" "$OUT/BUD-Premium-$V.zip"
+
+          # DMG : l'installeur familier, à glisser dans Applications.
+          ROOT="$RUNNER_TEMP/dmgroot"
+          mkdir -p "$ROOT"
+          ditto "$RUNNER_TEMP/BUD.app" "$ROOT/BUD.app"
+          ln -s /Applications "$ROOT/Applications"
+          hdiutil create -volname "BUD Premium $V" -srcfolder "$ROOT" \
+            -ov -format UDZO "$OUT/BUD-Premium-$V.dmg"
+
+          # L'installeur par les sources reste publié : il compile sur la
+          # machine de l'utilisateur, seule voie sans signature Apple.
+          cp dist/Installer_BUD_Premium.command "$OUT/Installer_BUD_Premium-$V.command"
+
+          ls -lh "$OUT"
+          shasum -a 256 "$OUT"/* | sed 's|.*/||' > "$OUT/SHA256.txt"
+          cat "$OUT/SHA256.txt"
+
+      - name: Rédiger les notes
+        if: steps.v.outputs.publish == 'true'
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          NOTES="$RUNNER_TEMP/notes.md"
+          # La section correspondante du journal des versions.
+          awk -v v="## $V" '
+            $0 == v {found=1; next}
+            found && /^## / {exit}
+            found {print}
+          ' CHANGELOG.md > "$NOTES"
+          if [ ! -s "$NOTES" ]; then
+            echo "Version $V." > "$NOTES"
+          fi
+          # Le pied de page vit dans un fichier du dépôt : un heredoc
+          # dont le corps revient à la colonne 1 fermerait le bloc YAML.
+          cat .github/release-footer.md >> "$NOTES"
+          cat "$NOTES"
+
+      - name: Publier la release
+        if: steps.v.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          gh release create "v$V" \
+            --title "BUD Premium $V" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest \
+            "$RUNNER_TEMP/assets/BUD-Premium-$V.dmg" \
+            "$RUNNER_TEMP/assets/BUD-Premium-$V.zip" \
+            "$RUNNER_TEMP/assets/Installer_BUD_Premium-$V.command" \
+            "$RUNNER_TEMP/assets/SHA256.txt"
+          echo "Release **v$V** publiée." >> "$GITHUB_STEP_SUMMARY"
