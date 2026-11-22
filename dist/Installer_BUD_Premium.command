@@ -7414,7 +7414,7 @@ final class MusicPanelView: NSView {
             artistLabel.stringValue = ""
             albumLabel.stringValue = ""
             timeLabel.stringValue = ""
-            bar.set(0, caption: "", animated: false)
+            bar.value = 0
             eq.playing = false
             hint.stringValue = "Ouvrez Musique pour que BUD prenne la main. "
                 + "Le pilotage demande l'autorisation Automatisation au premier usage."
@@ -7427,7 +7427,7 @@ final class MusicPanelView: NSView {
         artistLabel.stringValue = n.artist
         albumLabel.stringValue = n.album
         timeLabel.stringValue = n.timeText
-        bar.set(Int((n.progress * 100).rounded()), caption: "", animated: false)
+        bar.value = CGFloat(n.progress)
         eq.playing = n.playing
 
         if !volumeHeld {
