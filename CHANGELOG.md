@@ -2,6 +2,57 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.6 — lire, balayer, dicter
+
+**Lire un message en entier**
+
+- Un troisième mode, **Lecture** : en-tête avec la pastille de l'expéditeur, son adresse, la date écrite en entier, le verdict d'analyse et les pièces jointes — puis le corps, sélectionnable, avec un interligne large.
+- Aucun aller-retour réseau de plus : le corps était **déjà rapatrié et décodé** au relevé de la boîte (8 Ko, guillemets-imprimables et base64 défaits) et ne servait qu'à citer un message en réponse. Il suffisait de le présenter.
+- Beaucoup de courriels n'ont qu'une version HTML. BUD n'en fait pas un rendu : il en **extrait le texte**, en transformant d'abord les balises de bloc en sauts de ligne — sans quoi tout se recollerait en un seul paragraphe — puis retire les scripts, les balises et les entités.
+- Un clic sur une ligne ouvre le message. Lire est ce qu'on veut faire d'un courriel ; viser un onglet pour y arriver serait étrange.
+
+**Balayage**
+
+- **Vers la gauche : supprimer.** Rouge, avec une corbeille, et une confirmation — un balayage est vite fait sans le vouloir.
+- **Vers la droite : répondre.** Bleu, et la réponse s'ouvre directement : répondre ne détruit rien.
+- La carte glisse, le fond coloré reste dessous, la couleur s'affirme au passage du seuil. Retour élastique dans tous les cas.
+- Un trackpad n'envoie pas de « geste de balayage » mais des événements de défilement : la direction est décidée **une fois**, au début du geste, et tenue jusqu'au relâchement. Arbitrer à chaque événement ferait sauter la carte entre défilement et balayage au moindre tremblement. Le défilement vertical de la liste reste intact, et une molette de souris ne balaie pas.
+- Le sens suit le **doigt**, pas le réglage. AppKit applique déjà « défilement naturel » à `scrollingDeltaX` : sans défaire cette inversion, un balayage vers la gauche aurait déclenché l'action inverse chez qui a désactivé ce réglage.
+- Rien n'est effacé : le message va à la **corbeille du compte**, d'où il se reprend. Le dossier est demandé au serveur par son rôle `\Trash`, car son nom est localisé.
+
+**Couleur**
+
+- Une **pastille d'initiales** par expéditeur, de teinte tirée de son adresse : le même correspondant garde sa couleur d'une session à l'autre, et on le reconnaît avant d'avoir lu son nom. Douze teintes discrètes plutôt qu'une roue continue, où deux adresses voisines donneraient deux couleurs indiscernables.
+- La pastille de non-lu devient un **écusson sur le disque**, avec un liseré sombre pour s'en détacher.
+- Les icônes des outils sont **teintées par groupe** — indigo, ambre, orange, turquoise, bleu, violet — sans toucher à la lisibilité des titres.
+
+**L'heure comme sur un iPhone**
+
+- Heure en gras à gauche de la barre repliée, date du jour à sa droite en plus discret. Chiffres à largeur fixe, sinon l'heure tremblerait à chaque minute : un « 1 » est plus étroit qu'un « 8 ».
+
+**Le chat sait faire plus**
+
+- Batterie, adresse IP et réseau, verrouillage de l'écran, veille écran, apparence claire ou sombre, capture d'écran, compte à rebours, recherche web.
+- **Et il calcule** : « 23 × 7 », « (120 + 80) / 4 », « 20 % de 480 ». L'évaluateur est écrit à la main — descente récursive sur quatre niveaux de priorité — et non confié à `NSExpression`, qui sait instancier des classes et appeler des méthodes par leur nom : lui passer une chaîne venue du champ de saisie serait lui donner les clés de l'application pour additionner deux nombres.
+- Un chiffre **et** un opérateur sont exigés avant de répondre par un calcul, sinon « mes 5 mails » deviendrait un résultat.
+
+**Raccourcis au choix**
+
+- Les dix raccourcis sont réglables dans leur propre fenêtre : on clique, on tape la combinaison, Échap annule.
+- Un raccourci sans ⌘, ⌃ ni ⌥ est **refusé** : il intercepterait la frappe ordinaire dans toutes les applications.
+- Le capteur installe un moniteur **local**, retiré dès la capture finie — un moniteur global avalerait les touches de tout le système pendant l'enregistrement.
+- Stockés dans un dictionnaire indexé par action : ajouter une action ne demande aucune migration, et ce qui manque retombe sur l'usine.
+
+**Dictée, sur l'appareil**
+
+- Un micro à côté du champ du chat. Le texte s'écrit au fil des mots, et part quand vous vous arrêtez de parler.
+- `requiresOnDeviceRecognition` est posé, **et vérifié** : la documentation d'Apple précise que le drapeau n'est honoré que si `supportsOnDeviceRecognition` est vrai. Si ce Mac ne sait pas reconnaître le français hors ligne, BUD **refuse la dictée et dit pourquoi**, plutôt que d'envoyer silencieusement votre voix aux serveurs d'Apple.
+- Le format d'entrée est vérifié avant de poser la prise audio : `installTap` lève autrement une exception Objective-C que Swift ne rattrape pas, et l'application s'arrêterait net.
+
+**Outillage**
+
+- `Tools/braces.py` : un analyseur lexical Swift qui compte vraiment les accolades — interpolations `\(…)`, chaînes multilignes, chaînes brutes, commentaires de bloc imbriqués. Le contrôle par expressions régulières donnait de fausses alertes dès qu'une interpolation contenait une parenthèse.
+
 ## 23.5 — lisibilité du courrier, remise en ordre des outils
 
 **Le courrier**

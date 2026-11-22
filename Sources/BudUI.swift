@@ -208,6 +208,91 @@ final class HeroHeader: NSView {
 //  Boutons
 // ═══════════════════════════════════════════════════════════
 
+/// Le capteur de raccourci : un clic, puis la combinaison qu'on tape.
+///
+/// Le moniteur est **local** et non global : il ne doit intercepter les
+/// touches que pendant qu'on enregistre, et seulement dans la fenêtre de
+/// BUD. Un moniteur global avalerait les frappes de toutes les
+/// applications tant que l'enregistrement serait ouvert.
+final class KeyRecorder: NSView {
+    var combo: String { didSet { needsDisplay = true } }
+    var onChange: ((String) -> Void)?
+    /// Phrase à afficher quand une combinaison est refusée.
+    var onRefuse: ((String) -> Void)?
+
+    private var recording = false { didSet { needsDisplay = true } }
+    private var monitor: Any?
+    private var hover = false
+    private var track: NSTrackingArea?
+
+    init(frame: NSRect, combo: String) {
+        self.combo = combo
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    deinit { stopRecording() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = track { removeTrackingArea(a) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                               owner: self, userInfo: nil)
+        addTrackingArea(a)
+        track = a
+    }
+    override func mouseEntered(with e: NSEvent) { hover = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hover = false; needsDisplay = true }
+
+    override func mouseDown(with e: NSEvent) {
+        recording ? stopRecording() : startRecording()
+    }
+
+    private func startRecording() {
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] ev in
+            guard let s = self else { return ev }
+            // Échap annule, sans rien changer.
+            if ev.keyCode == 53 { s.stopRecording(); return nil }
+            guard let ch = ev.charactersIgnoringModifiers?.lowercased(), !ch.isEmpty,
+                  let first = ch.first, first.isLetter || first.isNumber else {
+                s.onRefuse?("Choisissez une lettre ou un chiffre.")
+                return nil
+            }
+            let candidate = Shortcuts.encode(ev.modifierFlags, String(first))
+            guard Shortcuts.isUsable(candidate) else {
+                s.onRefuse?("Il faut au moins ⌘, ⌥ ou ⌃ — sans quoi le raccourci "
+                    + "intercepterait votre frappe dans toutes les applications.")
+                return nil
+            }
+            s.combo = candidate
+            s.onChange?(candidate)
+            s.stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        monitor = nil
+        recording = false
+    }
+
+    override func draw(_ dirty: NSRect) {
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let p = capsule(r)
+        TH.fill(recording ? 0.18 : (hover ? 0.12 : 0.07)).setFill()
+        p.fill()
+        (recording ? TH.accent.withAlphaComponent(0.8) : TH.fill(0.12)).setStroke()
+        p.lineWidth = recording ? 1.5 : 1
+        p.stroke()
+        drawString(recording ? "tapez…" : Shortcuts.display(combo),
+                   in: NSRect(x: r.minX, y: r.midY - 7, width: r.width, height: 15),
+                   size: 11.5, weight: .semibold,
+                   color: recording ? TH.accent : TH.text, align: .center, mono: !recording)
+    }
+}
+
 final class GlassButton: NSView {
     var title: String { didSet { needsDisplay = true } }
     var iconName: String? { didSet { needsDisplay = true } }
@@ -218,6 +303,9 @@ final class GlassButton: NSView {
     var alignLeft = false
     var compact = false
     var idx = 0
+    /// Teinte propre au bouton, pour colorer un groupe d'outils. `nil`
+    /// laisse l'accent général choisi par l'utilisateur.
+    var accentTint: NSColor? { didSet { needsDisplay = true } }
     var onClick: ((GlassButton) -> Void)?
 
     private var hoverT: CGFloat = 0
@@ -289,7 +377,9 @@ final class GlassButton: NSView {
         let lift = pressT
         let r = bounds.insetBy(dx: 0.5 + lift, dy: 0.5 + lift)
         let path = capsule(r)
-        let tint = destructive ? dangerColor : TH.accent
+        // La teinte propre du bouton l'emporte sur l'accent général, sauf
+        // pour un bouton destructeur, qui reste rouge quoi qu'on demande.
+        let tint = destructive ? dangerColor : (accentTint ?? TH.accent)
 
         if !enabledFlag {
             TH.fill(0.04).setFill()
@@ -319,13 +409,18 @@ final class GlassButton: NSView {
 
         let fg: NSColor = !enabledFlag ? TH.dim(0.25)
                         : ((prominent || selected) ? TH.onAccent : (destructive ? dangerColor : TH.text))
+        // L'icône peut porter la teinte du groupe pendant que le titre
+        // reste lisible : colorer les deux rendrait le texte pâle.
+        let ig: NSColor = !enabledFlag ? TH.dim(0.25)
+                        : ((prominent || selected) ? TH.onAccent
+                           : (destructive ? dangerColor : (accentTint ?? TH.text)))
         let fontSize: CGFloat = compact ? 11.5 : 12
         let tw = textWidth(title, size: fontSize, weight: .semibold)
 
         if title.isEmpty {
             if let icon = iconName {
                 drawSymbol(icon, center: NSPoint(x: r.midX, y: r.midY), size: compact ? 12 : 13,
-                           weight: .semibold, color: fg)
+                           weight: .semibold, color: ig)
             }
             return
         }
@@ -334,7 +429,7 @@ final class GlassButton: NSView {
             var x = r.minX + 14
             if let icon = iconName {
                 drawSymbol(icon, center: NSPoint(x: x + 7, y: r.midY), size: compact ? 12 : 13,
-                           weight: .semibold, color: fg)
+                           weight: .semibold, color: ig)
                 x += 26
             }
             drawString(title, in: NSRect(x: x, y: r.midY - 8, width: max(10, r.maxX - 12 - x), height: 16),
@@ -345,7 +440,7 @@ final class GlassButton: NSView {
             var x = r.midX - block / 2
             if let icon = iconName {
                 drawSymbol(icon, center: NSPoint(x: x + 7, y: r.midY), size: compact ? 12 : 13,
-                           weight: .semibold, color: fg)
+                           weight: .semibold, color: ig)
                 x += iconW
             }
             drawString(title, in: NSRect(x: x, y: r.midY - 8, width: max(10, r.maxX - 8 - x), height: 16),
@@ -765,10 +860,23 @@ final class NotchChrome: NSView {
                                        width: max(40, b.maxX - mx - reserved), height: 16),
                             size: 11.5, color: TH.text)
             } else {
+                // L'heure comme sur un iPhone : collée à gauche, en gras,
+                // avec la date du jour à sa droite en plus discret. Les
+                // chiffres sont à largeur fixe, sinon l'heure tremblerait
+                // à chaque minute — un « 1 » est plus étroit qu'un « 8 ».
                 let t = clockString()
-                let tw = textWidth(t, size: 12.5, weight: .semibold, mono: true)
-                drawString(t, in: NSRect(x: b.midX - tw / 2 + 6, y: b.midY - 8, width: tw + 2, height: 17),
-                           size: 12.5, weight: .semibold, color: TH.text, mono: true)
+                let tw = textWidth(t, size: 14, weight: .bold, mono: true)
+                drawString(t, in: NSRect(x: 50, y: b.midY - 9, width: tw + 3, height: 19),
+                           size: 14, weight: .bold, color: TH.text, mono: true)
+
+                let reserved: CGFloat = alertCount > 0 || badge != nil ? 34 : 14
+                let dx = 50 + tw + 9
+                let dw = b.maxX - dx - reserved
+                if dw > 40 {
+                    drawString(shortDateString(),
+                               in: NSRect(x: dx, y: b.midY - 7, width: dw, height: 15),
+                               size: 10.5, weight: .medium, color: TH.dim(0.42))
+                }
             }
             if alertCount > 0 {
                 let txt = alertCount > 9 ? "9+" : "\(alertCount)"
@@ -1053,5 +1161,102 @@ final class ToggleRow: NSView {
         let labelMax = max(10, track.minX - labelX - 8)
         drawString(title, in: NSRect(x: labelX, y: r.midY - 8, width: labelMax, height: 16),
                    size: narrow ? 11 : 11.5, weight: .medium, color: isOn ? TH.text : TH.dim(0.65))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  La fenêtre des raccourcis
+//
+//  Une fenêtre à part, et non une section des Réglages : les
+//  cinq rangées d'interrupteurs occupent déjà le panneau jusqu'à
+//  six points du bord. Dix raccourcis n'y entraient pas sans
+//  tout recomposer, et une liste qu'on modifie mérite de la
+//  place.
+// ═══════════════════════════════════════════════════════════
+
+final class ShortcutsWindow: NSWindowController {
+
+    /// Appelé à chaque changement : l'action et son nouveau raccourci.
+    var onSet: ((String, String) -> Void)?
+    /// Appelé quand l'utilisateur rend tout à l'usine.
+    var onReset: (() -> Void)?
+
+    private var recorders: [String: KeyRecorder] = [:]
+    private var note: NSTextField!
+    private var current: (String) -> String
+
+    init(current: @escaping (String) -> String) {
+        self.current = current
+        let rows = Shortcuts.actions.count
+        let H: CGFloat = CGFloat(rows) * 42 + 132
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: H),
+                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "Raccourcis de BUD"
+        w.isReleasedWhenClosed = false
+        w.center()
+        super.init(window: w)
+        build(H)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func build(_ H: CGFloat) {
+        guard let content = window?.contentView else { return }
+        let W: CGFloat = 520
+
+        let title = mkLabel("Choisissez vos raccourcis",
+                            NSRect(x: 22, y: H - 44, width: W - 44, height: 22), 15, .bold)
+        content.addSubview(title)
+        let sub = mkLabel("Cliquez un raccourci, puis tapez la combinaison. Échap annule.",
+                          NSRect(x: 22, y: H - 64, width: W - 44, height: 16), 11.5, .regular, alpha: 0.5)
+        content.addSubview(sub)
+
+        for (i, a) in Shortcuts.actions.enumerated() {
+            let y = H - 96 - CGFloat(i) * 42
+            let lab = mkLabel(a.label, NSRect(x: 22, y: y, width: W - 190, height: 20), 12.5, .medium)
+            content.addSubview(lab)
+
+            let rec = KeyRecorder(frame: NSRect(x: W - 152, y: y - 5, width: 130, height: 30),
+                                  combo: current(a.key))
+            let key = a.key
+            rec.onChange = { [weak self] combo in
+                self?.onSet?(key, combo)
+                self?.note.stringValue = "\(a.label) : \(Shortcuts.display(combo))"
+                self?.note.textColor = TH.dim(0.55)
+            }
+            rec.onRefuse = { [weak self] why in
+                self?.note.stringValue = why
+                self?.note.textColor = dangerColor
+            }
+            content.addSubview(rec)
+            recorders[a.key] = rec
+        }
+
+        note = mkLabel("", NSRect(x: 22, y: 50, width: W - 44, height: 30), 11, .regular, alpha: 0.55)
+        note.lineBreakMode = .byWordWrapping
+        note.maximumNumberOfLines = 2
+        note.cell?.usesSingleLineMode = false
+        note.cell?.wraps = true
+        content.addSubview(note)
+
+        let reset = GlassButton(frame: NSRect(x: 22, y: 12, width: 190, height: 34),
+                                title: "Rendre les raccourcis d'usine", icon: "arrow.counterclockwise")
+        reset.onClick = { [weak self] _ in
+            guard let s = self else { return }
+            s.onReset?()
+            for a in Shortcuts.actions { s.recorders[a.key]?.combo = a.fallback }
+            s.note.stringValue = "Raccourcis d'usine rétablis."
+            s.note.textColor = TH.dim(0.55)
+        }
+        content.addSubview(reset)
+
+        let done = GlassButton(frame: NSRect(x: W - 122, y: 12, width: 100, height: 34),
+                               title: "Terminé", icon: "checkmark", prominent: true)
+        done.onClick = { [weak self] _ in self?.window?.close() }
+        content.addSubview(done)
+    }
+
+    /// Relit les raccourcis en vigueur — utile si l'état a changé ailleurs.
+    func refresh() {
+        for a in Shortcuts.actions { recorders[a.key]?.combo = current(a.key) }
     }
 }

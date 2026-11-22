@@ -375,7 +375,23 @@ enum GmailClient {
 
     /// Déplace des messages vers le dossier indésirable du compte.
     /// Renvoie nil si tout s'est bien passé.
+    /// Déplace des messages vers l'indésirable.
     static func quarantine(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
+        move(user: user, auth: auth, uids: uids, role: "\\Junk", fallback: "[Gmail]/Spam")
+    }
+
+    /// Déplace des messages vers la corbeille du compte. Un courriel n'est
+    /// jamais effacé : il va dans la corbeille, où le serveur le gardera le
+    /// temps qu'il voudra, et d'où l'utilisateur peut le reprendre.
+    static func trash(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
+        move(user: user, auth: auth, uids: uids, role: "\\Trash", fallback: "[Gmail]/Trash")
+    }
+
+    /// Le déplacement, commun aux deux. Le dossier est demandé au serveur
+    /// par son rôle : son nom est localisé, et le deviner marcherait chez
+    /// Gmail en anglais et nulle part ailleurs.
+    private static func move(user: String, auth: GmailAuthMode, uids: [String],
+                             role: String, fallback: String) -> String? {
         guard !uids.isEmpty else { return nil }
         guard let s = TLSLineSocket(host: imapHost, port: 993) else { return "IMAP injoignable." }
         defer { s.close() }
@@ -393,20 +409,18 @@ enum GmailClient {
         }
         guard logged else { return "Identifiants refusés." }
 
-        // Le nom du dossier indésirable est localisé : on le demande au
-        // serveur par son rôle plutôt que de le deviner.
         var junk = ""
         s.write("q2 LIST (SPECIAL-USE) \"\" \"*\"")
         while let l = s.readLine() {
             if l.hasPrefix("q2 ") { break }
-            if l.contains("\\Junk"), let last = l.range(of: "\"", options: .backwards) {
+            if l.contains(role), let last = l.range(of: "\"", options: .backwards) {
                 let head = l[l.startIndex..<last.lowerBound]
                 if let open = head.range(of: "\"", options: .backwards) {
                     junk = String(head[open.upperBound...])
                 }
             }
         }
-        if junk.isEmpty { junk = "[Gmail]/Spam" }
+        if junk.isEmpty { junk = fallback }
 
         s.write("q3 SELECT INBOX")
         while let l = s.readLine() { if l.hasPrefix("q3 ") { break } }

@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 23.5 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 23.6 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -356,6 +356,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var searchField: NSSearchField!
     private var captureSeg: SegmentedBar!
     private var lastCapture: URL?
+    /// Le compte à rebours demandé depuis le chat. Un seul à la fois :
+    /// en demander un second remplace le premier, et BUD le dit.
+    private var countdown: Timer?
+    private var shortcutsWin: ShortcutsWindow?
     // Une seule zone de compte rendu pour tout l'onglet : deux étiquettes
     // de statut dans le même panneau, l'une sous les outils système et
     // l'autre sous la capture, se faisaient concurrence.
@@ -1201,6 +1205,16 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let W = p.bounds.width, H = p.bounds.height
         toolsHero = addHero(p, "Outils", "Les raccourcis système dont vous vous servez tous les jours.")
 
+        // Une teinte par groupe : les icônes se distinguent d'un coup d'œil
+        // sans que les titres perdent en lisibilité.
+        func tone(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
+            NSColor(calibratedRed: r / 255, green: g / 255, blue: b / 255, alpha: 1)
+        }
+        let indigo = tone(124, 122, 255), amber = tone(240, 176, 70)
+        let orange = tone(245, 140, 80),  teal = tone(70, 205, 195)
+        let blue = tone(90, 165, 255),    violet = tone(190, 120, 255)
+        let cyan = tone(90, 205, 245),    green = tone(100, 210, 140)
+
         var y = H - 92                       // sous le bandeau de titre
         func section(_ t: String) {
             y -= 26
@@ -1212,7 +1226,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             return y
         }
 
-        section("Recherche")
+        // Le champ de recherche n'a pas d'intertitre : son texte d'invite
+        // dit déjà ce qu'il fait, et les 26 pt gagnés servent ailleurs.
         searchField = NSSearchField(frame: NSRect(x: 0, y: row(32), width: W, height: 32))
         searchField.placeholderString = "Rechercher sur le web…"
         searchField.font = NSFont.systemFont(ofSize: 12.5)
@@ -1222,51 +1237,70 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
         section("Système")
         let bw = (W - 12) / 2
-        func tool(_ x: CGFloat, _ yy: CGFloat, _ t: String, _ i: String, _ run: @escaping () -> Void) {
-            let b = GlassButton(frame: NSRect(x: x, y: yy, width: bw, height: 44), title: t, icon: i)
+        func tool(_ x: CGFloat, _ yy: CGFloat, _ t: String, _ i: String, _ c: NSColor,
+                  _ run: @escaping () -> Void) {
+            let b = GlassButton(frame: NSRect(x: x, y: yy, width: bw, height: 42), title: t, icon: i)
+            b.accentTint = c
             b.onClick = { _ in run() }
             p.addSubview(b)
         }
-        let r1 = row(44)
-        tool(0, r1, "Veille écran", "moon.fill") { runShell("/usr/bin/pmset", ["displaysleepnow"]) }
-        tool(bw + 12, r1, "Clair / sombre système", "circle.lefthalf.fill") { [weak self] in self?.toggleSystemDark() }
-        let r2 = row(44)
-        tool(0, r2, "Corbeille", "trash.fill") {
+        let r1 = row(42)
+        tool(0, r1, "Veille écran", "moon.fill", indigo) {
+            runShell("/usr/bin/pmset", ["displaysleepnow"])
+        }
+        tool(bw + 12, r1, "Clair / sombre système", "circle.lefthalf.fill", amber) { [weak self] in
+            self?.toggleSystemDark()
+        }
+        let r2 = row(42)
+        tool(0, r2, "Corbeille", "trash.fill", orange) {
             NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash"))
         }
-        tool(bw + 12, r2, "Infos réseau", "wifi") { [weak self] in self?.networkInfo() }
+        tool(bw + 12, r2, "Infos réseau", "wifi", teal) { [weak self] in self?.networkInfo() }
+        let r3 = row(42)
+        tool(0, r3, "Verrouiller l'écran", "lock.fill", blue) { [weak self] in
+            guard let s = self else { return }
+            s.toolsInfo.stringValue = s.lockScreenNow()
+        }
+        tool(bw + 12, r3, "Raccourcis clavier…", "keyboard", violet) { [weak self] in
+            self?.openShortcuts()
+        }
 
         section("Applications")
-        let apps: [(String, String)] = [("Finder", "folder.fill"), ("Safari", "safari.fill"),
-                                        ("Mail", "envelope.fill"), ("Terminal", "terminal.fill")]
+        let apps: [(String, String, NSColor)] = [("Finder", "folder.fill", blue),
+                                                 ("Safari", "safari.fill", cyan),
+                                                 ("Mail", "envelope.fill", indigo),
+                                                 ("Terminal", "terminal.fill", green)]
         let aw = (W - 36) / 4
-        let ry = row(44)
+        let ry = row(40)
         for (i, a) in apps.enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: ry, width: aw, height: 44),
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: ry, width: aw, height: 40),
                                 title: a.0, icon: a.1, compact: true)
+            b.accentTint = a.2
             b.idx = i
             b.onClick = { [weak self] btn in self?.launchApp(btn.idx) }
             p.addSubview(b)
         }
 
         section("Capture d'écran")
-        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: row(36, gap: 6), width: W, height: 36),
+        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: row(34, gap: 6), width: W, height: 34),
                                   items: [SegmentedBar.Item(title: "Sur le Bureau", icon: "desktopcomputer"),
                                           SegmentedBar.Item(title: "Presse-papiers", icon: "doc.on.clipboard")],
                                   selected: 0)
         p.addSubview(captureSeg)
 
         let cw = (W - 36) / 4
-        let cy = row(46)
+        let cy = row(44)
         for (i, m) in [CaptureMode.screen, .window, .selection].enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: cy, width: cw, height: 46),
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: cy, width: cw, height: 44),
                                 title: m.label, icon: m.icon, prominent: i == 0)
+            if i != 0 { b.accentTint = teal }
             b.idx = m.rawValue
             b.onClick = { [weak self] btn in self?.capture(CaptureMode(rawValue: btn.idx) ?? .screen) }
             p.addSubview(b)
         }
-        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: cy, width: cw, height: 46),
+        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: cy, width: cw, height: 44),
                                 title: "Révéler", icon: "folder.badge.questionmark")
+        revealBtn.accentTint = amber
         revealBtn.enabledFlag = false
         revealBtn.onClick = { [weak self] _ in
             guard let u = self?.lastCapture else { return }
@@ -1512,7 +1546,75 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             let pool = tipsFor(self?.state.personality ?? 0)
             return pool.randomElement() ?? ""
         }
+        a.batteryReport = { batteryLine() }
+        a.networkReport = { networkLine() }
+        a.lockScreen = { [weak self] in self?.lockScreenNow() ?? "" }
+        a.sleepDisplay = {
+            runShell("/usr/bin/pmset", ["displaysleepnow"])
+            return "Écran en veille."
+        }
+        a.setAppearance = { [weak self] which in self?.setSystemAppearance(which) ?? "" }
+        a.screenshot = { [weak self] kind in
+            guard let s = self else { return "" }
+            let mode: CaptureMode = kind == "window" ? .window : (kind == "selection" ? .selection : .screen)
+            s.capture(mode)
+            return mode.interactive
+                ? "Cliquez la fenêtre ou tracez la zone — je replie le notch d'abord."
+                : "Capture en cours…"
+        }
+        a.startTimer = { [weak self] minutes, raw in self?.startCountdown(minutes, raw) ?? "" }
+        a.webSearch = { q in
+            guard let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                  let url = URL(string: "https://duckduckgo.com/?q=\(enc)") else {
+                return "Je n'ai pas pu composer cette recherche."
+            }
+            NSWorkspace.shared.open(url)
+            return "J'ouvre une recherche sur « \(q) »."
+        }
         chatPanel.actions = a
+    }
+
+    // ═══════════ Ce que BUD sait faire en plus, depuis le chat ═══════════
+
+    /// Verrouille la session si le Mac en offre le moyen, et dit
+    /// honnêtement ce qui s'est passé sinon : mettre l'écran en veille
+    /// n'est un verrouillage que si le réglage du mot de passe le veut.
+    private func lockScreenNow() -> String {
+        let cg = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession"
+        if FileManager.default.isExecutableFile(atPath: cg) {
+            runShell(cg, ["-suspend"])
+            return "Session verrouillée."
+        }
+        runShell("/usr/bin/pmset", ["displaysleepnow"])
+        return "Écran mis en veille. Le verrouillage dépend de votre réglage "
+            + "« demander le mot de passe après la mise en veille »."
+    }
+
+    private func setSystemAppearance(_ which: String) -> String {
+        let value: String
+        switch which {
+        case "dark":  value = "true"
+        case "light": value = "false"
+        default:      value = "not dark mode"
+        }
+        runShell("/usr/bin/osascript",
+                 ["-e", "tell application \"System Events\" to tell appearance preferences "
+                      + "to set dark mode to \(value)"])
+        let label = which == "dark" ? "sombre" : (which == "light" ? "clair" : "basculée")
+        return "Apparence système : \(label). Sans effet ? Autorisez BUD dans "
+            + "Confidentialité et sécurité → Automatisation."
+    }
+
+    private func startCountdown(_ minutes: Int, _ raw: String) -> String {
+        countdown?.invalidate()
+        let fires = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        countdown = Timer.scheduledTimer(withTimeInterval: TimeInterval(minutes * 60),
+                                         repeats: false) { [weak self] _ in
+            self?.coucou("C'est l'heure", "Vous m'aviez dit : « \(String(raw.prefix(70))) »",
+                         hold: 8, sound: true)
+        }
+        let f = DateFormatter(); f.locale = Locale(identifier: "fr_FR"); f.dateFormat = "HH:mm"
+        return "Entendu — je vous préviens à \(f.string(from: fires))."
     }
 
     // ═══════════ Agents ═══════════
@@ -1898,19 +2000,35 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
     }
 
+    /// Les raccourcis ne sont plus écrits en dur : on compare l'événement
+    /// à ce que l'utilisateur a choisi, action par action.
     private func handleHotkey(_ e: NSEvent) -> Bool {
-        guard e.modifierFlags.contains(.command), e.modifierFlags.contains(.option) else { return false }
-        switch e.charactersIgnoringModifiers?.lowercased() {
-        case "b": togglePanel(); return true
-        case "c": sayHello(); return true
-        case "f": toggleFocus(); return true
-        case "d": showCapture(); return true
-        case "a": openPanel(); selectTab(tabAgents); return true
-        case "k": openPanel(); selectTab(tabChat); return true
-        case "m": openPanel(); selectTab(tabMail); return true
-        case "r": openPanel(); selectTab(tabReminders); return true
-        case "p": openPanel(); selectTab(tabPhone); return true
-        default: return false
+        let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard !mods.intersection([.command, .control, .option]).isEmpty,
+              let ch = e.charactersIgnoringModifiers?.lowercased(), !ch.isEmpty else { return false }
+
+        for action in Shortcuts.actions {
+            guard let (m, c) = Shortcuts.decode(Shortcuts.current(action.key, in: state)),
+                  c == ch, m == mods else { continue }
+            run(shortcut: action.key)
+            return true
+        }
+        return false
+    }
+
+    private func run(shortcut key: String) {
+        switch key {
+        case "panel":     togglePanel()
+        case "hello":     sayHello()
+        case "focus":     toggleFocus()
+        case "capture":   showCapture()
+        case "voice":     openPanel(); selectTab(tabChat); chatPanel.startDictation()
+        case "chat":      openPanel(); selectTab(tabChat)
+        case "mail":      openPanel(); selectTab(tabMail)
+        case "reminders": openPanel(); selectTab(tabReminders)
+        case "agents":    openPanel(); selectTab(tabAgents)
+        case "phone":     openPanel(); selectTab(tabPhone)
+        default: break
         }
     }
 
@@ -2442,9 +2560,35 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     }
 
     private func networkInfo() {
-        let ip = runShell("/usr/sbin/ipconfig", ["getifaddr", "en0"])
-        let wifi = runShell("/usr/sbin/networksetup", ["-getairportnetwork", "en0"])
-        toolsInfo.stringValue = "IP locale : \(ip.isEmpty ? "non connectée (en0)" : ip)\n\(wifi.isEmpty ? "Wi-Fi inconnu" : wifi)"
+        toolsInfo.stringValue = networkLine()
+    }
+
+    /// Ouvre la fenêtre des raccourcis, ou la ramène devant si elle est
+    /// déjà là. Une seule instance, sinon deux fenêtres se disputeraient
+    /// le même état.
+    private func openShortcuts() {
+        if shortcutsWin == nil {
+            let w = ShortcutsWindow(current: { [weak self] key in
+                guard let s = self else { return "" }
+                return Shortcuts.current(key, in: s.state)
+            })
+            w.onSet = { [weak self] key, combo in
+                guard let s = self else { return }
+                s.state.shortcuts[key] = combo
+                BudStore.shared.save(s.state)
+            }
+            w.onReset = { [weak self] in
+                guard let s = self else { return }
+                s.state.shortcuts = [:]
+                BudStore.shared.save(s.state)
+            }
+            shortcutsWin = w
+        }
+        shortcutsWin?.refresh()
+        shortcutsWin?.showWindow(nil)
+        shortcutsWin?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        toolsInfo.stringValue = "Fenêtre des raccourcis ouverte."
     }
 
     private func launchApp(_ i: Int) {
@@ -2656,6 +2800,18 @@ struct ChatActions {
     var remindersReport: () -> String = { "" }
     var music: (String) -> String = { _ in "" }
     var giveTip: () -> String = { "" }
+    // ── Ajouts 23.6 ──
+    var batteryReport: () -> String = { "" }
+    var networkReport: () -> String = { "" }
+    var lockScreen: () -> String = { "" }
+    var sleepDisplay: () -> String = { "" }
+    /// « dark », « light » ou « toggle ».
+    var setAppearance: (String) -> String = { _ in "" }
+    /// « screen », « window » ou « selection ».
+    var screenshot: (String) -> String = { _ in "" }
+    /// Durée en minutes, et la phrase d'origine pour l'intitulé.
+    var startTimer: (Int, String) -> String = { _, _ in "" }
+    var webSearch: (String) -> String = { _ in "" }
 }
 
 enum BudBrain {
@@ -2676,8 +2832,9 @@ enum BudBrain {
     }
 
     static let suggestions = ["Mes mails",
-                              "Rappelle-moi de partir à 18h",
-                              "Musique suivante",
+                              "Batterie",
+                              "20 % de 480",
+                              "Capture la fenêtre",
                               "Que sais-tu faire ?"]
 
     /// Renvoie la réponse de BUD. `async` : certaines actions répondent plus tard.
@@ -2707,6 +2864,13 @@ enum BudBrain {
             • « rappelle-moi d'appeler Paul à 17h30 », « mes rappels »
             • « musique », « morceau suivant », « monte le volume », « aléatoire »
             • « où en sont mes agents ? », « cpu », « l'heure », « une blague »
+            • « batterie », « mon adresse IP », « verrouille l'écran »
+            • « passe en mode sombre », « capture la fenêtre »
+            • « préviens-moi dans 15 minutes »
+            • « cherche la recette du pain perdu » — ouvre une recherche web
+            • « 23 × 7 », « (120 + 80) / 4 », « 20 % de 480 » — je calcule
+            Et le micro, à côté du champ : je transcris sur votre Mac, \
+            sans envoyer votre voix nulle part.
             """
         }
         if has(t, ["heure", "quelle heure"]) {
@@ -2821,14 +2985,241 @@ enum BudBrain {
             }
         }
 
+        // ── Batterie, réseau, écran ──
+        if has(t, ["batterie", "charge restante", "autonomie", "secteur"]) {
+            return actions.batteryReport()
+        }
+        if has(t, ["wifi", "wi-fi", "reseau", "ip", "adresse locale", "connexion"]) {
+            return actions.networkReport()
+        }
+        if has(t, ["verrouille", "verrouiller", "ecran de veille", "bloque l ecran", "bloque la session"]) {
+            return actions.lockScreen()
+        }
+        if has(t, ["eteins l ecran", "veille ecran", "coupe l ecran", "endors l ecran"]) {
+            return actions.sleepDisplay()
+        }
+
+        // ── Apparence ──
+        if has(t, ["mode sombre", "passe en sombre", "theme sombre", "nuit"]) {
+            return actions.setAppearance("dark")
+        }
+        if has(t, ["mode clair", "passe en clair", "theme clair", "jour"]) {
+            return actions.setAppearance("light")
+        }
+        if has(t, ["apparence", "clair sombre", "bascule le theme"]) {
+            return actions.setAppearance("toggle")
+        }
+
+        // ── Capture ──
+        if has(t, ["capture", "copie d ecran", "screenshot", "photo de l ecran"]) {
+            if has(t, ["fenetre"]) { return actions.screenshot("window") }
+            if has(t, ["selection", "zone", "morceau"]) { return actions.screenshot("selection") }
+            return actions.screenshot("screen")
+        }
+
+        // ── Compte à rebours ──
+        //
+        //  « minuteur » appartient déjà au focus, plus haut : employer le
+        //  même mot ici ferait une intention morte, que la première
+        //  attraperait toujours.
+        if has(t, ["chrono", "compte a rebours", "reveille moi", "previens moi"]),
+           let n = firstNumber(in: t), n > 0, n <= 600 {
+            let unit = has(t, ["heure"]) ? 60 : 1
+            return actions.startTimer(n * unit, raw)
+        }
+
+        // ── Recherche web ──
+        if has(t, ["cherche", "recherche", "google", "trouve moi", "c est quoi"]) {
+            // On retire le verbe pour ne pas chercher « cherche la recette ».
+            var q = raw
+            for w in ["cherche sur le web", "cherche sur internet", "recherche sur le web",
+                      "cherche moi", "cherche", "recherche", "google", "trouve moi",
+                      "c'est quoi", "c est quoi"] {
+                q = q.replacingOccurrences(of: w, with: "", options: .caseInsensitive)
+            }
+            q = q.trimmingCharacters(in: CharacterSet(charactersIn: " ?!.,:;«»\"'"))
+            if q.count >= 2 { return actions.webSearch(q) }
+        }
+
         if has(t, ["comment vas tu", "ca va", "tu vas bien"]) {
             return "Je tourne à \(clockString()) sans un accroc. " + actions.vitalsReport()
         }
+
+        // ── Calcul ──
+        //
+        //  En dernier, et sous condition : une phrase quelconque contenant
+        //  un nombre ne doit pas être prise pour une opération. Il faut un
+        //  chiffre ET un opérateur, sinon « mes 5 mails » deviendrait un
+        //  calcul.
+        if let r = Calc.answer(raw) { return r }
 
         return """
         Je n'ai pas saisi. Essaie par exemple « combien d'espace me reste-t-il ? », \
         « vide la corbeille », « lance un focus de 25 minutes » ou « que sais-tu faire ? ».
         """
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Calcul
+//
+//  Écrit à la main, et non confié à `NSExpression` : celui-ci
+//  évalue bien plus qu'une opération — il sait instancier des
+//  classes et appeler des méthodes par leur nom. Lui passer
+//  une chaîne venue du champ de saisie serait lui donner les
+//  clés de l'application pour additionner deux nombres.
+//
+//  Grammaire, par priorité croissante :
+//      expr   := terme (('+' | '-') terme)*
+//      terme  := puiss (('*' | '/' | '%') puiss)*
+//      puiss  := unaire ('^' puiss)?        — associatif à droite
+//      unaire := '-'? primaire
+//      prim   := nombre | '(' expr ')'
+// ═══════════════════════════════════════════════════════════
+
+enum Calc {
+
+    /// La réponse en français, ou `nil` si ce n'était pas un calcul.
+    static func answer(_ raw: String) -> String? {
+        if let (part, whole) = percentOf(raw) {
+            return "\(format(part / 100 * whole)) — soit \(format(part)) % de \(format(whole))."
+        }
+        guard let expr = sanitize(raw), looksLikeMath(expr) else { return nil }
+        var p = Parser(Array(expr))
+        guard let v = p.parseExpression(), p.atEnd else { return nil }
+        guard v.isFinite else { return "Cette opération ne donne pas de nombre fini." }
+        return "\(format(v))"
+    }
+
+    /// « 20 % de 480 », « 7% du 250 ».
+    private static func percentOf(_ raw: String) -> (Double, Double)? {
+        let pattern = "(-?[0-9]+(?:[.,][0-9]+)?)\\s*%\\s*(?:de|du|des|of)\\s+(-?[0-9]+(?:[.,][0-9]+)?)"
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let r = NSRange(raw.startIndex..., in: raw)
+        guard let m = re.firstMatch(in: raw, range: r), m.numberOfRanges >= 3,
+              let r1 = Range(m.range(at: 1), in: raw),
+              let r2 = Range(m.range(at: 2), in: raw),
+              let a = number(String(raw[r1])), let b = number(String(raw[r2])) else { return nil }
+        return (a, b)
+    }
+
+    private static func number(_ s: String) -> Double? {
+        Double(s.replacingOccurrences(of: ",", with: "."))
+    }
+
+    /// Traduit les mots en symboles, puis ne garde que ce qui compose une
+    /// opération. Tout le reste disparaît — un mot inconnu ne doit pas
+    /// pouvoir atteindre l'analyseur.
+    private static func sanitize(_ raw: String) -> String? {
+        var s = raw.lowercased()
+            .folding(options: [.diacriticInsensitive], locale: Locale(identifier: "fr_FR"))
+        for (word, sym) in [("multiplie par", "*"), ("multiplier par", "*"),
+                            ("divise par", "/"), ("diviser par", "/"),
+                            ("puissance", "^"), ("modulo", "%"),
+                            ("plus", "+"), ("moins", "-"), ("fois", "*")] {
+            s = s.replacingOccurrences(of: word, with: sym)
+        }
+        s = s.replacingOccurrences(of: ",", with: ".")
+        let kept = s.filter { "0123456789.+-*/^%() ".contains($0) }
+        let compact = kept.replacingOccurrences(of: " ", with: "")
+        return compact.isEmpty ? nil : compact
+    }
+
+    /// Un chiffre et un opérateur au minimum : sans cette garde, « mes 5
+    /// mails » arriverait ici réduit à « 5 » et serait annoncé comme un
+    /// résultat de calcul.
+    private static func looksLikeMath(_ s: String) -> Bool {
+        let hasDigit = s.contains { $0.isNumber }
+        let ops = s.filter { "+-*/^%".contains($0) }
+        return hasDigit && !ops.isEmpty && s.count >= 3
+    }
+
+    private static func format(_ v: Double) -> String {
+        if abs(v.rounded() - v) < 1e-9 && abs(v) < 1e15 {
+            let f = NumberFormatter()
+            f.numberStyle = .decimal
+            f.locale = Locale(identifier: "fr_FR")
+            f.maximumFractionDigits = 0
+            return f.string(from: NSNumber(value: v)) ?? String(Int(v))
+        }
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.locale = Locale(identifier: "fr_FR")
+        f.maximumFractionDigits = 6
+        return f.string(from: NSNumber(value: v)) ?? String(v)
+    }
+
+    private struct Parser {
+        let c: [Character]
+        var i = 0
+        init(_ chars: [Character]) { c = chars }
+
+        var atEnd: Bool { i >= c.count }
+        private func peek() -> Character? { i < c.count ? c[i] : nil }
+
+        mutating func parseExpression() -> Double? {
+            guard var lhs = parseTerm() else { return nil }
+            while let op = peek(), op == "+" || op == "-" {
+                i += 1
+                guard let rhs = parseTerm() else { return nil }
+                lhs = (op == "+") ? lhs + rhs : lhs - rhs
+            }
+            return lhs
+        }
+
+        mutating func parseTerm() -> Double? {
+            guard var lhs = parsePower() else { return nil }
+            while let op = peek(), op == "*" || op == "/" || op == "%" {
+                i += 1
+                guard let rhs = parsePower() else { return nil }
+                switch op {
+                case "*": lhs *= rhs
+                case "/":
+                    // On ne rend pas d'infini : la division par zéro fait
+                    // échouer le calcul, et l'appelant le dira.
+                    guard rhs != 0 else { return nil }
+                    lhs /= rhs
+                default:
+                    guard rhs != 0 else { return nil }
+                    lhs = lhs.truncatingRemainder(dividingBy: rhs)
+                }
+            }
+            return lhs
+        }
+
+        mutating func parsePower() -> Double? {
+            guard let base = parseUnary() else { return nil }
+            if let op = peek(), op == "^" {
+                i += 1
+                guard let e = parsePower() else { return nil }
+                // Un exposant démesuré bloquerait le calcul : on refuse.
+                guard abs(e) <= 64 else { return nil }
+                return pow(base, e)
+            }
+            return base
+        }
+
+        mutating func parseUnary() -> Double? {
+            if let op = peek(), op == "-" { i += 1; return parseUnary().map { -$0 } }
+            if let op = peek(), op == "+" { i += 1; return parseUnary() }
+            return parsePrimary()
+        }
+
+        mutating func parsePrimary() -> Double? {
+            guard let ch = peek() else { return nil }
+            if ch == "(" {
+                i += 1
+                guard let v = parseExpression(), peek() == ")" else { return nil }
+                i += 1
+                return v
+            }
+            var digits = ""
+            while let d = peek(), d.isNumber || d == "." {
+                digits.append(d)
+                i += 1
+            }
+            return digits.isEmpty ? nil : Double(digits)
+        }
     }
 }
 
@@ -2890,6 +3281,7 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
     private var bubbles: [NSView] = []
     private var messages: [ChatMsg] = []
     private var chips: [GlassButton] = []
+    private var mic: MicButton!
 
     var actions = ChatActions()
     var onStatus: ((String) -> Void)?
@@ -2930,8 +3322,8 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
             x += w + 8
         }
 
-        input = NSTextField(frame: NSRect(x: 0, y: 6, width: W - 112, height: 44))
-        input.placeholderString = "Écrivez à BUD…"
+        input = NSTextField(frame: NSRect(x: 0, y: 6, width: W - 158, height: 44))
+        input.placeholderString = "Écrivez à BUD, ou dictez…"
         input.font = NSFont.systemFont(ofSize: 13)
         input.bezelStyle = .roundedBezel
         input.focusRingType = .none
@@ -2940,10 +3332,49 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         input.action = #selector(sendFromField)
         addSubview(input)
 
-        let sendBtn = GlassButton(frame: NSRect(x: W - 102, y: 6, width: 102, height: 44),
+        mic = MicButton(frame: NSRect(x: W - 148, y: 6, width: 44, height: 44))
+        mic.onClick = { [weak self] in self?.toggleDictation() }
+        addSubview(mic)
+
+        let sendBtn = GlassButton(frame: NSRect(x: W - 96, y: 6, width: 96, height: 44),
                                   title: "Envoyer", icon: "paperplane.fill", prominent: true)
         sendBtn.onClick = { [weak self] _ in self?.sendFromField() }
         addSubview(sendBtn)
+
+        wireVoice()
+    }
+
+    // ═══════════ Dictée ═══════════
+
+    private func wireVoice() {
+        let v = BudVoice.shared
+        // Le texte reconnu s'écrit dans le champ au fil des mots : on voit
+        // ce que BUD a compris avant que ce soit envoyé, et on peut
+        // corriger au clavier plutôt que de tout redire.
+        v.onPartial = { [weak self] t in self?.input.stringValue = t }
+        v.onFinal = { [weak self] t in
+            guard let s = self else { return }
+            s.input.stringValue = ""
+            s.send(t)
+        }
+        v.onTrouble = { [weak self] why in
+            self?.append(ChatMsg(fromBud: true, text: why, date: Date()))
+        }
+        v.onState = { [weak self] in
+            guard let s = self else { return }
+            s.mic.listening = v.listening
+            s.onStatus?(v.listening ? "BUD écoute…" : "")
+        }
+    }
+
+    private func toggleDictation() {
+        if !BudVoice.shared.listening { window?.makeFirstResponder(input) }
+        BudVoice.shared.toggle()
+    }
+
+    /// Ouvre la dictée de l'extérieur — raccourci clavier, menu.
+    func startDictation() {
+        if !BudVoice.shared.listening { toggleDictation() }
     }
 
     func focusInput() { window?.makeFirstResponder(input) }
@@ -3668,6 +4099,16 @@ struct BudState: Codable {
     var budPremium: Bool = false      // v17 : conservé pour la migration
     var budSkin: Int = 0              // 0 à plat · 1 nacré-or · 2 métal
 
+    // — Nouveau en v23.6 —
+    //
+    //  Les raccourcis, au choix de l'utilisateur. Clé = nom de l'action,
+    //  valeur = le raccourci encodé « <masque>:<caractère> », par exemple
+    //  « 1572864:b » pour ⌘⌥B. Un dictionnaire plutôt qu'un champ par
+    //  action : ajouter une action ne demande alors aucune migration, et
+    //  ce qui manque retombe sur le raccourci d'usine.
+    var shortcuts: [String: String] = [:]
+    var voiceEnabled: Bool = true     // dictée accessible depuis le chat
+
     init() {}
 
     init(from d: Decoder) throws {
@@ -3713,6 +4154,8 @@ struct BudState: Codable {
         alarmSound = try c.decodeIfPresent(Bool.self, forKey: .alarmSound) ?? z.alarmSound
         budPremium = try c.decodeIfPresent(Bool.self, forKey: .budPremium) ?? z.budPremium
         budSkin = try c.decodeIfPresent(Int.self, forKey: .budSkin) ?? z.budSkin
+        shortcuts = try c.decodeIfPresent([String: String].self, forKey: .shortcuts) ?? z.shortcuts
+        voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? z.voiceEnabled
         // Un état écrit par la v17 ne connaît que budPremium : on le reporte.
         if budSkin == 0 && budPremium { budSkin = 1 }
         if budSkin < 0 || budSkin > 2 { budSkin = 0 }
@@ -3845,6 +4288,146 @@ func timeGreeting() -> (String, String) {
 
 func clockString() -> String {
     let f = DateFormatter(); f.locale = Locale(identifier: "fr_FR"); f.dateFormat = "HH:mm"
+    return f.string(from: Date())
+}
+/// Le sens du balayage, pour qu'un geste du doigt vers la gauche soit
+/// toujours un geste vers la gauche.
+///
+/// AppKit applique déjà le réglage « défilement naturel » à
+/// `scrollingDeltaX` : le même mouvement de doigt produit donc un
+/// signe opposé selon ce réglage. Pour un geste de balayage, c'est le
+/// doigt qui compte, pas le défilement — on défait donc l'inversion.
+/// Lu une seule fois, à la première utilisation.
+let swipeSign: CGFloat = {
+    let out = runShell("/usr/bin/defaults", ["read", "-g", "com.apple.swipescrolldirection"])
+    return out.trimmingCharacters(in: .whitespacesAndNewlines) == "0" ? -1 : 1
+}()
+
+// ═══════════════════════════════════════════════════════════
+//  Raccourcis clavier
+//
+//  Chaque action porte un identifiant stable, un libellé, et un
+//  raccourci d'usine. Ce que l'utilisateur choisit vit dans
+//  `BudState.shortcuts` sous cet identifiant ; ce qui manque
+//  retombe sur l'usine. Renommer un libellé ne casse donc rien,
+//  et ajouter une action ne demande aucune migration.
+// ═══════════════════════════════════════════════════════════
+
+struct ShortcutAction {
+    let key: String
+    let label: String
+    let fallback: String
+}
+
+enum Shortcuts {
+
+    /// Encode un raccourci. On ne retient que les quatre modificateurs
+    /// qui comptent : le masque brut d'un événement porte aussi l'état
+    /// du pavé numérique et des touches de fonction, qui varient d'un
+    /// clavier à l'autre et rendraient la comparaison instable.
+    static func encode(_ mods: NSEvent.ModifierFlags, _ ch: String) -> String {
+        let m = mods.intersection([.command, .option, .control, .shift])
+        return "\(m.rawValue):\(ch.lowercased())"
+    }
+
+    static func decode(_ s: String) -> (mods: NSEvent.ModifierFlags, ch: String)? {
+        let p = s.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard p.count == 2, let raw = UInt(p[0]), !p[1].isEmpty else { return nil }
+        return (NSEvent.ModifierFlags(rawValue: raw), String(p[1]))
+    }
+
+    /// « ⌘⌥B », dans l'ordre où macOS les écrit.
+    static func display(_ s: String) -> String {
+        guard let (m, ch) = decode(s) else { return "—" }
+        var out = ""
+        if m.contains(.control) { out += "⌃" }
+        if m.contains(.option)  { out += "⌥" }
+        if m.contains(.shift)   { out += "⇧" }
+        if m.contains(.command) { out += "⌘" }
+        return out + ch.uppercased()
+    }
+
+    /// Un raccourci sans ⌘, ⌃ ni ⌥ intercepterait la frappe ordinaire
+    /// dans toutes les applications : on refuse de l'enregistrer.
+    static func isUsable(_ s: String) -> Bool {
+        guard let (m, _) = decode(s) else { return false }
+        return !m.intersection([.command, .control, .option]).isEmpty
+    }
+
+    static let actions: [ShortcutAction] = [
+        ShortcutAction(key: "panel",     label: "Ouvrir ou fermer le panneau",
+                       fallback: encode([.command, .option], "b")),
+        ShortcutAction(key: "hello",     label: "Dire coucou",
+                       fallback: encode([.command, .option], "c")),
+        ShortcutAction(key: "focus",     label: "Lancer ou arrêter un focus",
+                       fallback: encode([.command, .option], "f")),
+        ShortcutAction(key: "capture",   label: "Capture d'écran",
+                       fallback: encode([.command, .option], "d")),
+        ShortcutAction(key: "voice",     label: "Parler à BUD (dictée)",
+                       fallback: encode([.command, .option], "v")),
+        ShortcutAction(key: "chat",      label: "Onglet Chat",
+                       fallback: encode([.command, .option], "k")),
+        ShortcutAction(key: "mail",      label: "Onglet Courrier",
+                       fallback: encode([.command, .option], "m")),
+        ShortcutAction(key: "reminders", label: "Onglet Rappels",
+                       fallback: encode([.command, .option], "r")),
+        ShortcutAction(key: "agents",    label: "Onglet Agents",
+                       fallback: encode([.command, .option], "a")),
+        ShortcutAction(key: "phone",     label: "Onglet Téléphone",
+                       fallback: encode([.command, .option], "p"))
+    ]
+
+    /// Le raccourci en vigueur pour une action : celui de l'utilisateur,
+    /// sinon celui d'usine.
+    static func current(_ key: String, in state: BudState) -> String {
+        if let s = state.shortcuts[key], isUsable(s) { return s }
+        return actions.first { $0.key == key }?.fallback ?? ""
+    }
+}
+
+/// L'état de la batterie en une phrase. Beaucoup de Mac n'en ont pas —
+/// un Mac mini, un iMac — et `pmset` ne renvoie alors aucune ligne de
+/// batterie : il faut le dire plutôt que d'afficher « 0 % ».
+func batteryLine() -> String {
+    let out = runShell("/usr/bin/pmset", ["-g", "batt"])
+    guard out.contains("InternalBattery") else {
+        return "Ce Mac n'a pas de batterie — il est sur le secteur."
+    }
+    let pct = out.range(of: "[0-9]{1,3}%", options: .regularExpression)
+        .map { String(out[$0]) } ?? "?"
+    let onAC = out.contains("'AC Power'")
+    var state = ""
+    for (key, word) in [("charged", "pleine"), ("charging", "en charge"),
+                        ("discharging", "sur batterie"), ("finishing charge", "fin de charge")] {
+        if out.contains(key) { state = word; break }
+    }
+    // « 2:13 remaining » : le temps restant n'est pas toujours calculé,
+    // et pmset écrit alors « (no estimate) ».
+    var left = ""
+    if let r = out.range(of: "[0-9]{1,2}:[0-9]{2} remaining", options: .regularExpression) {
+        let t = String(out[r]).replacingOccurrences(of: " remaining", with: "")
+        left = " · \(t) restantes"
+    }
+    let src = onAC ? "secteur" : "batterie"
+    return "Batterie \(pct)\(state.isEmpty ? "" : " · \(state)") · alimentation \(src)\(left)."
+}
+
+/// IP locale et nom du réseau sans fil, en une phrase.
+func networkLine() -> String {
+    let ip = runShell("/usr/sbin/ipconfig", ["getifaddr", "en0"])
+    let wifi = runShell("/usr/sbin/networksetup", ["-getairportnetwork", "en0"])
+        .replacingOccurrences(of: "Current Wi-Fi Network: ", with: "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let ipPart = ip.isEmpty ? "pas d'adresse sur en0" : "IP locale \(ip)"
+    let netPart = wifi.isEmpty || wifi.contains("not associated")
+        ? "pas de Wi-Fi associé" : "réseau « \(wifi) »"
+    return "\(ipPart) · \(netPart)."
+}
+
+/// « dim. 22 nov. » — ce qui tient à côté de l'heure dans la barre repliée.
+func shortDateString() -> String {
+    let f = DateFormatter(); f.locale = Locale(identifier: "fr_FR")
+    f.setLocalizedDateFormatFromTemplate("EEEdMMM")
     return f.string(from: Date())
 }
 func longDateString() -> String {
@@ -3982,7 +4565,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.5"
+let budVersion = "23.6"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -5545,7 +6128,23 @@ enum GmailClient {
 
     /// Déplace des messages vers le dossier indésirable du compte.
     /// Renvoie nil si tout s'est bien passé.
+    /// Déplace des messages vers l'indésirable.
     static func quarantine(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
+        move(user: user, auth: auth, uids: uids, role: "\\Junk", fallback: "[Gmail]/Spam")
+    }
+
+    /// Déplace des messages vers la corbeille du compte. Un courriel n'est
+    /// jamais effacé : il va dans la corbeille, où le serveur le gardera le
+    /// temps qu'il voudra, et d'où l'utilisateur peut le reprendre.
+    static func trash(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
+        move(user: user, auth: auth, uids: uids, role: "\\Trash", fallback: "[Gmail]/Trash")
+    }
+
+    /// Le déplacement, commun aux deux. Le dossier est demandé au serveur
+    /// par son rôle : son nom est localisé, et le deviner marcherait chez
+    /// Gmail en anglais et nulle part ailleurs.
+    private static func move(user: String, auth: GmailAuthMode, uids: [String],
+                             role: String, fallback: String) -> String? {
         guard !uids.isEmpty else { return nil }
         guard let s = TLSLineSocket(host: imapHost, port: 993) else { return "IMAP injoignable." }
         defer { s.close() }
@@ -5563,20 +6162,18 @@ enum GmailClient {
         }
         guard logged else { return "Identifiants refusés." }
 
-        // Le nom du dossier indésirable est localisé : on le demande au
-        // serveur par son rôle plutôt que de le deviner.
         var junk = ""
         s.write("q2 LIST (SPECIAL-USE) \"\" \"*\"")
         while let l = s.readLine() {
             if l.hasPrefix("q2 ") { break }
-            if l.contains("\\Junk"), let last = l.range(of: "\"", options: .backwards) {
+            if l.contains(role), let last = l.range(of: "\"", options: .backwards) {
                 let head = l[l.startIndex..<last.lowerBound]
                 if let open = head.range(of: "\"", options: .backwards) {
                     junk = String(head[open.upperBound...])
                 }
             }
         }
-        if junk.isEmpty { junk = "[Gmail]/Spam" }
+        if junk.isEmpty { junk = fallback }
 
         s.write("q3 SELECT INBOX")
         while let l = s.readLine() { if l.hasPrefix("q3 ") { break } }
@@ -6210,6 +6807,62 @@ struct MailMessage {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return String(flat.prefix(200))
     }
+
+    /// Les deux lettres de la pastille : initiales du nom si on en a un,
+    /// sinon les deux premières de l'adresse.
+    var initials: String {
+        let src = MailGuard.displayName(in: sender)
+        let words = src.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "-" || $0 == "_" })
+            .filter { $0.first?.isLetter == true }
+        if words.count >= 2, let a = words[0].first, let b = words[1].first {
+            return String(a).uppercased() + String(b).uppercased()
+        }
+        let base = words.first.map(String.init) ?? address
+        let letters = base.filter { $0.isLetter }
+        return letters.isEmpty ? "?" : String(letters.prefix(2)).uppercased()
+    }
+
+    /// La teinte de la pastille, tirée de l'adresse : le même correspondant
+    /// garde sa couleur d'une session à l'autre, ce qui est tout l'intérêt —
+    /// on reconnaît l'expéditeur avant d'avoir lu son nom.
+    ///
+    /// Les teintes sont prises dans une roue de douze, et non en continu :
+    /// deux adresses voisines sur le cercle donneraient deux couleurs
+    /// qu'on ne distingue pas.
+    var tint: NSColor {
+        let key = address.isEmpty ? sender : address
+        var h: UInt64 = 5381
+        for b in key.lowercased().utf8 { h = (h << 5) &+ h &+ UInt64(b) }
+        let hue = CGFloat(h % 12) / 12.0
+        return NSColor(calibratedHue: hue, saturation: 0.52, brightness: 0.92, alpha: 1)
+    }
+
+    /// Le corps, prêt à lire. Beaucoup de courriels n'ont qu'une version
+    /// HTML : affiché tel quel, on lirait des balises. On ne rend pas le
+    /// HTML — on en extrait le texte, en gardant les sauts de paragraphe.
+    var readableBody: String {
+        var s = snippet
+        if s.range(of: "<(br|p|div|table|html|body)\\b", options: [.regularExpression, .caseInsensitive]) != nil {
+            // Les balises de bloc deviennent des sauts de ligne avant que
+            // tout le reste ne disparaisse, sinon le texte se recollerait
+            // en un seul paragraphe illisible.
+            s = s.replacingOccurrences(of: "<(br|/p|/div|/tr|/h[1-6])\\s*/?>", with: "\n",
+                                       options: [.regularExpression, .caseInsensitive])
+            s = s.replacingOccurrences(of: "<(script|style)\\b[^>]*>[\\s\\S]*?</\\1>", with: "",
+                                       options: [.regularExpression, .caseInsensitive])
+            s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        }
+        for (e, c) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                       ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&eacute;", "é"),
+                       ("&egrave;", "è"), ("&agrave;", "à"), ("&ccedil;", "ç"), ("&euro;", "€")] {
+            s = s.replacingOccurrences(of: e, with: c, options: .caseInsensitive)
+        }
+        // Les espaces en fin de ligne et les lignes vides en rafale : un
+        // courriel HTML converti en produit des dizaines.
+        s = s.replacingOccurrences(of: "[ \\t\u{00A0}]+\n", with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -6468,6 +7121,37 @@ enum MailRouter {
         }
         return GmailClient.quarantine(user: user, auth: auth, uids: uids)
     }
+
+    /// Met des messages à la corbeille du compte. Rien n'est effacé :
+    /// le serveur les garde, et ils se reprennent depuis la corbeille.
+    static func trash(_ uids: [String]) -> String? {
+        guard let (user, auth) = mode() else {
+            return "Reliez un compte Gmail pour supprimer des messages."
+        }
+        return GmailClient.trash(user: user, auth: auth, uids: uids)
+    }
+}
+
+/// La pastille d'initiales de l'expéditeur, en grand pour le lecteur.
+final class InitialsDisc: NSView {
+    var message: MailMessage? { didSet { needsDisplay = true } }
+
+    override init(frame: NSRect) { super.init(frame: frame) }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirty: NSRect) {
+        let b = bounds
+        guard let m = message else { return }
+        let t = m.tint
+        t.withAlphaComponent(0.24).setFill()
+        NSBezierPath(ovalIn: b).fill()
+        t.withAlphaComponent(0.55).setStroke()
+        let ring = NSBezierPath(ovalIn: b.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 1
+        ring.stroke()
+        drawString(m.initials, in: NSRect(x: b.minX, y: b.midY - 9, width: b.width, height: 19),
+                   size: 15.5, weight: .bold, color: t, align: .center)
+    }
 }
 
 /// Une ligne de la boîte de réception : expéditeur, objet, date et
@@ -6477,8 +7161,18 @@ final class MailRow: NSView {
     let message: MailMessage
     var selected = false { didSet { needsDisplay = true } }
     var onSelect: ((MailMessage) -> Void)?
+    var onSwipeDelete: ((MailMessage) -> Void)?
+    var onSwipeReply: ((MailMessage) -> Void)?
     private var hover = false
     private var track: NSTrackingArea?
+
+    /// Décalage horizontal de la carte pendant un balayage, en points.
+    /// Négatif vers la gauche, ce qui découvre « Supprimer » à droite.
+    private var dragX: CGFloat = 0
+    private var swiping = false
+    private var springT: Timer?
+    /// Au-delà de ce décalage, le geste déclenche son action au relâchement.
+    private let trigger: CGFloat = 78
 
     init(frame: NSRect, message: MailMessage) {
         self.message = message
@@ -6486,6 +7180,62 @@ final class MailRow: NSView {
         wantsLayer = true
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit { springT?.invalidate() }
+
+    // ═══════════ Balayage ═══════════
+    //
+    //  Un trackpad n'envoie pas de « geste de balayage » : il envoie des
+    //  événements de défilement avec une phase. On lit donc scrollWheel,
+    //  et toute la difficulté est de ne pas voler le défilement vertical
+    //  de la liste qui nous contient.
+    //
+    //  La direction est décidée une fois, au début du geste, et tenue
+    //  jusqu'au relâchement : arbitrer à chaque événement ferait sauter
+    //  la carte entre défilement et balayage au moindre tremblement.
+
+    override func scrollWheel(with e: NSEvent) {
+        // Une molette de souris n'a pas de phase et ne doit pas balayer.
+        guard e.hasPreciseScrollingDeltas else { super.scrollWheel(with: e); return }
+
+        switch e.phase {
+        case .began:
+            swiping = abs(e.scrollingDeltaX) > abs(e.scrollingDeltaY) * 1.4
+            if !swiping { super.scrollWheel(with: e) }
+        case .changed:
+            guard swiping else { super.scrollWheel(with: e); return }
+            springT?.invalidate()
+            dragX += e.scrollingDeltaX * swipeSign
+            // Au-delà du seuil, le geste résiste : on sent qu'on est allé
+            // au bout, sans pouvoir tirer la carte hors du panneau.
+            let limit: CGFloat = 132
+            if abs(dragX) > limit { dragX = dragX < 0 ? -limit : limit }
+            needsDisplay = true
+        case .ended, .cancelled:
+            guard swiping else { super.scrollWheel(with: e); return }
+            swiping = false
+            let d = dragX
+            if d <= -trigger { onSwipeDelete?(message) }
+            else if d >= trigger { onSwipeReply?(message) }
+            springBack()
+        default:
+            if !swiping { super.scrollWheel(with: e) }
+        }
+    }
+
+    /// Retour élastique à zéro. La carte revient toujours en place, même
+    /// quand l'action part : la liste se recharge derrière, et une carte
+    /// restée ouverte sur une rangée qui n'existe plus serait un fantôme.
+    private func springBack() {
+        springT?.invalidate()
+        guard dragX != 0 else { return }
+        springT = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] t in
+            guard let s = self else { t.invalidate(); return }
+            s.dragX *= 0.76
+            if abs(s.dragX) < 0.6 { s.dragX = 0; t.invalidate(); s.springT = nil }
+            s.needsDisplay = true
+        }
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -6501,6 +7251,50 @@ final class MailRow: NSView {
 
     override func draw(_ dirty: NSRect) {
         let r = bounds
+        if dragX != 0 { drawSwipeBackdrop(r) }
+
+        let ctx = NSGraphicsContext.current
+        ctx?.saveGraphicsState()
+        // La carte glisse, le fond d'action reste : c'est ce décalage du
+        // repère qui donne l'impression de tirer la carte de côté.
+        if dragX != 0 { ctx?.cgContext.translateBy(x: dragX, y: 0) }
+        drawCard(r)
+        ctx?.restoreGraphicsState()
+    }
+
+    /// Ce qu'on découvre sous la carte pendant le balayage : rouge et
+    /// « Supprimer » à droite quand on tire vers la gauche, bleu et
+    /// « Répondre » à gauche quand on tire vers la droite. La couleur
+    /// s'affirme au passage du seuil, pour qu'on sache que ça va partir.
+    private func drawSwipeBackdrop(_ r: NSRect) {
+        let left = dragX > 0
+        let armed = abs(dragX) >= trigger
+        let col = left ? TH.accent : dangerColor
+        let strip = left ? NSRect(x: r.minX, y: r.minY, width: dragX, height: r.height)
+                         : NSRect(x: r.maxX + dragX, y: r.minY, width: -dragX, height: r.height)
+
+        let p = NSBezierPath(roundedRect: r, xRadius: 11, yRadius: 11)
+        NSGraphicsContext.current?.saveGraphicsState()
+        p.addClip()
+        col.withAlphaComponent(armed ? 0.92 : 0.45).setFill()
+        strip.fill()
+
+        // L'étiquette reste au milieu de la bande découverte, mais jamais
+        // collée au bord : sans cette marge elle serait coupée au départ
+        // du geste, quand la bande ne fait que quelques points.
+        let cx = left ? min(strip.midX, r.minX + 54) : max(strip.midX, r.maxX - 54)
+        if abs(dragX) > 26 {
+            drawSymbol(left ? "arrowshape.turn.up.left.fill" : "trash.fill",
+                       center: NSPoint(x: cx, y: r.midY + 7), size: 15, weight: .semibold,
+                       color: .white)
+            drawString(left ? "Répondre" : "Supprimer",
+                       in: NSRect(x: cx - 48, y: r.midY - 20, width: 96, height: 13),
+                       size: 9.5, weight: .bold, color: .white, align: .center)
+        }
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
+
+    private func drawCard(_ r: NSRect) {
         let card = NSBezierPath(roundedRect: r, xRadius: 11, yRadius: 11)
         TH.fill(selected ? 0.16 : (hover ? 0.10 : 0.055)).setFill()
         card.fill()
@@ -6512,10 +7306,25 @@ final class MailRow: NSView {
 
         let lvl = message.threat.level
         // Liseré de verdict à gauche : vert, ambre ou rouge.
-        let bar = NSBezierPath(roundedRect: NSRect(x: 8, y: 10, width: 4, height: r.height - 20),
-                               xRadius: 2, yRadius: 2)
+        let bar = NSBezierPath(roundedRect: NSRect(x: 5, y: 10, width: 3, height: r.height - 20),
+                               xRadius: 1.5, yRadius: 1.5)
         lvl.color.withAlphaComponent(lvl == .clean ? 0.45 : 0.95).setFill()
         bar.fill()
+
+        // Pastille d'initiales, teinte tirée de l'adresse : le même
+        // correspondant garde sa couleur, et on le reconnaît avant
+        // d'avoir lu son nom.
+        let av = NSRect(x: 14, y: r.midY - 17, width: 34, height: 34)
+        let tint = message.tint
+        tint.withAlphaComponent(0.26).setFill()
+        NSBezierPath(ovalIn: av).fill()
+        tint.withAlphaComponent(0.55).setStroke()
+        let ring = NSBezierPath(ovalIn: av.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 1
+        ring.stroke()
+        drawString(message.initials,
+                   in: NSRect(x: av.minX, y: av.midY - 7.5, width: av.width, height: 15),
+                   size: 12.5, weight: .bold, color: tint, align: .center)
 
         // Trois lignes : expéditeur, objet, aperçu. Les ordonnées descendent
         // d'un pas régulier depuis le haut, ce qui garde le même interligne
@@ -6525,13 +7334,18 @@ final class MailRow: NSView {
         let line2 = NSRect(x: 0, y: top - 41, width: 0, height: 16)   // objet
         let line3 = NSRect(x: 0, y: top - 58, width: 0, height: 14)   // aperçu
 
-        // La pastille de non-lu garde sa place même absente : sans cette
-        // réserve, le texte d'un message lu partait 12 pt à gauche de celui
-        // d'un non-lu, et la colonne ondulait d'une ligne à l'autre.
-        let x: CGFloat = 34
+        // Le texte commence après la pastille, toujours à la même abscisse :
+        // le non-lu se marque sur la pastille, pas en décalant la colonne,
+        // qui ondulait d'une ligne à l'autre quand la puce prenait sa place.
+        let x: CGFloat = av.maxX + 10
         if message.unread {
+            let d = NSRect(x: av.minX - 1, y: av.maxY - 9, width: 10, height: 10)
+            // Un liseré sombre détache la puce du disque coloré, sinon les
+            // deux teintes se touchent et la puce disparaît.
+            TH.base.setFill()
+            NSBezierPath(ovalIn: d.insetBy(dx: -1.5, dy: -1.5)).fill()
             TH.accent.setFill()
-            NSBezierPath(ovalIn: NSRect(x: 20, y: line1.midY - 3.5, width: 7, height: 7)).fill()
+            NSBezierPath(ovalIn: d).fill()
         }
 
         // Date et verdict à droite de la première ligne.
@@ -6599,7 +7413,17 @@ final class MailPanelView: NSView {
     private var replyBtn: GlassButton!
     private var modeSeg: SegmentedBar!
     private var bodyScrollView: NSScrollView!
-    private var mode = 0                  // 0 boîte · 1 rédaction
+    private var mode = 0                  // 0 boîte · 1 lecture · 2 rédaction
+    // ── Lecture ──
+    private var readerCard: NSView!
+    private var readerDisc: InitialsDisc!
+    private var readerFrom: NSTextField!
+    private var readerAddress: NSTextField!
+    private var readerSubject: NSTextField!
+    private var readerMeta: NSTextField!
+    private var readerScroll: NSScrollView!
+    private var readerText: NSTextView!
+    private var deleteBtn: GlassButton!
     private var selected: MailMessage?
     private var lastMessages: [MailMessage] = []
     private var replyRef: String = ""
@@ -6641,6 +7465,7 @@ final class MailPanelView: NSView {
         // Chacun occupe maintenant toute la hauteur disponible.
         modeSeg = SegmentedBar(frame: NSRect(x: 0, y: 436, width: W, height: 36),
                                items: [SegmentedBar.Item(title: "Boîte", icon: "tray.full.fill"),
+                                       SegmentedBar.Item(title: "Lecture", icon: "doc.text"),
                                        SegmentedBar.Item(title: "Rédiger", icon: "square.and.pencil")],
                                selected: 0)
         modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
@@ -6722,13 +7547,61 @@ final class MailPanelView: NSView {
         bodyView = tv
         addSubview(bodyScroll)
 
+        // ── Mode Lecture ──
+        //
+        //  Le corps est déjà rapatrié et décodé lors du relevé de la boîte :
+        //  lire un message ne demande donc aucun aller-retour réseau de
+        //  plus, seulement de présenter proprement ce qu'on a.
+        readerCard = mkCard(self, NSRect(x: 0, y: 318, width: W, height: 106), radius: 14, alpha: 0.06)
+
+        readerDisc = InitialsDisc(frame: NSRect(x: 14, y: 48, width: 44, height: 44))
+        readerCard.addSubview(readerDisc)
+        readerFrom = mkLabel("", NSRect(x: 70, y: 72, width: W - 90, height: 20), 13.5, .bold)
+        readerAddress = mkLabel("", NSRect(x: 70, y: 52, width: W - 90, height: 15), 10.5, .regular, alpha: 0.42)
+        readerSubject = mkLabel("", NSRect(x: 14, y: 26, width: W - 28, height: 19), 12.5, .semibold, alpha: 0.82)
+        readerMeta = mkLabel("", NSRect(x: 14, y: 6, width: W - 28, height: 15), 10, .medium, alpha: 0.5)
+        readerCard.addSubview(readerFrom)
+        readerCard.addSubview(readerAddress)
+        readerCard.addSubview(readerSubject)
+        readerCard.addSubview(readerMeta)
+
+        readerScroll = NSScrollView(frame: NSRect(x: 0, y: 66, width: W, height: 240))
+        readerScroll.hasVerticalScroller = true
+        readerScroll.scrollerStyle = .overlay
+        readerScroll.drawsBackground = false
+        readerText = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 240))
+        readerText.isEditable = false
+        // Sélectionnable : on veut pouvoir copier un code, une adresse,
+        // un numéro de commande sans ouvrir Mail.
+        readerText.isSelectable = true
+        readerText.drawsBackground = false
+        readerText.isRichText = false
+        readerText.font = NSFont.systemFont(ofSize: 13)
+        readerText.textColor = TH.dim(0.88)
+        readerText.textContainerInset = NSSize(width: 14, height: 12)
+        readerText.isVerticallyResizable = true
+        readerText.isHorizontallyResizable = false
+        readerText.autoresizingMask = [.width]
+        readerText.minSize = NSSize(width: 0, height: 240)
+        readerText.maxSize = NSSize(width: 10_000, height: 10_000)
+        readerText.textContainer?.widthTracksTextView = true
+        // Interligne large : c'est ce qui sépare un courriel qu'on lit
+        // d'un bloc de texte qu'on déchiffre.
+        let para = NSMutableParagraphStyle()
+        para.lineHeightMultiple = 1.38
+        para.paragraphSpacing = 7
+        readerText.defaultParagraphStyle = para
+        readerScroll.documentView = readerText
+        addSubview(readerScroll)
+
         statusLabel = mkLabel("", NSRect(x: 0, y: 46, width: W, height: 16), 10.5, .regular, alpha: 0.45, .center)
         addSubview(statusLabel)
 
-        let bw = (W - 48) / 5
+        let bw = (W - 60) / 6
         let specs: [(String, String, Bool, () -> Void)] = [
             ("Envoyer", "paperplane.fill", true, { [weak self] in self?.send() }),
             ("Répondre", "arrowshape.turn.up.left.fill", false, { [weak self] in self?.reply() }),
+            ("Supprimer", "trash.fill", false, { [weak self] in self?.deleteSelected() }),
             ("Analyser", "shield.lefthalf.filled", false, { [weak self] in self?.analyzeAll() }),
             ("Compte", "person.crop.circle", false, { [weak self] in self?.accountDialog() }),
             ("Actualiser", "arrow.clockwise", false, { [weak self] in self?.refresh() })
@@ -6743,6 +7616,9 @@ final class MailPanelView: NSView {
         }
         replyBtn = made[1]
         replyBtn.enabledFlag = false
+        deleteBtn = made[2]
+        deleteBtn.enabledFlag = false
+        deleteBtn.destructive = true
         setMode(0)
     }
 
@@ -6751,24 +7627,118 @@ final class MailPanelView: NSView {
     private func setMode(_ i: Int) {
         mode = i
         modeSeg.selected = i
-        let box = (i == 0)
+        let box = (i == 0), read = (i == 1), write = (i == 2)
         scroll.isHidden = !box
         // La carte d'analyse reste en place même sans sélection, avec sa
         // phrase d'attente : la faire apparaître et disparaître faisait
         // sursauter le bas du panneau à chaque clic.
         threatCard.isHidden = !box
-        toField.isHidden = box
-        subjectField.isHidden = box
-        bodyScrollView?.isHidden = box
-        accountLabel.isHidden = box
-        if !box { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
+        readerCard.isHidden = !read
+        readerScroll.isHidden = !read
+        toField.isHidden = !write
+        subjectField.isHidden = !write
+        bodyScrollView?.isHidden = !write
+        accountLabel.isHidden = !write
+        if write { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
+        if read { window?.makeFirstResponder(readerText) }
+    }
+
+    /// Ouvre un message en lecture. Appelé au clic sur une ligne : lire
+    /// est ce qu'on veut faire d'un courriel, et il serait étrange de
+    /// devoir viser un onglet pour y arriver.
+    private func open(_ m: MailMessage) {
+        select(m)
+        fillReader(m)
+        setMode(1)
+    }
+
+    private func fillReader(_ m: MailMessage) {
+        readerDisc.message = m
+        readerFrom.stringValue = m.shortSender.isEmpty ? "(expéditeur inconnu)" : m.shortSender
+        readerAddress.stringValue = m.address
+        readerSubject.stringValue = m.subject.isEmpty ? "(sans objet)" : m.subject
+
+        let lvl = m.threat.level
+        var meta = MailDate.parse(m.date).map { d -> String in
+            let f = DateFormatter()
+            f.setLocalizedDateFormatFromTemplate("EEEEdMMMMyHm")
+            return f.string(from: d)
+        } ?? m.date
+        if lvl != .clean { meta += "  ·  " + lvl.label }
+        if !m.attachments.isEmpty {
+            meta += "  ·  " + m.attachments.joined(separator: ", ")
+        }
+        readerMeta.stringValue = meta
+        readerMeta.textColor = lvl == .clean ? TH.dim(0.5) : lvl.color
+
+        let body = m.readableBody
+        readerText.string = body.isEmpty
+            ? "Le corps de ce message n'a pas pu être rapatrié. Ouvrez-le dans Mail pour le lire en entier."
+            : body
+        // Le style par défaut ne s'applique qu'à la saisie : un texte posé
+        // d'un bloc garde ses propres attributs, et l'interligne large
+        // serait perdu si on ne le réappliquait pas ici.
+        if let para = readerText.defaultParagraphStyle {
+            let all = NSRange(location: 0, length: readerText.string.utf16.count)
+            readerText.textStorage?.addAttributes([.paragraphStyle: para,
+                                                   .font: NSFont.systemFont(ofSize: 13),
+                                                   .foregroundColor: TH.dim(0.88)], range: all)
+        }
+        readerText.scroll(NSPoint(x: 0, y: 0))
+    }
+
+    /// Met le message sélectionné à la corbeille du compte. Rien n'est
+    /// effacé : le serveur le garde, et il se reprend depuis la corbeille.
+    private func deleteSelected() {
+        guard let m = selected else {
+            statusLabel.stringValue = "Choisissez d'abord un message."
+            return
+        }
+        guard !m.uid.isEmpty, MailRouter.gmailReady else {
+            statusLabel.stringValue = "La suppression demande un compte relié — "
+                + "par Mail.app, BUD ne fait que lire."
+            return
+        }
+        statusLabel.stringValue = "Mise à la corbeille…"
+        let uid = m.uid
+        DispatchQueue.global(qos: .userInitiated).async {
+            let err = MailRouter.trash([uid])
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self else { return }
+                if let err = err {
+                    s.statusLabel.stringValue = err
+                } else {
+                    s.statusLabel.stringValue = "Message mis à la corbeille."
+                    s.selected = nil
+                    s.replyBtn.enabledFlag = false
+                    s.deleteBtn.enabledFlag = false
+                    if s.mode == 1 { s.setMode(0) }
+                    s.refresh()
+                }
+            }
+        }
     }
 
     // ── Sélection d'un message ──
 
+    /// Un balayage est vite fait, et parfois fait sans le vouloir : la
+    /// suppression demande donc confirmation, alors que « Répondre » part
+    /// directement — répondre ne détruit rien.
+    private func confirmSwipeDelete(_ m: MailMessage) {
+        let a = NSAlert()
+        a.messageText = "Mettre ce message à la corbeille ?"
+        a.informativeText = "\(m.shortSender) — \(m.subject.isEmpty ? "(sans objet)" : m.subject)\n\n"
+            + "Il part dans la corbeille du compte, d'où vous pouvez le reprendre."
+        a.addButton(withTitle: "Mettre à la corbeille")
+        a.addButton(withTitle: "Annuler")
+        a.alertStyle = .warning
+        if a.runModal() == .alertFirstButtonReturn { deleteSelected() }
+    }
+
     private func select(_ m: MailMessage) {
         selected = m
         replyBtn.enabledFlag = true
+        deleteBtn.enabledFlag = !m.uid.isEmpty && MailRouter.gmailReady
         isolateBtn.enabledFlag = !m.uid.isEmpty && MailRouter.gmailReady
         for r in rows { (r as? MailRow)?.selected = (r as? MailRow)?.message.uid == m.uid }
 
@@ -7131,7 +8101,15 @@ final class MailPanelView: NSView {
         for (i, m) in msgs.enumerated() {
             let y = totalH - CGFloat(i + 1) * rowH + 6
             let row = MailRow(frame: NSRect(x: 0, y: y, width: W, height: rowH - 6), message: m)
-            row.onSelect = { [weak self] msg in self?.select(msg) }
+            row.onSelect = { [weak self] msg in self?.open(msg) }
+            row.onSwipeDelete = { [weak self] msg in
+                self?.select(msg)
+                self?.confirmSwipeDelete(msg)
+            }
+            row.onSwipeReply = { [weak self] msg in
+                self?.select(msg)
+                self?.reply()
+            }
             listHost.addSubview(row)
             rows.append(row)
         }
@@ -10209,6 +11187,91 @@ final class HeroHeader: NSView {
 //  Boutons
 // ═══════════════════════════════════════════════════════════
 
+/// Le capteur de raccourci : un clic, puis la combinaison qu'on tape.
+///
+/// Le moniteur est **local** et non global : il ne doit intercepter les
+/// touches que pendant qu'on enregistre, et seulement dans la fenêtre de
+/// BUD. Un moniteur global avalerait les frappes de toutes les
+/// applications tant que l'enregistrement serait ouvert.
+final class KeyRecorder: NSView {
+    var combo: String { didSet { needsDisplay = true } }
+    var onChange: ((String) -> Void)?
+    /// Phrase à afficher quand une combinaison est refusée.
+    var onRefuse: ((String) -> Void)?
+
+    private var recording = false { didSet { needsDisplay = true } }
+    private var monitor: Any?
+    private var hover = false
+    private var track: NSTrackingArea?
+
+    init(frame: NSRect, combo: String) {
+        self.combo = combo
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    deinit { stopRecording() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = track { removeTrackingArea(a) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                               owner: self, userInfo: nil)
+        addTrackingArea(a)
+        track = a
+    }
+    override func mouseEntered(with e: NSEvent) { hover = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hover = false; needsDisplay = true }
+
+    override func mouseDown(with e: NSEvent) {
+        recording ? stopRecording() : startRecording()
+    }
+
+    private func startRecording() {
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] ev in
+            guard let s = self else { return ev }
+            // Échap annule, sans rien changer.
+            if ev.keyCode == 53 { s.stopRecording(); return nil }
+            guard let ch = ev.charactersIgnoringModifiers?.lowercased(), !ch.isEmpty,
+                  let first = ch.first, first.isLetter || first.isNumber else {
+                s.onRefuse?("Choisissez une lettre ou un chiffre.")
+                return nil
+            }
+            let candidate = Shortcuts.encode(ev.modifierFlags, String(first))
+            guard Shortcuts.isUsable(candidate) else {
+                s.onRefuse?("Il faut au moins ⌘, ⌥ ou ⌃ — sans quoi le raccourci "
+                    + "intercepterait votre frappe dans toutes les applications.")
+                return nil
+            }
+            s.combo = candidate
+            s.onChange?(candidate)
+            s.stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        monitor = nil
+        recording = false
+    }
+
+    override func draw(_ dirty: NSRect) {
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let p = capsule(r)
+        TH.fill(recording ? 0.18 : (hover ? 0.12 : 0.07)).setFill()
+        p.fill()
+        (recording ? TH.accent.withAlphaComponent(0.8) : TH.fill(0.12)).setStroke()
+        p.lineWidth = recording ? 1.5 : 1
+        p.stroke()
+        drawString(recording ? "tapez…" : Shortcuts.display(combo),
+                   in: NSRect(x: r.minX, y: r.midY - 7, width: r.width, height: 15),
+                   size: 11.5, weight: .semibold,
+                   color: recording ? TH.accent : TH.text, align: .center, mono: !recording)
+    }
+}
+
 final class GlassButton: NSView {
     var title: String { didSet { needsDisplay = true } }
     var iconName: String? { didSet { needsDisplay = true } }
@@ -10219,6 +11282,9 @@ final class GlassButton: NSView {
     var alignLeft = false
     var compact = false
     var idx = 0
+    /// Teinte propre au bouton, pour colorer un groupe d'outils. `nil`
+    /// laisse l'accent général choisi par l'utilisateur.
+    var accentTint: NSColor? { didSet { needsDisplay = true } }
     var onClick: ((GlassButton) -> Void)?
 
     private var hoverT: CGFloat = 0
@@ -10290,7 +11356,9 @@ final class GlassButton: NSView {
         let lift = pressT
         let r = bounds.insetBy(dx: 0.5 + lift, dy: 0.5 + lift)
         let path = capsule(r)
-        let tint = destructive ? dangerColor : TH.accent
+        // La teinte propre du bouton l'emporte sur l'accent général, sauf
+        // pour un bouton destructeur, qui reste rouge quoi qu'on demande.
+        let tint = destructive ? dangerColor : (accentTint ?? TH.accent)
 
         if !enabledFlag {
             TH.fill(0.04).setFill()
@@ -10320,13 +11388,18 @@ final class GlassButton: NSView {
 
         let fg: NSColor = !enabledFlag ? TH.dim(0.25)
                         : ((prominent || selected) ? TH.onAccent : (destructive ? dangerColor : TH.text))
+        // L'icône peut porter la teinte du groupe pendant que le titre
+        // reste lisible : colorer les deux rendrait le texte pâle.
+        let ig: NSColor = !enabledFlag ? TH.dim(0.25)
+                        : ((prominent || selected) ? TH.onAccent
+                           : (destructive ? dangerColor : (accentTint ?? TH.text)))
         let fontSize: CGFloat = compact ? 11.5 : 12
         let tw = textWidth(title, size: fontSize, weight: .semibold)
 
         if title.isEmpty {
             if let icon = iconName {
                 drawSymbol(icon, center: NSPoint(x: r.midX, y: r.midY), size: compact ? 12 : 13,
-                           weight: .semibold, color: fg)
+                           weight: .semibold, color: ig)
             }
             return
         }
@@ -10335,7 +11408,7 @@ final class GlassButton: NSView {
             var x = r.minX + 14
             if let icon = iconName {
                 drawSymbol(icon, center: NSPoint(x: x + 7, y: r.midY), size: compact ? 12 : 13,
-                           weight: .semibold, color: fg)
+                           weight: .semibold, color: ig)
                 x += 26
             }
             drawString(title, in: NSRect(x: x, y: r.midY - 8, width: max(10, r.maxX - 12 - x), height: 16),
@@ -10346,7 +11419,7 @@ final class GlassButton: NSView {
             var x = r.midX - block / 2
             if let icon = iconName {
                 drawSymbol(icon, center: NSPoint(x: x + 7, y: r.midY), size: compact ? 12 : 13,
-                           weight: .semibold, color: fg)
+                           weight: .semibold, color: ig)
                 x += iconW
             }
             drawString(title, in: NSRect(x: x, y: r.midY - 8, width: max(10, r.maxX - 8 - x), height: 16),
@@ -10766,10 +11839,23 @@ final class NotchChrome: NSView {
                                        width: max(40, b.maxX - mx - reserved), height: 16),
                             size: 11.5, color: TH.text)
             } else {
+                // L'heure comme sur un iPhone : collée à gauche, en gras,
+                // avec la date du jour à sa droite en plus discret. Les
+                // chiffres sont à largeur fixe, sinon l'heure tremblerait
+                // à chaque minute — un « 1 » est plus étroit qu'un « 8 ».
                 let t = clockString()
-                let tw = textWidth(t, size: 12.5, weight: .semibold, mono: true)
-                drawString(t, in: NSRect(x: b.midX - tw / 2 + 6, y: b.midY - 8, width: tw + 2, height: 17),
-                           size: 12.5, weight: .semibold, color: TH.text, mono: true)
+                let tw = textWidth(t, size: 14, weight: .bold, mono: true)
+                drawString(t, in: NSRect(x: 50, y: b.midY - 9, width: tw + 3, height: 19),
+                           size: 14, weight: .bold, color: TH.text, mono: true)
+
+                let reserved: CGFloat = alertCount > 0 || badge != nil ? 34 : 14
+                let dx = 50 + tw + 9
+                let dw = b.maxX - dx - reserved
+                if dw > 40 {
+                    drawString(shortDateString(),
+                               in: NSRect(x: dx, y: b.midY - 7, width: dw, height: 15),
+                               size: 10.5, weight: .medium, color: TH.dim(0.42))
+                }
             }
             if alertCount > 0 {
                 let txt = alertCount > 9 ? "9+" : "\(alertCount)"
@@ -11054,6 +12140,103 @@ final class ToggleRow: NSView {
         let labelMax = max(10, track.minX - labelX - 8)
         drawString(title, in: NSRect(x: labelX, y: r.midY - 8, width: labelMax, height: 16),
                    size: narrow ? 11 : 11.5, weight: .medium, color: isOn ? TH.text : TH.dim(0.65))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  La fenêtre des raccourcis
+//
+//  Une fenêtre à part, et non une section des Réglages : les
+//  cinq rangées d'interrupteurs occupent déjà le panneau jusqu'à
+//  six points du bord. Dix raccourcis n'y entraient pas sans
+//  tout recomposer, et une liste qu'on modifie mérite de la
+//  place.
+// ═══════════════════════════════════════════════════════════
+
+final class ShortcutsWindow: NSWindowController {
+
+    /// Appelé à chaque changement : l'action et son nouveau raccourci.
+    var onSet: ((String, String) -> Void)?
+    /// Appelé quand l'utilisateur rend tout à l'usine.
+    var onReset: (() -> Void)?
+
+    private var recorders: [String: KeyRecorder] = [:]
+    private var note: NSTextField!
+    private var current: (String) -> String
+
+    init(current: @escaping (String) -> String) {
+        self.current = current
+        let rows = Shortcuts.actions.count
+        let H: CGFloat = CGFloat(rows) * 42 + 132
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: H),
+                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "Raccourcis de BUD"
+        w.isReleasedWhenClosed = false
+        w.center()
+        super.init(window: w)
+        build(H)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func build(_ H: CGFloat) {
+        guard let content = window?.contentView else { return }
+        let W: CGFloat = 520
+
+        let title = mkLabel("Choisissez vos raccourcis",
+                            NSRect(x: 22, y: H - 44, width: W - 44, height: 22), 15, .bold)
+        content.addSubview(title)
+        let sub = mkLabel("Cliquez un raccourci, puis tapez la combinaison. Échap annule.",
+                          NSRect(x: 22, y: H - 64, width: W - 44, height: 16), 11.5, .regular, alpha: 0.5)
+        content.addSubview(sub)
+
+        for (i, a) in Shortcuts.actions.enumerated() {
+            let y = H - 96 - CGFloat(i) * 42
+            let lab = mkLabel(a.label, NSRect(x: 22, y: y, width: W - 190, height: 20), 12.5, .medium)
+            content.addSubview(lab)
+
+            let rec = KeyRecorder(frame: NSRect(x: W - 152, y: y - 5, width: 130, height: 30),
+                                  combo: current(a.key))
+            let key = a.key
+            rec.onChange = { [weak self] combo in
+                self?.onSet?(key, combo)
+                self?.note.stringValue = "\(a.label) : \(Shortcuts.display(combo))"
+                self?.note.textColor = TH.dim(0.55)
+            }
+            rec.onRefuse = { [weak self] why in
+                self?.note.stringValue = why
+                self?.note.textColor = dangerColor
+            }
+            content.addSubview(rec)
+            recorders[a.key] = rec
+        }
+
+        note = mkLabel("", NSRect(x: 22, y: 50, width: W - 44, height: 30), 11, .regular, alpha: 0.55)
+        note.lineBreakMode = .byWordWrapping
+        note.maximumNumberOfLines = 2
+        note.cell?.usesSingleLineMode = false
+        note.cell?.wraps = true
+        content.addSubview(note)
+
+        let reset = GlassButton(frame: NSRect(x: 22, y: 12, width: 190, height: 34),
+                                title: "Rendre les raccourcis d'usine", icon: "arrow.counterclockwise")
+        reset.onClick = { [weak self] _ in
+            guard let s = self else { return }
+            s.onReset?()
+            for a in Shortcuts.actions { s.recorders[a.key]?.combo = a.fallback }
+            s.note.stringValue = "Raccourcis d'usine rétablis."
+            s.note.textColor = TH.dim(0.55)
+        }
+        content.addSubview(reset)
+
+        let done = GlassButton(frame: NSRect(x: W - 122, y: 12, width: 100, height: 34),
+                               title: "Terminé", icon: "checkmark", prominent: true)
+        done.onClick = { [weak self] _ in self?.window?.close() }
+        content.addSubview(done)
+    }
+
+    /// Relit les raccourcis en vigueur — utile si l'état a changé ailleurs.
+    func refresh() {
+        for a in Shortcuts.actions { recorders[a.key]?.combo = current(a.key) }
     }
 }
 EOF_BUDUI_SWIFT
@@ -11651,6 +12834,298 @@ final class UpdateCardView: NSView {
 }
 EOF_BUDUPDATE_SWIFT
 
+cat << 'EOF_BUDVOICE_SWIFT' > "$SRC_DIR/BudVoice.swift"
+import Cocoa
+import Speech
+import AVFoundation
+
+// ═══════════════════════════════════════════════════════════
+//  Dictée — reconnaissance vocale, sur l'appareil seulement
+//
+//  Le reste de BUD ne fait rien sortir de la machine : l'analyse
+//  de hameçonnage est locale, la conversation est locale, les
+//  jetons restent dans le trousseau. La dictée ne fera pas
+//  exception.
+//
+//  Or `SFSpeechRecognizer` envoie l'audio aux serveurs d'Apple
+//  par défaut. `requiresOnDeviceRecognition` l'en empêche, mais
+//  la documentation est explicite : « The request only honors
+//  this setting if supportsOnDeviceRecognition is also true. »
+//  Autrement dit, poser le drapeau sans vérifier ne garantit
+//  rien du tout.
+//
+//  Donc : si ce Mac ne sait pas reconnaître le français hors
+//  ligne, BUD refuse la dictée et dit pourquoi. Pas de repli
+//  silencieux sur le réseau.
+// ═══════════════════════════════════════════════════════════
+
+final class BudVoice {
+
+    static let shared = BudVoice()
+
+    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "fr_FR"))
+    private let engine = AVAudioEngine()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private var hardStop: Timer?
+    private var silence: Timer?
+    private var lastText = ""
+
+    private(set) var listening = false
+
+    /// Texte en cours de reconnaissance, à chaque mot.
+    var onPartial: ((String) -> Void)?
+    /// Texte retenu quand l'utilisateur s'arrête de parler.
+    var onFinal: ((String) -> Void)?
+    /// Une phrase à montrer : refus, autorisation manquante, panne.
+    var onTrouble: ((String) -> Void)?
+    /// Changement d'état, pour que le bouton suive.
+    var onState: (() -> Void)?
+
+    private init() {}
+
+    // ─────────────────────────────────────────────────────────
+    //  Disponibilité
+    // ─────────────────────────────────────────────────────────
+
+    /// `nil` si la dictée est possible, sinon la raison, en clair.
+    func unavailableReason() -> String? {
+        guard let r = recognizer else {
+            return "La reconnaissance du français n'est pas installée sur ce Mac."
+        }
+        guard r.supportsOnDeviceRecognition else {
+            return "Ce Mac ne sait pas reconnaître la parole sans l'envoyer aux serveurs d'Apple. "
+                + "BUD ne fera pas sortir votre voix de la machine, donc la dictée reste fermée. "
+                + "Pour l'activer : Réglages Système → Clavier → Dictée, et téléchargez le français."
+        }
+        guard r.isAvailable else {
+            return "La reconnaissance vocale est momentanément indisponible."
+        }
+        return nil
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Marche et arrêt
+    // ─────────────────────────────────────────────────────────
+
+    func toggle() { listening ? stop(final: true) : start() }
+
+    func start() {
+        guard !listening else { return }
+        if let why = unavailableReason() { onTrouble?(why); return }
+
+        // Deux autorisations distinctes, et deux refus distincts : la
+        // reconnaissance vocale et le microphone sont deux réglages de
+        // confidentialité séparés, qu'on peut accorder l'un sans l'autre.
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
+            DispatchQueue.main.async {
+                guard let s = self else { return }
+                switch status {
+                case .authorized:
+                    s.askMicrophone()
+                case .denied, .restricted:
+                    s.onTrouble?("La reconnaissance vocale est refusée pour BUD. "
+                        + "Réglages Système → Confidentialité et sécurité → Reconnaissance vocale.")
+                case .notDetermined:
+                    s.onTrouble?("Autorisation de reconnaissance vocale non accordée.")
+                @unknown default:
+                    s.onTrouble?("Autorisation de reconnaissance vocale indéterminée.")
+                }
+            }
+        }
+    }
+
+    private func askMicrophone() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            beginListening()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] ok in
+                DispatchQueue.main.async {
+                    guard let s = self else { return }
+                    if ok { s.beginListening() }
+                    else { s.onTrouble?("Sans microphone, BUD ne peut pas vous entendre.") }
+                }
+            }
+        default:
+            onTrouble?("Le microphone est refusé pour BUD. "
+                + "Réglages Système → Confidentialité et sécurité → Microphone.")
+        }
+    }
+
+    private func beginListening() {
+        guard !listening, let recognizer = recognizer else { return }
+
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        // Le drapeau qui compte. `unavailableReason()` a déjà vérifié que
+        // ce Mac l'honore : sans cette vérification, le poser ne serait
+        // qu'une intention.
+        req.requiresOnDeviceRecognition = true
+        request = req
+
+        let input = engine.inputNode
+        let fmt = input.outputFormat(forBus: 0)
+        // Sans entrée audio valable, `installTap` lève une exception
+        // Objective-C, que Swift ne sait pas rattraper : l'application
+        // s'arrêterait net. On regarde donc avant de poser la prise.
+        guard fmt.channelCount > 0, fmt.sampleRate > 0 else {
+            onTrouble?("Aucune entrée audio utilisable. Vérifiez le microphone dans Réglages Système → Son.")
+            request = nil
+            return
+        }
+
+        input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buf, _ in
+            self?.request?.append(buf)
+        }
+
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            request = nil
+            onTrouble?("Le moteur audio n'a pas démarré : \(error.localizedDescription)")
+            return
+        }
+
+        lastText = ""
+        listening = true
+        onState?()
+
+        task = recognizer.recognitionTask(with: req) { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let s = self, s.listening else { return }
+                if let r = result {
+                    let text = r.bestTranscription.formattedString
+                    if !text.isEmpty {
+                        s.lastText = text
+                        s.onPartial?(text)
+                        s.armSilence()
+                    }
+                    if r.isFinal { s.stop(final: true) }
+                } else if error != nil {
+                    // Une erreur après de la parole reconnue n'est pas un
+                    // échec : c'est souvent la fin du flux. On garde le texte.
+                    s.stop(final: !s.lastText.isEmpty)
+                    if s.lastText.isEmpty {
+                        s.onTrouble?("Je n'ai rien compris. Réessayez en parlant un peu plus fort.")
+                    }
+                }
+            }
+        }
+
+        // Deux garde-fous : on ne reste pas à écouter indéfiniment, et on
+        // conclut dès que la phrase est finie plutôt que d'attendre.
+        hardStop?.invalidate()
+        hardStop = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
+            self?.stop(final: true)
+        }
+        armSilence()
+    }
+
+    /// Relancé à chaque mot reconnu : deux secondes sans rien de neuf, et
+    /// BUD considère la phrase terminée.
+    private func armSilence() {
+        silence?.invalidate()
+        silence = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            self?.stop(final: true)
+        }
+    }
+
+    func stop(final: Bool) {
+        hardStop?.invalidate(); hardStop = nil
+        silence?.invalidate();  silence = nil
+        guard listening else { return }
+        listening = false
+
+        if engine.isRunning {
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        request?.endAudio()
+        task?.cancel()
+        request = nil
+        task = nil
+        onState?()
+
+        let text = lastText.trimmingCharacters(in: .whitespacesAndNewlines)
+        lastText = ""
+        if final && !text.isEmpty { onFinal?(text) }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le bouton de dictée
+//
+//  Un micro qui pulse pendant l'écoute, et trois anneaux qui
+//  s'écartent : il faut voir d'un coup d'œil que le Mac écoute.
+// ═══════════════════════════════════════════════════════════
+
+final class MicButton: NSView {
+    var listening = false { didSet { listening ? startPulse() : stopPulse(); needsDisplay = true } }
+    var onClick: (() -> Void)?
+
+    private var t: CGFloat = 0
+    private var anim: Timer?
+    private var hover = false
+    private var track: NSTrackingArea?
+
+    override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true }
+    required init?(coder: NSCoder) { fatalError() }
+    deinit { anim?.invalidate() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = track { removeTrackingArea(a) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                               owner: self, userInfo: nil)
+        addTrackingArea(a)
+        track = a
+    }
+    override func mouseEntered(with e: NSEvent) { hover = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hover = false; needsDisplay = true }
+    override func mouseDown(with e: NSEvent) { onClick?() }
+
+    private func startPulse() {
+        anim?.invalidate()
+        anim = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            guard let s = self else { return }
+            s.t += 0.055
+            s.needsDisplay = true
+        }
+    }
+    private func stopPulse() { anim?.invalidate(); anim = nil; t = 0 }
+
+    override func draw(_ dirty: NSRect) {
+        let b = bounds
+        let c = NSPoint(x: b.midX, y: b.midY)
+        let col = listening ? dangerColor : (hover ? TH.text : TH.dim(0.55))
+
+        if listening {
+            // Trois anneaux décalés d'un tiers de cycle, qui grandissent
+            // en s'effaçant : l'onde qui part du micro.
+            for k in 0..<3 {
+                let ph = (t + CGFloat(k) / 3).truncatingRemainder(dividingBy: 1)
+                let rad = 9 + ph * 11
+                let a = (1 - ph) * 0.34
+                col.withAlphaComponent(a).setStroke()
+                let p = NSBezierPath(ovalIn: NSRect(x: c.x - rad, y: c.y - rad,
+                                                    width: rad * 2, height: rad * 2))
+                p.lineWidth = 1.4
+                p.stroke()
+            }
+        }
+
+        let disc = NSRect(x: c.x - 13, y: c.y - 13, width: 26, height: 26)
+        TH.fill(listening ? 0.16 : (hover ? 0.12 : 0.07)).setFill()
+        NSBezierPath(ovalIn: disc).fill()
+        drawSymbol(listening ? "waveform" : "mic.fill", center: c, size: 13,
+                   weight: .semibold, color: col)
+    }
+}
+EOF_BUDVOICE_SWIFT
+
 cat << 'EOF_MAIN_SWIFT' > "$SRC_DIR/main.swift"
 import Cocoa
 
@@ -12064,7 +13539,8 @@ else
 fi
 
 FRAMEWORKS=(-framework Cocoa -framework IOKit -framework Carbon
-            -framework Security -framework Network -framework CoreImage)
+            -framework Security -framework Network -framework CoreImage
+            -framework Speech -framework AVFoundation)
 
 # ─────────────────────────────────────────────────────────────────
 #  Compilation
@@ -12169,8 +13645,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <string>BUD analyse les fichiers téléchargés et range ceux que vous déposez.</string>
   <key>NSRemovableVolumesUsageDescription</key>
   <string>BUD affiche et éjecte vos disques externes.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>BUD écoute le microphone uniquement pendant que vous tenez la dictée ouverte, et la reconnaissance se fait sur votre Mac.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>BUD ouvre un champ de saisie compatible avec la dictée système.</string>
+  <string>BUD transforme votre parole en texte sur l'appareil. Si ce Mac ne sait pas le faire hors ligne, BUD refuse la dictée plutôt que d'envoyer votre voix sur le réseau.</string>
 </dict>
 </plist>
 PLIST

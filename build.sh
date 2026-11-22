@@ -220,7 +220,8 @@ else
 fi
 
 FRAMEWORKS=(-framework Cocoa -framework IOKit -framework Carbon
-            -framework Security -framework Network -framework CoreImage)
+            -framework Security -framework Network -framework CoreImage
+            -framework Speech -framework AVFoundation)
 
 # ─────────────────────────────────────────────────────────────────
 #  Compilation
@@ -325,8 +326,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <string>BUD analyse les fichiers téléchargés et range ceux que vous déposez.</string>
   <key>NSRemovableVolumesUsageDescription</key>
   <string>BUD affiche et éjecte vos disques externes.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>BUD écoute le microphone uniquement pendant que vous tenez la dictée ouverte, et la reconnaissance se fait sur votre Mac.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>BUD ouvre un champ de saisie compatible avec la dictée système.</string>
+  <string>BUD transforme votre parole en texte sur l'appareil. Si ce Mac ne sait pas le faire hors ligne, BUD refuse la dictée plutôt que d'envoyer votre voix sur le réseau.</string>
 </dict>
 </plist>
 PLIST

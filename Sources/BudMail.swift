@@ -51,6 +51,62 @@ struct MailMessage {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return String(flat.prefix(200))
     }
+
+    /// Les deux lettres de la pastille : initiales du nom si on en a un,
+    /// sinon les deux premières de l'adresse.
+    var initials: String {
+        let src = MailGuard.displayName(in: sender)
+        let words = src.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "-" || $0 == "_" })
+            .filter { $0.first?.isLetter == true }
+        if words.count >= 2, let a = words[0].first, let b = words[1].first {
+            return String(a).uppercased() + String(b).uppercased()
+        }
+        let base = words.first.map(String.init) ?? address
+        let letters = base.filter { $0.isLetter }
+        return letters.isEmpty ? "?" : String(letters.prefix(2)).uppercased()
+    }
+
+    /// La teinte de la pastille, tirée de l'adresse : le même correspondant
+    /// garde sa couleur d'une session à l'autre, ce qui est tout l'intérêt —
+    /// on reconnaît l'expéditeur avant d'avoir lu son nom.
+    ///
+    /// Les teintes sont prises dans une roue de douze, et non en continu :
+    /// deux adresses voisines sur le cercle donneraient deux couleurs
+    /// qu'on ne distingue pas.
+    var tint: NSColor {
+        let key = address.isEmpty ? sender : address
+        var h: UInt64 = 5381
+        for b in key.lowercased().utf8 { h = (h << 5) &+ h &+ UInt64(b) }
+        let hue = CGFloat(h % 12) / 12.0
+        return NSColor(calibratedHue: hue, saturation: 0.52, brightness: 0.92, alpha: 1)
+    }
+
+    /// Le corps, prêt à lire. Beaucoup de courriels n'ont qu'une version
+    /// HTML : affiché tel quel, on lirait des balises. On ne rend pas le
+    /// HTML — on en extrait le texte, en gardant les sauts de paragraphe.
+    var readableBody: String {
+        var s = snippet
+        if s.range(of: "<(br|p|div|table|html|body)\\b", options: [.regularExpression, .caseInsensitive]) != nil {
+            // Les balises de bloc deviennent des sauts de ligne avant que
+            // tout le reste ne disparaisse, sinon le texte se recollerait
+            // en un seul paragraphe illisible.
+            s = s.replacingOccurrences(of: "<(br|/p|/div|/tr|/h[1-6])\\s*/?>", with: "\n",
+                                       options: [.regularExpression, .caseInsensitive])
+            s = s.replacingOccurrences(of: "<(script|style)\\b[^>]*>[\\s\\S]*?</\\1>", with: "",
+                                       options: [.regularExpression, .caseInsensitive])
+            s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        }
+        for (e, c) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                       ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&eacute;", "é"),
+                       ("&egrave;", "è"), ("&agrave;", "à"), ("&ccedil;", "ç"), ("&euro;", "€")] {
+            s = s.replacingOccurrences(of: e, with: c, options: .caseInsensitive)
+        }
+        // Les espaces en fin de ligne et les lignes vides en rafale : un
+        // courriel HTML converti en produit des dizaines.
+        s = s.replacingOccurrences(of: "[ \\t\u{00A0}]+\n", with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -309,6 +365,37 @@ enum MailRouter {
         }
         return GmailClient.quarantine(user: user, auth: auth, uids: uids)
     }
+
+    /// Met des messages à la corbeille du compte. Rien n'est effacé :
+    /// le serveur les garde, et ils se reprennent depuis la corbeille.
+    static func trash(_ uids: [String]) -> String? {
+        guard let (user, auth) = mode() else {
+            return "Reliez un compte Gmail pour supprimer des messages."
+        }
+        return GmailClient.trash(user: user, auth: auth, uids: uids)
+    }
+}
+
+/// La pastille d'initiales de l'expéditeur, en grand pour le lecteur.
+final class InitialsDisc: NSView {
+    var message: MailMessage? { didSet { needsDisplay = true } }
+
+    override init(frame: NSRect) { super.init(frame: frame) }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirty: NSRect) {
+        let b = bounds
+        guard let m = message else { return }
+        let t = m.tint
+        t.withAlphaComponent(0.24).setFill()
+        NSBezierPath(ovalIn: b).fill()
+        t.withAlphaComponent(0.55).setStroke()
+        let ring = NSBezierPath(ovalIn: b.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 1
+        ring.stroke()
+        drawString(m.initials, in: NSRect(x: b.minX, y: b.midY - 9, width: b.width, height: 19),
+                   size: 15.5, weight: .bold, color: t, align: .center)
+    }
 }
 
 /// Une ligne de la boîte de réception : expéditeur, objet, date et
@@ -318,8 +405,18 @@ final class MailRow: NSView {
     let message: MailMessage
     var selected = false { didSet { needsDisplay = true } }
     var onSelect: ((MailMessage) -> Void)?
+    var onSwipeDelete: ((MailMessage) -> Void)?
+    var onSwipeReply: ((MailMessage) -> Void)?
     private var hover = false
     private var track: NSTrackingArea?
+
+    /// Décalage horizontal de la carte pendant un balayage, en points.
+    /// Négatif vers la gauche, ce qui découvre « Supprimer » à droite.
+    private var dragX: CGFloat = 0
+    private var swiping = false
+    private var springT: Timer?
+    /// Au-delà de ce décalage, le geste déclenche son action au relâchement.
+    private let trigger: CGFloat = 78
 
     init(frame: NSRect, message: MailMessage) {
         self.message = message
@@ -327,6 +424,62 @@ final class MailRow: NSView {
         wantsLayer = true
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit { springT?.invalidate() }
+
+    // ═══════════ Balayage ═══════════
+    //
+    //  Un trackpad n'envoie pas de « geste de balayage » : il envoie des
+    //  événements de défilement avec une phase. On lit donc scrollWheel,
+    //  et toute la difficulté est de ne pas voler le défilement vertical
+    //  de la liste qui nous contient.
+    //
+    //  La direction est décidée une fois, au début du geste, et tenue
+    //  jusqu'au relâchement : arbitrer à chaque événement ferait sauter
+    //  la carte entre défilement et balayage au moindre tremblement.
+
+    override func scrollWheel(with e: NSEvent) {
+        // Une molette de souris n'a pas de phase et ne doit pas balayer.
+        guard e.hasPreciseScrollingDeltas else { super.scrollWheel(with: e); return }
+
+        switch e.phase {
+        case .began:
+            swiping = abs(e.scrollingDeltaX) > abs(e.scrollingDeltaY) * 1.4
+            if !swiping { super.scrollWheel(with: e) }
+        case .changed:
+            guard swiping else { super.scrollWheel(with: e); return }
+            springT?.invalidate()
+            dragX += e.scrollingDeltaX * swipeSign
+            // Au-delà du seuil, le geste résiste : on sent qu'on est allé
+            // au bout, sans pouvoir tirer la carte hors du panneau.
+            let limit: CGFloat = 132
+            if abs(dragX) > limit { dragX = dragX < 0 ? -limit : limit }
+            needsDisplay = true
+        case .ended, .cancelled:
+            guard swiping else { super.scrollWheel(with: e); return }
+            swiping = false
+            let d = dragX
+            if d <= -trigger { onSwipeDelete?(message) }
+            else if d >= trigger { onSwipeReply?(message) }
+            springBack()
+        default:
+            if !swiping { super.scrollWheel(with: e) }
+        }
+    }
+
+    /// Retour élastique à zéro. La carte revient toujours en place, même
+    /// quand l'action part : la liste se recharge derrière, et une carte
+    /// restée ouverte sur une rangée qui n'existe plus serait un fantôme.
+    private func springBack() {
+        springT?.invalidate()
+        guard dragX != 0 else { return }
+        springT = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] t in
+            guard let s = self else { t.invalidate(); return }
+            s.dragX *= 0.76
+            if abs(s.dragX) < 0.6 { s.dragX = 0; t.invalidate(); s.springT = nil }
+            s.needsDisplay = true
+        }
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -342,6 +495,50 @@ final class MailRow: NSView {
 
     override func draw(_ dirty: NSRect) {
         let r = bounds
+        if dragX != 0 { drawSwipeBackdrop(r) }
+
+        let ctx = NSGraphicsContext.current
+        ctx?.saveGraphicsState()
+        // La carte glisse, le fond d'action reste : c'est ce décalage du
+        // repère qui donne l'impression de tirer la carte de côté.
+        if dragX != 0 { ctx?.cgContext.translateBy(x: dragX, y: 0) }
+        drawCard(r)
+        ctx?.restoreGraphicsState()
+    }
+
+    /// Ce qu'on découvre sous la carte pendant le balayage : rouge et
+    /// « Supprimer » à droite quand on tire vers la gauche, bleu et
+    /// « Répondre » à gauche quand on tire vers la droite. La couleur
+    /// s'affirme au passage du seuil, pour qu'on sache que ça va partir.
+    private func drawSwipeBackdrop(_ r: NSRect) {
+        let left = dragX > 0
+        let armed = abs(dragX) >= trigger
+        let col = left ? TH.accent : dangerColor
+        let strip = left ? NSRect(x: r.minX, y: r.minY, width: dragX, height: r.height)
+                         : NSRect(x: r.maxX + dragX, y: r.minY, width: -dragX, height: r.height)
+
+        let p = NSBezierPath(roundedRect: r, xRadius: 11, yRadius: 11)
+        NSGraphicsContext.current?.saveGraphicsState()
+        p.addClip()
+        col.withAlphaComponent(armed ? 0.92 : 0.45).setFill()
+        strip.fill()
+
+        // L'étiquette reste au milieu de la bande découverte, mais jamais
+        // collée au bord : sans cette marge elle serait coupée au départ
+        // du geste, quand la bande ne fait que quelques points.
+        let cx = left ? min(strip.midX, r.minX + 54) : max(strip.midX, r.maxX - 54)
+        if abs(dragX) > 26 {
+            drawSymbol(left ? "arrowshape.turn.up.left.fill" : "trash.fill",
+                       center: NSPoint(x: cx, y: r.midY + 7), size: 15, weight: .semibold,
+                       color: .white)
+            drawString(left ? "Répondre" : "Supprimer",
+                       in: NSRect(x: cx - 48, y: r.midY - 20, width: 96, height: 13),
+                       size: 9.5, weight: .bold, color: .white, align: .center)
+        }
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
+
+    private func drawCard(_ r: NSRect) {
         let card = NSBezierPath(roundedRect: r, xRadius: 11, yRadius: 11)
         TH.fill(selected ? 0.16 : (hover ? 0.10 : 0.055)).setFill()
         card.fill()
@@ -353,10 +550,25 @@ final class MailRow: NSView {
 
         let lvl = message.threat.level
         // Liseré de verdict à gauche : vert, ambre ou rouge.
-        let bar = NSBezierPath(roundedRect: NSRect(x: 8, y: 10, width: 4, height: r.height - 20),
-                               xRadius: 2, yRadius: 2)
+        let bar = NSBezierPath(roundedRect: NSRect(x: 5, y: 10, width: 3, height: r.height - 20),
+                               xRadius: 1.5, yRadius: 1.5)
         lvl.color.withAlphaComponent(lvl == .clean ? 0.45 : 0.95).setFill()
         bar.fill()
+
+        // Pastille d'initiales, teinte tirée de l'adresse : le même
+        // correspondant garde sa couleur, et on le reconnaît avant
+        // d'avoir lu son nom.
+        let av = NSRect(x: 14, y: r.midY - 17, width: 34, height: 34)
+        let tint = message.tint
+        tint.withAlphaComponent(0.26).setFill()
+        NSBezierPath(ovalIn: av).fill()
+        tint.withAlphaComponent(0.55).setStroke()
+        let ring = NSBezierPath(ovalIn: av.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 1
+        ring.stroke()
+        drawString(message.initials,
+                   in: NSRect(x: av.minX, y: av.midY - 7.5, width: av.width, height: 15),
+                   size: 12.5, weight: .bold, color: tint, align: .center)
 
         // Trois lignes : expéditeur, objet, aperçu. Les ordonnées descendent
         // d'un pas régulier depuis le haut, ce qui garde le même interligne
@@ -366,13 +578,18 @@ final class MailRow: NSView {
         let line2 = NSRect(x: 0, y: top - 41, width: 0, height: 16)   // objet
         let line3 = NSRect(x: 0, y: top - 58, width: 0, height: 14)   // aperçu
 
-        // La pastille de non-lu garde sa place même absente : sans cette
-        // réserve, le texte d'un message lu partait 12 pt à gauche de celui
-        // d'un non-lu, et la colonne ondulait d'une ligne à l'autre.
-        let x: CGFloat = 34
+        // Le texte commence après la pastille, toujours à la même abscisse :
+        // le non-lu se marque sur la pastille, pas en décalant la colonne,
+        // qui ondulait d'une ligne à l'autre quand la puce prenait sa place.
+        let x: CGFloat = av.maxX + 10
         if message.unread {
+            let d = NSRect(x: av.minX - 1, y: av.maxY - 9, width: 10, height: 10)
+            // Un liseré sombre détache la puce du disque coloré, sinon les
+            // deux teintes se touchent et la puce disparaît.
+            TH.base.setFill()
+            NSBezierPath(ovalIn: d.insetBy(dx: -1.5, dy: -1.5)).fill()
             TH.accent.setFill()
-            NSBezierPath(ovalIn: NSRect(x: 20, y: line1.midY - 3.5, width: 7, height: 7)).fill()
+            NSBezierPath(ovalIn: d).fill()
         }
 
         // Date et verdict à droite de la première ligne.
@@ -440,7 +657,17 @@ final class MailPanelView: NSView {
     private var replyBtn: GlassButton!
     private var modeSeg: SegmentedBar!
     private var bodyScrollView: NSScrollView!
-    private var mode = 0                  // 0 boîte · 1 rédaction
+    private var mode = 0                  // 0 boîte · 1 lecture · 2 rédaction
+    // ── Lecture ──
+    private var readerCard: NSView!
+    private var readerDisc: InitialsDisc!
+    private var readerFrom: NSTextField!
+    private var readerAddress: NSTextField!
+    private var readerSubject: NSTextField!
+    private var readerMeta: NSTextField!
+    private var readerScroll: NSScrollView!
+    private var readerText: NSTextView!
+    private var deleteBtn: GlassButton!
     private var selected: MailMessage?
     private var lastMessages: [MailMessage] = []
     private var replyRef: String = ""
@@ -482,6 +709,7 @@ final class MailPanelView: NSView {
         // Chacun occupe maintenant toute la hauteur disponible.
         modeSeg = SegmentedBar(frame: NSRect(x: 0, y: 436, width: W, height: 36),
                                items: [SegmentedBar.Item(title: "Boîte", icon: "tray.full.fill"),
+                                       SegmentedBar.Item(title: "Lecture", icon: "doc.text"),
                                        SegmentedBar.Item(title: "Rédiger", icon: "square.and.pencil")],
                                selected: 0)
         modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
@@ -563,13 +791,61 @@ final class MailPanelView: NSView {
         bodyView = tv
         addSubview(bodyScroll)
 
+        // ── Mode Lecture ──
+        //
+        //  Le corps est déjà rapatrié et décodé lors du relevé de la boîte :
+        //  lire un message ne demande donc aucun aller-retour réseau de
+        //  plus, seulement de présenter proprement ce qu'on a.
+        readerCard = mkCard(self, NSRect(x: 0, y: 318, width: W, height: 106), radius: 14, alpha: 0.06)
+
+        readerDisc = InitialsDisc(frame: NSRect(x: 14, y: 48, width: 44, height: 44))
+        readerCard.addSubview(readerDisc)
+        readerFrom = mkLabel("", NSRect(x: 70, y: 72, width: W - 90, height: 20), 13.5, .bold)
+        readerAddress = mkLabel("", NSRect(x: 70, y: 52, width: W - 90, height: 15), 10.5, .regular, alpha: 0.42)
+        readerSubject = mkLabel("", NSRect(x: 14, y: 26, width: W - 28, height: 19), 12.5, .semibold, alpha: 0.82)
+        readerMeta = mkLabel("", NSRect(x: 14, y: 6, width: W - 28, height: 15), 10, .medium, alpha: 0.5)
+        readerCard.addSubview(readerFrom)
+        readerCard.addSubview(readerAddress)
+        readerCard.addSubview(readerSubject)
+        readerCard.addSubview(readerMeta)
+
+        readerScroll = NSScrollView(frame: NSRect(x: 0, y: 66, width: W, height: 240))
+        readerScroll.hasVerticalScroller = true
+        readerScroll.scrollerStyle = .overlay
+        readerScroll.drawsBackground = false
+        readerText = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 240))
+        readerText.isEditable = false
+        // Sélectionnable : on veut pouvoir copier un code, une adresse,
+        // un numéro de commande sans ouvrir Mail.
+        readerText.isSelectable = true
+        readerText.drawsBackground = false
+        readerText.isRichText = false
+        readerText.font = NSFont.systemFont(ofSize: 13)
+        readerText.textColor = TH.dim(0.88)
+        readerText.textContainerInset = NSSize(width: 14, height: 12)
+        readerText.isVerticallyResizable = true
+        readerText.isHorizontallyResizable = false
+        readerText.autoresizingMask = [.width]
+        readerText.minSize = NSSize(width: 0, height: 240)
+        readerText.maxSize = NSSize(width: 10_000, height: 10_000)
+        readerText.textContainer?.widthTracksTextView = true
+        // Interligne large : c'est ce qui sépare un courriel qu'on lit
+        // d'un bloc de texte qu'on déchiffre.
+        let para = NSMutableParagraphStyle()
+        para.lineHeightMultiple = 1.38
+        para.paragraphSpacing = 7
+        readerText.defaultParagraphStyle = para
+        readerScroll.documentView = readerText
+        addSubview(readerScroll)
+
         statusLabel = mkLabel("", NSRect(x: 0, y: 46, width: W, height: 16), 10.5, .regular, alpha: 0.45, .center)
         addSubview(statusLabel)
 
-        let bw = (W - 48) / 5
+        let bw = (W - 60) / 6
         let specs: [(String, String, Bool, () -> Void)] = [
             ("Envoyer", "paperplane.fill", true, { [weak self] in self?.send() }),
             ("Répondre", "arrowshape.turn.up.left.fill", false, { [weak self] in self?.reply() }),
+            ("Supprimer", "trash.fill", false, { [weak self] in self?.deleteSelected() }),
             ("Analyser", "shield.lefthalf.filled", false, { [weak self] in self?.analyzeAll() }),
             ("Compte", "person.crop.circle", false, { [weak self] in self?.accountDialog() }),
             ("Actualiser", "arrow.clockwise", false, { [weak self] in self?.refresh() })
@@ -584,6 +860,9 @@ final class MailPanelView: NSView {
         }
         replyBtn = made[1]
         replyBtn.enabledFlag = false
+        deleteBtn = made[2]
+        deleteBtn.enabledFlag = false
+        deleteBtn.destructive = true
         setMode(0)
     }
 
@@ -592,24 +871,118 @@ final class MailPanelView: NSView {
     private func setMode(_ i: Int) {
         mode = i
         modeSeg.selected = i
-        let box = (i == 0)
+        let box = (i == 0), read = (i == 1), write = (i == 2)
         scroll.isHidden = !box
         // La carte d'analyse reste en place même sans sélection, avec sa
         // phrase d'attente : la faire apparaître et disparaître faisait
         // sursauter le bas du panneau à chaque clic.
         threatCard.isHidden = !box
-        toField.isHidden = box
-        subjectField.isHidden = box
-        bodyScrollView?.isHidden = box
-        accountLabel.isHidden = box
-        if !box { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
+        readerCard.isHidden = !read
+        readerScroll.isHidden = !read
+        toField.isHidden = !write
+        subjectField.isHidden = !write
+        bodyScrollView?.isHidden = !write
+        accountLabel.isHidden = !write
+        if write { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
+        if read { window?.makeFirstResponder(readerText) }
+    }
+
+    /// Ouvre un message en lecture. Appelé au clic sur une ligne : lire
+    /// est ce qu'on veut faire d'un courriel, et il serait étrange de
+    /// devoir viser un onglet pour y arriver.
+    private func open(_ m: MailMessage) {
+        select(m)
+        fillReader(m)
+        setMode(1)
+    }
+
+    private func fillReader(_ m: MailMessage) {
+        readerDisc.message = m
+        readerFrom.stringValue = m.shortSender.isEmpty ? "(expéditeur inconnu)" : m.shortSender
+        readerAddress.stringValue = m.address
+        readerSubject.stringValue = m.subject.isEmpty ? "(sans objet)" : m.subject
+
+        let lvl = m.threat.level
+        var meta = MailDate.parse(m.date).map { d -> String in
+            let f = DateFormatter()
+            f.setLocalizedDateFormatFromTemplate("EEEEdMMMMyHm")
+            return f.string(from: d)
+        } ?? m.date
+        if lvl != .clean { meta += "  ·  " + lvl.label }
+        if !m.attachments.isEmpty {
+            meta += "  ·  " + m.attachments.joined(separator: ", ")
+        }
+        readerMeta.stringValue = meta
+        readerMeta.textColor = lvl == .clean ? TH.dim(0.5) : lvl.color
+
+        let body = m.readableBody
+        readerText.string = body.isEmpty
+            ? "Le corps de ce message n'a pas pu être rapatrié. Ouvrez-le dans Mail pour le lire en entier."
+            : body
+        // Le style par défaut ne s'applique qu'à la saisie : un texte posé
+        // d'un bloc garde ses propres attributs, et l'interligne large
+        // serait perdu si on ne le réappliquait pas ici.
+        if let para = readerText.defaultParagraphStyle {
+            let all = NSRange(location: 0, length: readerText.string.utf16.count)
+            readerText.textStorage?.addAttributes([.paragraphStyle: para,
+                                                   .font: NSFont.systemFont(ofSize: 13),
+                                                   .foregroundColor: TH.dim(0.88)], range: all)
+        }
+        readerText.scroll(NSPoint(x: 0, y: 0))
+    }
+
+    /// Met le message sélectionné à la corbeille du compte. Rien n'est
+    /// effacé : le serveur le garde, et il se reprend depuis la corbeille.
+    private func deleteSelected() {
+        guard let m = selected else {
+            statusLabel.stringValue = "Choisissez d'abord un message."
+            return
+        }
+        guard !m.uid.isEmpty, MailRouter.gmailReady else {
+            statusLabel.stringValue = "La suppression demande un compte relié — "
+                + "par Mail.app, BUD ne fait que lire."
+            return
+        }
+        statusLabel.stringValue = "Mise à la corbeille…"
+        let uid = m.uid
+        DispatchQueue.global(qos: .userInitiated).async {
+            let err = MailRouter.trash([uid])
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self else { return }
+                if let err = err {
+                    s.statusLabel.stringValue = err
+                } else {
+                    s.statusLabel.stringValue = "Message mis à la corbeille."
+                    s.selected = nil
+                    s.replyBtn.enabledFlag = false
+                    s.deleteBtn.enabledFlag = false
+                    if s.mode == 1 { s.setMode(0) }
+                    s.refresh()
+                }
+            }
+        }
     }
 
     // ── Sélection d'un message ──
 
+    /// Un balayage est vite fait, et parfois fait sans le vouloir : la
+    /// suppression demande donc confirmation, alors que « Répondre » part
+    /// directement — répondre ne détruit rien.
+    private func confirmSwipeDelete(_ m: MailMessage) {
+        let a = NSAlert()
+        a.messageText = "Mettre ce message à la corbeille ?"
+        a.informativeText = "\(m.shortSender) — \(m.subject.isEmpty ? "(sans objet)" : m.subject)\n\n"
+            + "Il part dans la corbeille du compte, d'où vous pouvez le reprendre."
+        a.addButton(withTitle: "Mettre à la corbeille")
+        a.addButton(withTitle: "Annuler")
+        a.alertStyle = .warning
+        if a.runModal() == .alertFirstButtonReturn { deleteSelected() }
+    }
+
     private func select(_ m: MailMessage) {
         selected = m
         replyBtn.enabledFlag = true
+        deleteBtn.enabledFlag = !m.uid.isEmpty && MailRouter.gmailReady
         isolateBtn.enabledFlag = !m.uid.isEmpty && MailRouter.gmailReady
         for r in rows { (r as? MailRow)?.selected = (r as? MailRow)?.message.uid == m.uid }
 
@@ -972,7 +1345,15 @@ final class MailPanelView: NSView {
         for (i, m) in msgs.enumerated() {
             let y = totalH - CGFloat(i + 1) * rowH + 6
             let row = MailRow(frame: NSRect(x: 0, y: y, width: W, height: rowH - 6), message: m)
-            row.onSelect = { [weak self] msg in self?.select(msg) }
+            row.onSelect = { [weak self] msg in self?.open(msg) }
+            row.onSwipeDelete = { [weak self] msg in
+                self?.select(msg)
+                self?.confirmSwipeDelete(msg)
+            }
+            row.onSwipeReply = { [weak self] msg in
+                self?.select(msg)
+                self?.reply()
+            }
             listHost.addSubview(row)
             rows.append(row)
         }

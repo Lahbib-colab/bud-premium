@@ -35,6 +35,18 @@ struct ChatActions {
     var remindersReport: () -> String = { "" }
     var music: (String) -> String = { _ in "" }
     var giveTip: () -> String = { "" }
+    // ── Ajouts 23.6 ──
+    var batteryReport: () -> String = { "" }
+    var networkReport: () -> String = { "" }
+    var lockScreen: () -> String = { "" }
+    var sleepDisplay: () -> String = { "" }
+    /// « dark », « light » ou « toggle ».
+    var setAppearance: (String) -> String = { _ in "" }
+    /// « screen », « window » ou « selection ».
+    var screenshot: (String) -> String = { _ in "" }
+    /// Durée en minutes, et la phrase d'origine pour l'intitulé.
+    var startTimer: (Int, String) -> String = { _, _ in "" }
+    var webSearch: (String) -> String = { _ in "" }
 }
 
 enum BudBrain {
@@ -55,8 +67,9 @@ enum BudBrain {
     }
 
     static let suggestions = ["Mes mails",
-                              "Rappelle-moi de partir à 18h",
-                              "Musique suivante",
+                              "Batterie",
+                              "20 % de 480",
+                              "Capture la fenêtre",
                               "Que sais-tu faire ?"]
 
     /// Renvoie la réponse de BUD. `async` : certaines actions répondent plus tard.
@@ -86,6 +99,13 @@ enum BudBrain {
             • « rappelle-moi d'appeler Paul à 17h30 », « mes rappels »
             • « musique », « morceau suivant », « monte le volume », « aléatoire »
             • « où en sont mes agents ? », « cpu », « l'heure », « une blague »
+            • « batterie », « mon adresse IP », « verrouille l'écran »
+            • « passe en mode sombre », « capture la fenêtre »
+            • « préviens-moi dans 15 minutes »
+            • « cherche la recette du pain perdu » — ouvre une recherche web
+            • « 23 × 7 », « (120 + 80) / 4 », « 20 % de 480 » — je calcule
+            Et le micro, à côté du champ : je transcris sur votre Mac, \
+            sans envoyer votre voix nulle part.
             """
         }
         if has(t, ["heure", "quelle heure"]) {
@@ -200,14 +220,241 @@ enum BudBrain {
             }
         }
 
+        // ── Batterie, réseau, écran ──
+        if has(t, ["batterie", "charge restante", "autonomie", "secteur"]) {
+            return actions.batteryReport()
+        }
+        if has(t, ["wifi", "wi-fi", "reseau", "ip", "adresse locale", "connexion"]) {
+            return actions.networkReport()
+        }
+        if has(t, ["verrouille", "verrouiller", "ecran de veille", "bloque l ecran", "bloque la session"]) {
+            return actions.lockScreen()
+        }
+        if has(t, ["eteins l ecran", "veille ecran", "coupe l ecran", "endors l ecran"]) {
+            return actions.sleepDisplay()
+        }
+
+        // ── Apparence ──
+        if has(t, ["mode sombre", "passe en sombre", "theme sombre", "nuit"]) {
+            return actions.setAppearance("dark")
+        }
+        if has(t, ["mode clair", "passe en clair", "theme clair", "jour"]) {
+            return actions.setAppearance("light")
+        }
+        if has(t, ["apparence", "clair sombre", "bascule le theme"]) {
+            return actions.setAppearance("toggle")
+        }
+
+        // ── Capture ──
+        if has(t, ["capture", "copie d ecran", "screenshot", "photo de l ecran"]) {
+            if has(t, ["fenetre"]) { return actions.screenshot("window") }
+            if has(t, ["selection", "zone", "morceau"]) { return actions.screenshot("selection") }
+            return actions.screenshot("screen")
+        }
+
+        // ── Compte à rebours ──
+        //
+        //  « minuteur » appartient déjà au focus, plus haut : employer le
+        //  même mot ici ferait une intention morte, que la première
+        //  attraperait toujours.
+        if has(t, ["chrono", "compte a rebours", "reveille moi", "previens moi"]),
+           let n = firstNumber(in: t), n > 0, n <= 600 {
+            let unit = has(t, ["heure"]) ? 60 : 1
+            return actions.startTimer(n * unit, raw)
+        }
+
+        // ── Recherche web ──
+        if has(t, ["cherche", "recherche", "google", "trouve moi", "c est quoi"]) {
+            // On retire le verbe pour ne pas chercher « cherche la recette ».
+            var q = raw
+            for w in ["cherche sur le web", "cherche sur internet", "recherche sur le web",
+                      "cherche moi", "cherche", "recherche", "google", "trouve moi",
+                      "c'est quoi", "c est quoi"] {
+                q = q.replacingOccurrences(of: w, with: "", options: .caseInsensitive)
+            }
+            q = q.trimmingCharacters(in: CharacterSet(charactersIn: " ?!.,:;«»\"'"))
+            if q.count >= 2 { return actions.webSearch(q) }
+        }
+
         if has(t, ["comment vas tu", "ca va", "tu vas bien"]) {
             return "Je tourne à \(clockString()) sans un accroc. " + actions.vitalsReport()
         }
+
+        // ── Calcul ──
+        //
+        //  En dernier, et sous condition : une phrase quelconque contenant
+        //  un nombre ne doit pas être prise pour une opération. Il faut un
+        //  chiffre ET un opérateur, sinon « mes 5 mails » deviendrait un
+        //  calcul.
+        if let r = Calc.answer(raw) { return r }
 
         return """
         Je n'ai pas saisi. Essaie par exemple « combien d'espace me reste-t-il ? », \
         « vide la corbeille », « lance un focus de 25 minutes » ou « que sais-tu faire ? ».
         """
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Calcul
+//
+//  Écrit à la main, et non confié à `NSExpression` : celui-ci
+//  évalue bien plus qu'une opération — il sait instancier des
+//  classes et appeler des méthodes par leur nom. Lui passer
+//  une chaîne venue du champ de saisie serait lui donner les
+//  clés de l'application pour additionner deux nombres.
+//
+//  Grammaire, par priorité croissante :
+//      expr   := terme (('+' | '-') terme)*
+//      terme  := puiss (('*' | '/' | '%') puiss)*
+//      puiss  := unaire ('^' puiss)?        — associatif à droite
+//      unaire := '-'? primaire
+//      prim   := nombre | '(' expr ')'
+// ═══════════════════════════════════════════════════════════
+
+enum Calc {
+
+    /// La réponse en français, ou `nil` si ce n'était pas un calcul.
+    static func answer(_ raw: String) -> String? {
+        if let (part, whole) = percentOf(raw) {
+            return "\(format(part / 100 * whole)) — soit \(format(part)) % de \(format(whole))."
+        }
+        guard let expr = sanitize(raw), looksLikeMath(expr) else { return nil }
+        var p = Parser(Array(expr))
+        guard let v = p.parseExpression(), p.atEnd else { return nil }
+        guard v.isFinite else { return "Cette opération ne donne pas de nombre fini." }
+        return "\(format(v))"
+    }
+
+    /// « 20 % de 480 », « 7% du 250 ».
+    private static func percentOf(_ raw: String) -> (Double, Double)? {
+        let pattern = "(-?[0-9]+(?:[.,][0-9]+)?)\\s*%\\s*(?:de|du|des|of)\\s+(-?[0-9]+(?:[.,][0-9]+)?)"
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let r = NSRange(raw.startIndex..., in: raw)
+        guard let m = re.firstMatch(in: raw, range: r), m.numberOfRanges >= 3,
+              let r1 = Range(m.range(at: 1), in: raw),
+              let r2 = Range(m.range(at: 2), in: raw),
+              let a = number(String(raw[r1])), let b = number(String(raw[r2])) else { return nil }
+        return (a, b)
+    }
+
+    private static func number(_ s: String) -> Double? {
+        Double(s.replacingOccurrences(of: ",", with: "."))
+    }
+
+    /// Traduit les mots en symboles, puis ne garde que ce qui compose une
+    /// opération. Tout le reste disparaît — un mot inconnu ne doit pas
+    /// pouvoir atteindre l'analyseur.
+    private static func sanitize(_ raw: String) -> String? {
+        var s = raw.lowercased()
+            .folding(options: [.diacriticInsensitive], locale: Locale(identifier: "fr_FR"))
+        for (word, sym) in [("multiplie par", "*"), ("multiplier par", "*"),
+                            ("divise par", "/"), ("diviser par", "/"),
+                            ("puissance", "^"), ("modulo", "%"),
+                            ("plus", "+"), ("moins", "-"), ("fois", "*")] {
+            s = s.replacingOccurrences(of: word, with: sym)
+        }
+        s = s.replacingOccurrences(of: ",", with: ".")
+        let kept = s.filter { "0123456789.+-*/^%() ".contains($0) }
+        let compact = kept.replacingOccurrences(of: " ", with: "")
+        return compact.isEmpty ? nil : compact
+    }
+
+    /// Un chiffre et un opérateur au minimum : sans cette garde, « mes 5
+    /// mails » arriverait ici réduit à « 5 » et serait annoncé comme un
+    /// résultat de calcul.
+    private static func looksLikeMath(_ s: String) -> Bool {
+        let hasDigit = s.contains { $0.isNumber }
+        let ops = s.filter { "+-*/^%".contains($0) }
+        return hasDigit && !ops.isEmpty && s.count >= 3
+    }
+
+    private static func format(_ v: Double) -> String {
+        if abs(v.rounded() - v) < 1e-9 && abs(v) < 1e15 {
+            let f = NumberFormatter()
+            f.numberStyle = .decimal
+            f.locale = Locale(identifier: "fr_FR")
+            f.maximumFractionDigits = 0
+            return f.string(from: NSNumber(value: v)) ?? String(Int(v))
+        }
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.locale = Locale(identifier: "fr_FR")
+        f.maximumFractionDigits = 6
+        return f.string(from: NSNumber(value: v)) ?? String(v)
+    }
+
+    private struct Parser {
+        let c: [Character]
+        var i = 0
+        init(_ chars: [Character]) { c = chars }
+
+        var atEnd: Bool { i >= c.count }
+        private func peek() -> Character? { i < c.count ? c[i] : nil }
+
+        mutating func parseExpression() -> Double? {
+            guard var lhs = parseTerm() else { return nil }
+            while let op = peek(), op == "+" || op == "-" {
+                i += 1
+                guard let rhs = parseTerm() else { return nil }
+                lhs = (op == "+") ? lhs + rhs : lhs - rhs
+            }
+            return lhs
+        }
+
+        mutating func parseTerm() -> Double? {
+            guard var lhs = parsePower() else { return nil }
+            while let op = peek(), op == "*" || op == "/" || op == "%" {
+                i += 1
+                guard let rhs = parsePower() else { return nil }
+                switch op {
+                case "*": lhs *= rhs
+                case "/":
+                    // On ne rend pas d'infini : la division par zéro fait
+                    // échouer le calcul, et l'appelant le dira.
+                    guard rhs != 0 else { return nil }
+                    lhs /= rhs
+                default:
+                    guard rhs != 0 else { return nil }
+                    lhs = lhs.truncatingRemainder(dividingBy: rhs)
+                }
+            }
+            return lhs
+        }
+
+        mutating func parsePower() -> Double? {
+            guard let base = parseUnary() else { return nil }
+            if let op = peek(), op == "^" {
+                i += 1
+                guard let e = parsePower() else { return nil }
+                // Un exposant démesuré bloquerait le calcul : on refuse.
+                guard abs(e) <= 64 else { return nil }
+                return pow(base, e)
+            }
+            return base
+        }
+
+        mutating func parseUnary() -> Double? {
+            if let op = peek(), op == "-" { i += 1; return parseUnary().map { -$0 } }
+            if let op = peek(), op == "+" { i += 1; return parseUnary() }
+            return parsePrimary()
+        }
+
+        mutating func parsePrimary() -> Double? {
+            guard let ch = peek() else { return nil }
+            if ch == "(" {
+                i += 1
+                guard let v = parseExpression(), peek() == ")" else { return nil }
+                i += 1
+                return v
+            }
+            var digits = ""
+            while let d = peek(), d.isNumber || d == "." {
+                digits.append(d)
+                i += 1
+            }
+            return digits.isEmpty ? nil : Double(digits)
+        }
     }
 }
 
@@ -269,6 +516,7 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
     private var bubbles: [NSView] = []
     private var messages: [ChatMsg] = []
     private var chips: [GlassButton] = []
+    private var mic: MicButton!
 
     var actions = ChatActions()
     var onStatus: ((String) -> Void)?
@@ -309,8 +557,8 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
             x += w + 8
         }
 
-        input = NSTextField(frame: NSRect(x: 0, y: 6, width: W - 112, height: 44))
-        input.placeholderString = "Écrivez à BUD…"
+        input = NSTextField(frame: NSRect(x: 0, y: 6, width: W - 158, height: 44))
+        input.placeholderString = "Écrivez à BUD, ou dictez…"
         input.font = NSFont.systemFont(ofSize: 13)
         input.bezelStyle = .roundedBezel
         input.focusRingType = .none
@@ -319,10 +567,49 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         input.action = #selector(sendFromField)
         addSubview(input)
 
-        let sendBtn = GlassButton(frame: NSRect(x: W - 102, y: 6, width: 102, height: 44),
+        mic = MicButton(frame: NSRect(x: W - 148, y: 6, width: 44, height: 44))
+        mic.onClick = { [weak self] in self?.toggleDictation() }
+        addSubview(mic)
+
+        let sendBtn = GlassButton(frame: NSRect(x: W - 96, y: 6, width: 96, height: 44),
                                   title: "Envoyer", icon: "paperplane.fill", prominent: true)
         sendBtn.onClick = { [weak self] _ in self?.sendFromField() }
         addSubview(sendBtn)
+
+        wireVoice()
+    }
+
+    // ═══════════ Dictée ═══════════
+
+    private func wireVoice() {
+        let v = BudVoice.shared
+        // Le texte reconnu s'écrit dans le champ au fil des mots : on voit
+        // ce que BUD a compris avant que ce soit envoyé, et on peut
+        // corriger au clavier plutôt que de tout redire.
+        v.onPartial = { [weak self] t in self?.input.stringValue = t }
+        v.onFinal = { [weak self] t in
+            guard let s = self else { return }
+            s.input.stringValue = ""
+            s.send(t)
+        }
+        v.onTrouble = { [weak self] why in
+            self?.append(ChatMsg(fromBud: true, text: why, date: Date()))
+        }
+        v.onState = { [weak self] in
+            guard let s = self else { return }
+            s.mic.listening = v.listening
+            s.onStatus?(v.listening ? "BUD écoute…" : "")
+        }
+    }
+
+    private func toggleDictation() {
+        if !BudVoice.shared.listening { window?.makeFirstResponder(input) }
+        BudVoice.shared.toggle()
+    }
+
+    /// Ouvre la dictée de l'extérieur — raccourci clavier, menu.
+    func startDictation() {
+        if !BudVoice.shared.listening { toggleDictation() }
     }
 
     func focusInput() { window?.makeFirstResponder(input) }

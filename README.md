@@ -125,6 +125,8 @@ Survolez le haut de l'écran pour l'aperçu, cliquez pour ouvrir. Il se replie �
 
 Devant une application en plein écran, BUD s'efface complètement — réglage désactivable.
 
+Dans la barre repliée, **l'heure se lit comme sur un iPhone** : en gras, collée à gauche, la date du jour à sa droite en plus discret. Les chiffres sont à largeur fixe, sinon l'heure tremblerait à chaque minute — un « 1 » est plus étroit qu'un « 8 ». Pendant la lecture d'un morceau, la pochette, l'égaliseur et le titre défilant prennent cette place.
+
 ---
 
 ## Le personnage
@@ -162,9 +164,20 @@ Un squircle blanc aux coins très arrondis, deux joues rose pastel, deux yeux ro
 « Copie le snippet signature »
 « Mes mails »  ·  « Envoie un mail à paul@exemple.fr pour dire bonjour »
 « Rappelle-moi d'appeler Paul à 17h30 »  ·  « Mes rappels »
-« Musique »  ·  « Morceau suivant »  ·  « Monte le volume »  ·  « Alexa »
+« Musique »  ·  « Morceau suivant »  ·  « Monte le volume »
 « Ouvre les téléchargements »  ·  « L'heure »  ·  « Une blague »
+« Batterie »  ·  « Mon adresse IP »  ·  « Verrouille l'écran »
+« Passe en mode sombre »  ·  « Capture la fenêtre »
+« Préviens-moi dans 15 minutes »
+« Cherche la recette du pain perdu »
+« 23 × 7 »  ·  « (120 + 80) / 4 »  ·  « 20 % de 480 »
 ```
+
+**BUD calcule**, et l'évaluateur est écrit à la main : descente récursive sur quatre niveaux de priorité, parenthèses, puissance associative à droite, modulo, virgule décimale. Il n'est **pas** confié à `NSExpression`, qui évalue bien plus qu'une opération — il sait instancier des classes et appeler des méthodes par leur nom. Lui passer une chaîne venue du champ de saisie serait lui donner les clés de l'application pour additionner deux nombres. Un chiffre **et** un opérateur sont exigés avant qu'une phrase soit traitée comme un calcul, sinon « mes 5 mails » reviendrait en résultat.
+
+**Dictée** — le micro à côté du champ transcrit votre parole, et le texte s'écrit au fil des mots pour que vous puissiez corriger au clavier plutôt que tout redire. Deux secondes de silence et BUD envoie.
+
+La reconnaissance se fait **sur votre Mac**. `requiresOnDeviceRecognition` est posé, mais la documentation d'Apple est explicite : le drapeau n'est honoré que si `supportsOnDeviceRecognition` est vrai. BUD le vérifie donc lui-même, et si ce Mac ne sait pas reconnaître le français hors ligne, **il refuse la dictée et dit pourquoi** au lieu d'envoyer votre voix aux serveurs d'Apple. Pour l'activer : Réglages Système → Clavier → Dictée, puis téléchargez le français.
 
 **Agents** — vos agents IA demandent une validation et BUD la présente dans le notch. Protocole fichier, sans dépendance :
 
@@ -187,6 +200,14 @@ L'agent dépose `agents/<id>.json`, BUD écrit `<id>.reply`. Surveillance par `D
 Le panneau a **deux modes**, *Boîte* et *Rédiger* : ils se partageaient la même hauteur et s'y retrouvaient tous deux à l'étroit. Chacun occupe maintenant tout l'espace — la liste 290 pt, le corps du message 300 pt — et les deux partagent le même cadre, bord haut et bord bas, pour que la bascule ne décale rien à l'écran.
 
 La boîte affiche les huit derniers messages, lus ou non, chacun sur une carte cliquable de **trois lignes** : l'expéditeur avec la date à droite, l'objet, puis un **aperçu du corps**. S'y ajoutent la pastille de non-lu, le trombone d'une pièce jointe, un liseré de couleur donnant le verdict de l'analyse et, pour un message signalé, une capsule rouge ou ambre. Trois compteurs en tête : non lus, suspects, voie utilisée.
+
+Une **pastille d'initiales** porte la couleur de l'expéditeur, tirée de son adresse : le même correspondant garde sa teinte d'une session à l'autre, et on le reconnaît avant d'avoir lu son nom. Douze teintes, et non une roue continue, où deux adresses voisines donneraient deux couleurs qu'on ne distingue pas. La pastille de non-lu devient un écusson posé sur ce disque.
+
+**Balayez une carte.** Vers la gauche pour supprimer, vers la droite pour répondre : le fond coloré apparaît sous la carte qui glisse, et la couleur s'affirme au passage du seuil. La suppression demande confirmation — un balayage est vite fait sans le vouloir — alors que « Répondre » part directement, puisque répondre ne détruit rien. Rien n'est effacé : le message va à la **corbeille du compte**, dont le nom est demandé au serveur par son rôle `\Trash`, car il est localisé.
+
+Un trackpad n'envoie pas de « geste de balayage » mais des événements de défilement avec une phase. La direction est donc décidée **une fois**, au début du geste, et tenue jusqu'au relâchement : arbitrer à chaque événement ferait sauter la carte entre défilement et balayage au moindre tremblement. Le défilement vertical de la liste reste intact, et une molette de souris ne balaie pas. Le sens suit le **doigt** et non le réglage : AppKit applique déjà « défilement naturel » à `scrollingDeltaX`, et sans défaire cette inversion le geste aurait déclenché l'action contraire chez qui a désactivé ce réglage.
+
+Le mode **Lecture** ouvre le message en entier — en-tête, date écrite au long, verdict, pièces jointes, puis le corps sélectionnable avec un interligne large. Un clic sur une ligne y mène : lire est ce qu'on veut faire d'un courriel. Aucun aller-retour réseau de plus, le corps étant déjà rapatrié et décodé au relevé de la boîte. Les courriels qui n'ont qu'une version HTML ne sont pas *rendus* : BUD en extrait le texte, en transformant d'abord les balises de bloc en sauts de ligne — sans quoi tout se recollerait en un seul paragraphe.
 
 Trois détails de lisibilité qui n'en sont pas :
 
@@ -264,7 +285,11 @@ Spotify et Alexa ont été retirés en version 23. Alexa surtout : Amazon n'expo
 
 **Outils** — recherche web, veille écran, bascule clair/sombre du système, corbeille, IP locale et nom du Wi-Fi, lancement rapide de Finder, Safari, Mail et Terminal.
 
-L'onglet est rangé en **quatre groupes titrés** — Recherche, Système, Applications, Capture d'écran — là où un seul des quatre portait un intertitre. Les rangées mesuraient 42, 44 et 48 pt selon l'endroit, et chaque ordonnée était calculée à la main, donc elles finissaient par se contredire ; elles descendent maintenant d'un pas constant. Les comptes rendus — apparence basculée, adresse IP, application ouverte, capture enregistrée — arrivent tous dans **une seule carte** au bas du panneau, au lieu de deux étiquettes concurrentes placées à deux endroits.
+S'y ajoutent le **verrouillage de l'écran** et l'accès aux **raccourcis clavier**. Le verrouillage passe par `CGSession -suspend` quand le système l'offre ; sinon BUD met l'écran en veille et le dit, parce qu'une mise en veille n'est un verrouillage que si votre réglage de mot de passe le veut — annoncer « verrouillé » dans ce cas serait un mensonge utile à personne.
+
+Les icônes sont **teintées par groupe** — indigo, ambre, orange, turquoise, bleu, violet — sans que les titres y perdent en lisibilité : colorer les deux rendrait le texte pâle.
+
+L'onglet est rangé en **groupes titrés** — Système, Applications, Capture d'écran — là où un seul des quatre portait un intertitre. Les rangées mesuraient 42, 44 et 48 pt selon l'endroit, et chaque ordonnée était calculée à la main, donc elles finissaient par se contredire ; elles descendent maintenant d'un pas constant. Les comptes rendus — apparence basculée, adresse IP, application ouverte, capture enregistrée — arrivent tous dans **une seule carte** au bas du panneau, au lieu de deux étiquettes concurrentes placées à deux endroits.
 
 **Capture d'écran** — tout l'écran, une fenêtre, ou une sélection au réticule, vers le **Bureau** ou le **presse-papiers**. BUD n'écrit pas son propre code de capture : il appelle `screencapture`, l'outil du système, qui sait déjà gérer les écrans multiples, les densités Retina et l'espace colorimétrique. Le notch se replie avant la prise, sinon il figurerait sur chaque capture plein écran. Un bouton **Révéler** ouvre la dernière image dans le Finder.
 
@@ -276,10 +301,14 @@ Si l'image fait moins de 4 Ko, c'est que l'autorisation manque : BUD vous renvoi
 
 ## Raccourcis
 
+Ce sont les raccourcis d'usine. **Tous se changent** : onglet Outils → *Raccourcis clavier…*, puis cliquez celui à remplacer et tapez la combinaison. Échap annule.
+
 | Touches | Action |
 |---|---|
 | ⌘⌥B | Ouvrir ou replier le tableau de bord |
+| ⌘⌥C | Dire coucou |
 | ⌘⌥K | Chat |
+| ⌘⌥V | Parler à BUD — ouvre le chat et la dictée |
 | ⌘⌥M | Courrier |
 | ⌘⌥P | Téléphone — appairage Gmail |
 | ⌘⌥R | Rappels |
@@ -287,6 +316,10 @@ Si l'image fait moins de 4 Ko, c'est que l'autorisation manque : BUD vous renvoi
 | ⌘⌥A | Demandes des agents |
 | ⌘⌥F | Démarrer ou arrêter un focus |
 | Échap | Replier |
+
+Une combinaison sans ⌘, ⌃ ni ⌥ est **refusée** : elle intercepterait votre frappe ordinaire dans toutes les applications. Le capteur de touche installe un moniteur **local**, retiré dès la capture terminée — un moniteur global avalerait les touches de tout le système pendant l'enregistrement.
+
+Les choix vivent dans un dictionnaire indexé par action, et non dans un champ par raccourci : ajouter une action ne demande donc aucune migration de vos réglages, et ce qui manque retombe sur l'usine.
 
 ---
 

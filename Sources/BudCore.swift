@@ -56,6 +56,16 @@ struct BudState: Codable {
     var budPremium: Bool = false      // v17 : conservé pour la migration
     var budSkin: Int = 0              // 0 à plat · 1 nacré-or · 2 métal
 
+    // — Nouveau en v23.6 —
+    //
+    //  Les raccourcis, au choix de l'utilisateur. Clé = nom de l'action,
+    //  valeur = le raccourci encodé « <masque>:<caractère> », par exemple
+    //  « 1572864:b » pour ⌘⌥B. Un dictionnaire plutôt qu'un champ par
+    //  action : ajouter une action ne demande alors aucune migration, et
+    //  ce qui manque retombe sur le raccourci d'usine.
+    var shortcuts: [String: String] = [:]
+    var voiceEnabled: Bool = true     // dictée accessible depuis le chat
+
     init() {}
 
     init(from d: Decoder) throws {
@@ -101,6 +111,8 @@ struct BudState: Codable {
         alarmSound = try c.decodeIfPresent(Bool.self, forKey: .alarmSound) ?? z.alarmSound
         budPremium = try c.decodeIfPresent(Bool.self, forKey: .budPremium) ?? z.budPremium
         budSkin = try c.decodeIfPresent(Int.self, forKey: .budSkin) ?? z.budSkin
+        shortcuts = try c.decodeIfPresent([String: String].self, forKey: .shortcuts) ?? z.shortcuts
+        voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? z.voiceEnabled
         // Un état écrit par la v17 ne connaît que budPremium : on le reporte.
         if budSkin == 0 && budPremium { budSkin = 1 }
         if budSkin < 0 || budSkin > 2 { budSkin = 0 }
@@ -233,6 +245,146 @@ func timeGreeting() -> (String, String) {
 
 func clockString() -> String {
     let f = DateFormatter(); f.locale = Locale(identifier: "fr_FR"); f.dateFormat = "HH:mm"
+    return f.string(from: Date())
+}
+/// Le sens du balayage, pour qu'un geste du doigt vers la gauche soit
+/// toujours un geste vers la gauche.
+///
+/// AppKit applique déjà le réglage « défilement naturel » à
+/// `scrollingDeltaX` : le même mouvement de doigt produit donc un
+/// signe opposé selon ce réglage. Pour un geste de balayage, c'est le
+/// doigt qui compte, pas le défilement — on défait donc l'inversion.
+/// Lu une seule fois, à la première utilisation.
+let swipeSign: CGFloat = {
+    let out = runShell("/usr/bin/defaults", ["read", "-g", "com.apple.swipescrolldirection"])
+    return out.trimmingCharacters(in: .whitespacesAndNewlines) == "0" ? -1 : 1
+}()
+
+// ═══════════════════════════════════════════════════════════
+//  Raccourcis clavier
+//
+//  Chaque action porte un identifiant stable, un libellé, et un
+//  raccourci d'usine. Ce que l'utilisateur choisit vit dans
+//  `BudState.shortcuts` sous cet identifiant ; ce qui manque
+//  retombe sur l'usine. Renommer un libellé ne casse donc rien,
+//  et ajouter une action ne demande aucune migration.
+// ═══════════════════════════════════════════════════════════
+
+struct ShortcutAction {
+    let key: String
+    let label: String
+    let fallback: String
+}
+
+enum Shortcuts {
+
+    /// Encode un raccourci. On ne retient que les quatre modificateurs
+    /// qui comptent : le masque brut d'un événement porte aussi l'état
+    /// du pavé numérique et des touches de fonction, qui varient d'un
+    /// clavier à l'autre et rendraient la comparaison instable.
+    static func encode(_ mods: NSEvent.ModifierFlags, _ ch: String) -> String {
+        let m = mods.intersection([.command, .option, .control, .shift])
+        return "\(m.rawValue):\(ch.lowercased())"
+    }
+
+    static func decode(_ s: String) -> (mods: NSEvent.ModifierFlags, ch: String)? {
+        let p = s.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard p.count == 2, let raw = UInt(p[0]), !p[1].isEmpty else { return nil }
+        return (NSEvent.ModifierFlags(rawValue: raw), String(p[1]))
+    }
+
+    /// « ⌘⌥B », dans l'ordre où macOS les écrit.
+    static func display(_ s: String) -> String {
+        guard let (m, ch) = decode(s) else { return "—" }
+        var out = ""
+        if m.contains(.control) { out += "⌃" }
+        if m.contains(.option)  { out += "⌥" }
+        if m.contains(.shift)   { out += "⇧" }
+        if m.contains(.command) { out += "⌘" }
+        return out + ch.uppercased()
+    }
+
+    /// Un raccourci sans ⌘, ⌃ ni ⌥ intercepterait la frappe ordinaire
+    /// dans toutes les applications : on refuse de l'enregistrer.
+    static func isUsable(_ s: String) -> Bool {
+        guard let (m, _) = decode(s) else { return false }
+        return !m.intersection([.command, .control, .option]).isEmpty
+    }
+
+    static let actions: [ShortcutAction] = [
+        ShortcutAction(key: "panel",     label: "Ouvrir ou fermer le panneau",
+                       fallback: encode([.command, .option], "b")),
+        ShortcutAction(key: "hello",     label: "Dire coucou",
+                       fallback: encode([.command, .option], "c")),
+        ShortcutAction(key: "focus",     label: "Lancer ou arrêter un focus",
+                       fallback: encode([.command, .option], "f")),
+        ShortcutAction(key: "capture",   label: "Capture d'écran",
+                       fallback: encode([.command, .option], "d")),
+        ShortcutAction(key: "voice",     label: "Parler à BUD (dictée)",
+                       fallback: encode([.command, .option], "v")),
+        ShortcutAction(key: "chat",      label: "Onglet Chat",
+                       fallback: encode([.command, .option], "k")),
+        ShortcutAction(key: "mail",      label: "Onglet Courrier",
+                       fallback: encode([.command, .option], "m")),
+        ShortcutAction(key: "reminders", label: "Onglet Rappels",
+                       fallback: encode([.command, .option], "r")),
+        ShortcutAction(key: "agents",    label: "Onglet Agents",
+                       fallback: encode([.command, .option], "a")),
+        ShortcutAction(key: "phone",     label: "Onglet Téléphone",
+                       fallback: encode([.command, .option], "p"))
+    ]
+
+    /// Le raccourci en vigueur pour une action : celui de l'utilisateur,
+    /// sinon celui d'usine.
+    static func current(_ key: String, in state: BudState) -> String {
+        if let s = state.shortcuts[key], isUsable(s) { return s }
+        return actions.first { $0.key == key }?.fallback ?? ""
+    }
+}
+
+/// L'état de la batterie en une phrase. Beaucoup de Mac n'en ont pas —
+/// un Mac mini, un iMac — et `pmset` ne renvoie alors aucune ligne de
+/// batterie : il faut le dire plutôt que d'afficher « 0 % ».
+func batteryLine() -> String {
+    let out = runShell("/usr/bin/pmset", ["-g", "batt"])
+    guard out.contains("InternalBattery") else {
+        return "Ce Mac n'a pas de batterie — il est sur le secteur."
+    }
+    let pct = out.range(of: "[0-9]{1,3}%", options: .regularExpression)
+        .map { String(out[$0]) } ?? "?"
+    let onAC = out.contains("'AC Power'")
+    var state = ""
+    for (key, word) in [("charged", "pleine"), ("charging", "en charge"),
+                        ("discharging", "sur batterie"), ("finishing charge", "fin de charge")] {
+        if out.contains(key) { state = word; break }
+    }
+    // « 2:13 remaining » : le temps restant n'est pas toujours calculé,
+    // et pmset écrit alors « (no estimate) ».
+    var left = ""
+    if let r = out.range(of: "[0-9]{1,2}:[0-9]{2} remaining", options: .regularExpression) {
+        let t = String(out[r]).replacingOccurrences(of: " remaining", with: "")
+        left = " · \(t) restantes"
+    }
+    let src = onAC ? "secteur" : "batterie"
+    return "Batterie \(pct)\(state.isEmpty ? "" : " · \(state)") · alimentation \(src)\(left)."
+}
+
+/// IP locale et nom du réseau sans fil, en une phrase.
+func networkLine() -> String {
+    let ip = runShell("/usr/sbin/ipconfig", ["getifaddr", "en0"])
+    let wifi = runShell("/usr/sbin/networksetup", ["-getairportnetwork", "en0"])
+        .replacingOccurrences(of: "Current Wi-Fi Network: ", with: "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let ipPart = ip.isEmpty ? "pas d'adresse sur en0" : "IP locale \(ip)"
+    let netPart = wifi.isEmpty || wifi.contains("not associated")
+        ? "pas de Wi-Fi associé" : "réseau « \(wifi) »"
+    return "\(ipPart) · \(netPart)."
+}
+
+/// « dim. 22 nov. » — ce qui tient à côté de l'heure dans la barre repliée.
+func shortDateString() -> String {
+    let f = DateFormatter(); f.locale = Locale(identifier: "fr_FR")
+    f.setLocalizedDateFormatFromTemplate("EEEdMMM")
     return f.string(from: Date())
 }
 func longDateString() -> String {
@@ -370,7 +522,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.5"
+let budVersion = "23.6"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
