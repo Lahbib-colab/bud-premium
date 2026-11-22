@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 24.4 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 24.5 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -448,6 +448,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         MusicFeed.onChange = { [weak self] in self?.musicAnnounced() }
         MusicFeed.start()
 
+        wireWakeWord()
+
         animTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.animate() }
         RunLoop.main.add(animTimer!, forMode: .common)
         tickTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
@@ -728,6 +730,78 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             s.applyNowPlaying(n)
             if s.currentTab == s.tabMusic { s.musicPanel.apply(n) }
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  « Hey Bud »
+    //
+    //  Le mot d'activation déverrouille, la phrase qui suit est
+    //  la commande. Une seule intention est traitée ici — celle
+    //  qui ouvre une réponse à un message — parce qu'elle
+    //  déclenche une action sur le monde. Tout le reste est
+    //  renvoyé au chat, qui sait déjà interpréter une phrase et
+    //  qui, lui, ne fait rien d'irréversible.
+    // ═══════════════════════════════════════════════════════════
+
+    private func wireWakeWord() {
+        let v = BudVoice.shared
+        v.onWake = { [weak self] in
+            guard let s = self else { return }
+            // On montre qu'on écoute avant d'avoir compris : sans ce
+            // signe, on répète la phrase en croyant n'avoir pas été
+            // entendu, et les deux se mélangent.
+            s.coucou("Je vous écoute", "", hold: 3)
+            s.avatar?.needsDisplay = true
+        }
+        v.onWakeCommand = { [weak self] text in self?.handleWakeCommand(text) }
+        if state.wakeWord { v.armWake() }
+    }
+
+    private func handleWakeCommand(_ said: String) {
+        let t = MailReader.fold(said)
+        guard !t.isEmpty else { return }
+
+        // « Réponds au mail de Free », « réponse au message de la banque » :
+        // on cherche le verbe, puis ce qui suit « de ».
+        let wantsReply = ["repond", "reponds", "reponse", "repondre", "reponre"]
+            .contains { t.contains($0) }
+        let aboutMail = ["mail", "message", "courriel", "courrier", "mel"]
+            .contains { t.contains($0) }
+
+        if wantsReply && aboutMail, let who = Self.targetName(in: t) {
+            openPanel()
+            selectTab(tabMail)
+            guard let m = mailPanel.findBySpokenName(who) else {
+                coucou("Aucun message trouvé", "Rien de « \(who) » dans la boîte.", hold: 6)
+                setStatus("Aucun message de « \(who) » dans les messages relevés.")
+                return
+            }
+            mailPanel.composeReply(to: m) { [weak self] msg in self?.setStatus(msg) }
+            coucou("Réponse préparée", m.shortSender, hold: 5)
+            return
+        }
+
+        // Rien de reconnu comme action sur le courrier : au chat, qui
+        // répondra ou dira qu'il n'a pas compris.
+        openPanel()
+        selectTab(tabChat)
+        chatPanel.send(said)
+    }
+
+    /// Le nom visé : ce qui suit « de » ou « du », jusqu'à la fin.
+    ///
+    /// « reponds au mail de free » → « free ». Les articles sont écartés,
+    /// et un nom vide vaut mieux qu'un faux : sans nom, BUD le dit au lieu
+    /// de répondre au premier message venu.
+    static func targetName(in folded: String) -> String? {
+        let words = folded.split(separator: " ").map(String.init)
+        let markers = ["de", "du", "des", "d"]
+        guard let i = words.lastIndex(where: { markers.contains($0) }),
+              i + 1 < words.count else { return nil }
+        let tail = words[(i + 1)...]
+            .filter { !["la", "le", "les", "l", "mon", "ma", "mes"].contains($0) }
+        let name = tail.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
     }
 
     /// Ce que Musique vient d'annoncer, répercuté sans attendre le sondage.
@@ -1419,7 +1493,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             ("sound", "Sons", "speaker.wave.2.fill"),
             ("login", "Démarrage", "power"),
             ("mailWatch", "Veille courrier", "envelope.badge.fill"),
-            ("alarmSound", "Son des alarmes", "alarm.fill")
+            ("alarmSound", "Son des alarmes", "alarm.fill"),
+            ("wake", "Écoute « Hey Bud »", "waveform")
         ]
         // Quatre colonnes et non trois : les treize interrupteurs tiennent
         // alors en quatre rangées au lieu de cinq, et la rangée gagnée
@@ -2272,6 +2347,15 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                 sidebarItems[tabMail].badgeCount = 0
             }
         case "alarmSound": state.alarmSound.toggle()
+        case "wake":
+            // Un interrupteur, pas un réglage par défaut : le micro reste
+            // ouvert et la reconnaissance tourne tant qu'il est armé.
+            state.wakeWord.toggle()
+            if state.wakeWord { BudVoice.shared.armWake() }
+            else { BudVoice.shared.disarmWake() }
+            setStatus(state.wakeWord
+                      ? "BUD écoute « Hey Bud ». Le micro reste ouvert, et cela consomme."
+                      : "Écoute permanente arrêtée.")
         case "login": toggleLogin(); return
         default: break
         }
@@ -2315,7 +2399,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             "fullscreen": state.hideInFullscreen, "paste": state.pasteToFrontApp,
             "notify": state.notifyEnabled, "sound": state.soundEnabled,
             "login": FileManager.default.fileExists(atPath: agentURL.path),
-            "mailWatch": state.mailWatch, "alarmSound": state.alarmSound
+            "mailWatch": state.mailWatch, "alarmSound": state.alarmSound,
+            "wake": state.wakeWord
         ]
         for (k, v) in map { toggleRows[k]?.setOn(v) }
         settingsHero?.set(trailing: accentPalette[state.accentIndex].0)
@@ -4505,6 +4590,11 @@ struct BudState: Codable {
     var lastUpdateCheck: TimeInterval = 0
     var musicSource: Int = 0            // obsolète depuis la v23 : Apple Music seule
     var alarmSound: Bool = true       // sonnerie répétée des rappels
+    /// Écoute permanente du mot d'activation. Faux par défaut, et ce
+    /// défaut est un choix : garder le micro ouvert et la reconnaissance
+    /// en marche se paie en batterie, et personne ne doit le découvrir
+    /// après coup.
+    var wakeWord: Bool = false
     var budPremium: Bool = false      // v17 : conservé pour la migration
     var budSkin: Int = 0              // 0 à plat · 1 nacré-or · 2 métal
 
@@ -5065,7 +5155,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.4"
+let budVersion = "24.5"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -7112,9 +7202,13 @@ enum GmailClient {
     /// Début du corps, pour l'analyse des liens et du vocabulaire.
     /// On ne lit que la première partie et on s'arrête vite : il ne s'agit
     /// pas d'afficher le message, seulement de le jauger.
+    /// `bySequence` relève par numéro de séquence plutôt que par UID.
+    /// Les messages envoyés se désignent ainsi : on veut « les quarante
+    /// derniers », et le numéro de séquence donne ce rang directement,
+    /// là où les UID sont des identités sans ordre garanti contigu.
     static func fetchSnippet(_ s: TLSLineSocket, uid: String, tag: String,
-                             maxChars: Int = 8000) -> String {
-        s.write("\(tag) UID FETCH \(uid) (BODY.PEEK[1]<0.8192>)")
+                             maxChars: Int = 8000, bySequence: Bool = false) -> String {
+        s.write("\(tag) \(bySequence ? "FETCH" : "UID FETCH") \(uid) (BODY.PEEK[1]<0.8192>)")
         var lines: [String] = []
         var total = 0
         var first = true
@@ -7248,6 +7342,73 @@ enum GmailClient {
     }
 
     /// Déplace des messages vers l'indésirable.
+    /// Les corps de vos derniers messages envoyés, pour apprendre vos
+    /// tournures.
+    ///
+    /// Le dossier des envois n'a pas de nom fixe : « Sent », « Messages
+    /// envoyés », « [Gmail]/Messages envoyés » selon la langue du compte.
+    /// On le demande donc au serveur par son rôle `\\Sent`, comme pour les
+    /// indésirables, plutôt que de deviner une traduction.
+    ///
+    /// `EXAMINE` et non `SELECT` : lire ses propres messages envoyés pour
+    /// en apprendre le style ne doit rien modifier sur le serveur.
+    static func sentBodies(user: String, auth: GmailAuthMode, limit: Int = 40) -> [String] {
+        guard let s = TLSLineSocket(host: imapHost, port: 993) else { return [] }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("s1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("s1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("s1 OK") { logged = true; break }
+            if l.hasPrefix("s1 NO") || l.hasPrefix("s1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return [] }
+
+        var box = ""
+        s.write("s2 LIST (SPECIAL-USE) \"\" \"*\"")
+        while let l = s.readLine() {
+            if l.hasPrefix("s2 ") { break }
+            if l.contains("\\Sent"), let last = l.range(of: "\"", options: .backwards) {
+                let head = l[l.startIndex..<last.lowerBound]
+                if let open = head.range(of: "\"", options: .backwards) {
+                    box = String(head[open.upperBound...])
+                }
+            }
+        }
+        if box.isEmpty { box = "[Gmail]/Sent Mail" }
+
+        var count = 0
+        s.write("s3 EXAMINE \"\(box)\"")
+        while let l = s.readLine() {
+            if l.hasPrefix("s3 ") { break }
+            // « * 128 EXISTS » : le nombre de messages du dossier.
+            if l.hasSuffix("EXISTS") {
+                let parts = l.split(separator: " ")
+                if parts.count >= 2 { count = Int(parts[1]) ?? 0 }
+            }
+        }
+        guard count > 0 else { s.write("s9 LOGOUT"); return [] }
+
+        // Les plus récents, par numéro de séquence : c'est le style
+        // d'aujourd'hui qu'on veut apprendre, pas celui d'il y a cinq ans.
+        let from = max(1, count - limit + 1)
+        var bodies: [String] = []
+        for n in stride(from: count, through: from, by: -1) {
+            // Une étiquette par commande, jamais réutilisée : deux
+            // commandes de même étiquette dans une session se confondent
+            // à la lecture des réponses.
+            let b = fetchSnippet(s, uid: String(n), tag: "sf\(n)", bySequence: true)
+            if !b.isEmpty { bodies.append(b) }
+            if bodies.count >= limit { break }
+        }
+        s.write("s9 LOGOUT")
+        return bodies
+    }
+
     static func quarantine(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
         move(user: user, auth: auth, uids: uids, role: "\\Junk", fallback: "[Gmail]/Spam")
     }
@@ -8400,6 +8561,14 @@ enum MailRouter {
         return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil, "")
     }
 
+    /// Vos derniers messages envoyés, pour l'apprentissage du style.
+    /// Possible en IMAP seulement : la passerelle Mail.app n'expose pas
+    /// le dossier des envois.
+    static func sentBodies(limit: Int = 40) -> [String] {
+        guard let (user, auth) = mode() else { return [] }
+        return GmailClient.sentBodies(user: user, auth: auth, limit: limit)
+    }
+
     static func send(to: String, subject: String, body: String, mailFrom: String,
                      inReplyTo: String = "") -> String {
         if let (user, auth) = mode() {
@@ -9040,8 +9209,122 @@ final class MailPanelView: NSView {
             self?.select(m)
             self?.quarantineSelected()
         }
+        r.onSend = { [weak self] m, subject, body in
+            self?.sendReply(to: m, subject: subject, body: body)
+        }
         reader = r
         return r
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Répondre à la voix
+    //
+    //  « Hey Bud, réponds au mail de Free. » Trois choses
+    //  séparées : retrouver le message, en rapatrier le corps,
+    //  et proposer une réponse. Rien ne part tout seul — le
+    //  tiroir s'ouvre, et il faut valider puis envoyer.
+    // ═══════════════════════════════════════════════════════════
+
+    /// Le message auquel « le mail de X » fait référence.
+    ///
+    /// Le plus récent dont l'expéditeur, le domaine ou l'objet contient le
+    /// nom dit. Trois rangs de priorité, parce que « Free » peut être un
+    /// nom affiché, un domaine, ou un mot de l'objet — et dans cet ordre
+    /// de certitude décroissante.
+    func findBySpokenName(_ spoken: String) -> MailMessage? {
+        let want = MailReader.fold(spoken)
+        guard want.count >= 2 else { return nil }
+        let pool = lastMessages
+
+        if let m = pool.first(where: { MailReader.fold($0.shortSender).contains(want) }) {
+            return m
+        }
+        if let m = pool.first(where: { MailReader.fold($0.address).contains(want) }) {
+            return m
+        }
+        return pool.first { MailReader.fold($0.subject).contains(want) }
+    }
+
+    /// Ouvre le tiroir de réponse pré-rempli pour ce message.
+    func composeReply(to m: MailMessage, status: ((String) -> Void)? = nil) {
+        // Les mêmes gardes qu'au clic. Une phrase dite à voix haute ne doit
+        // pas ouvrir une porte que la souris n'ouvre pas : répondre confirme
+        // à l'expéditeur que l'adresse est active, et c'est précisément ce
+        // qu'un message de hameçonnage cherche.
+        if m.threat.level == .dangerous {
+            let a = NSAlert()
+            a.messageText = "Répondre à un message dangereux ?"
+            a.informativeText = "BUD a relevé : \(m.threat.summary)\n\n"
+                + "Répondre confirme à l'expéditeur que votre adresse est active."
+            a.addButton(withTitle: "Annuler")
+            a.addButton(withTitle: "Répondre quand même")
+            NSApp.activate(ignoringOtherApps: true)
+            guard a.runModal() == .alertSecondButtonReturn else {
+                status?("Réponse annulée.")
+                return
+            }
+        }
+        select(m)
+        let r = readerWindow()
+        r.show(m)
+        let style = StyleLearner.load()
+
+        if !m.readableBody.isEmpty {
+            r.compose(m, body: m.readableBody, style: style)
+            status?("Réponse proposée. Validez, puis envoyez.")
+            return
+        }
+        // Sans le corps, la proposition serait aveugle : on le rapatrie
+        // d'abord, hors du fil principal.
+        guard !m.uid.isEmpty, MailRouter.gmailReady else {
+            r.compose(m, body: m.subject, style: style)
+            status?("Réponse proposée depuis l'objet seul : le corps n'est pas disponible.")
+            return
+        }
+        r.setBody("Chargement du message…")
+        let uid = m.uid
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fetched = MailRouter.body(uid: uid) ?? ""
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self, let win = s.reader, win.message?.uid == uid else { return }
+                var filled = m
+                if !fetched.isEmpty {
+                    filled.snippet = fetched
+                    if let i = s.lastMessages.firstIndex(where: { $0.uid == uid }) {
+                        s.lastMessages[i].snippet = fetched
+                    }
+                    s.selected = filled
+                    win.show(filled)
+                }
+                win.compose(filled, body: filled.readableBody.isEmpty ? filled.subject
+                                                                      : filled.readableBody,
+                            style: style)
+                status?("Réponse proposée. Validez, puis envoyez.")
+            }
+        }
+    }
+
+    private func sendReply(to m: MailMessage, subject: String, body: String) {
+        let from = MailRouter.account
+        onStatus?("Envoi en cours…")
+        var dest = m.address
+        if !m.replyTo.isEmpty && m.threat.level == .clean {
+            let r = MailGuard.address(in: m.replyTo)
+            if r.contains("@") { dest = r }
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = MailRouter.send(to: dest, subject: subject, body: body,
+                                         mailFrom: from, inReplyTo: m.messageID)
+            DispatchQueue.main.async { [weak self] in
+                self?.onStatus?(result)
+                // Une réponse envoyée est un exemple de plus de votre
+                // façon d'écrire : on la verse au profil sans attendre le
+                // prochain relevé du dossier des envois.
+                if result.lowercased().contains("envoyé") {
+                    StyleLearner.absorbOne(body)
+                }
+            }
+        }
     }
 
     /// Met le message sélectionné à la corbeille du compte. Rien n'est
@@ -9711,6 +9994,31 @@ final class MailReaderWindow: NSWindowController {
     var onReply: ((MailMessage) -> Void)?
     var onDelete: ((MailMessage) -> Void)?
     var onQuarantine: ((MailMessage) -> Void)?
+    /// Envoi demandé : le destinataire, l'objet et le corps approuvé.
+    var onSend: ((MailMessage, String, String) -> Void)?
+
+    // ─────────────────────────────────────────────────────────
+    //  Le tiroir de réponse
+    // ─────────────────────────────────────────────────────────
+
+    private static let drawerHeight: CGFloat = 286
+
+    private var drawer: NSView!
+    private var draftText: NSTextView!
+    private var draftScroll: NSScrollView!
+    private var variantBtns: [GlassButton] = []
+    private var phraseHost: NSView!
+    private var approveBtn: GlassButton!
+    private var editBtn: GlassButton!
+    private var sendBtn: GlassButton!
+    private var drawerOpen = false
+    private var drafts: [ReplyWriter.Draft] = []
+    private var chosen = 0
+    /// Rien ne part sans deux gestes. Une réponse née d'une phrase dite à
+    /// voix haute mérite une confirmation de plus qu'un texte tapé : un
+    /// « Réponds au mail de Free » mal entendu ne doit jamais pouvoir
+    /// atteindre un destinataire.
+    private var approved = false
 
     init() {
         let w = NSPanel(contentRect: NSRect(x: 0, y: 0,
@@ -9801,6 +10109,220 @@ final class MailReaderWindow: NSWindowController {
         actionRow = NSView(frame: NSRect(x: 12, y: 8, width: W - 24, height: 30))
         actionRow.autoresizingMask = [.width, .maxYMargin]
         content.addSubview(actionRow)
+
+        buildDrawer(content, W)
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Le tiroir de réponse
+    //
+    //  Il ne remplace pas le message : il s'ouvre dessous, et
+    //  le message reste visible au-dessus. Répondre sans
+    //  pouvoir relire ce à quoi on répond est une mauvaise
+    //  façon de répondre.
+    // ─────────────────────────────────────────────────────────
+
+    private func buildDrawer(_ content: NSView, _ W: CGFloat) {
+        let D = MailReaderWindow.drawerHeight
+        drawer = NSView(frame: NSRect(x: 12, y: 58, width: W - 24, height: D))
+        drawer.autoresizingMask = [.width, .maxYMargin]
+        drawer.wantsLayer = true
+        drawer.isHidden = true
+        content.addSubview(drawer)
+
+        let w = W - 24
+
+        // Les trois propositions. On ne devine pas laquelle vous voulez :
+        // l'accusé de réception, la réponse sur le fond et la demande de
+        // délai répondent à trois intentions différentes.
+        let labels = ["Accusé de réception", "Réponse sur le fond", "Demande de délai"]
+        let bw = (w - 16) / 3
+        for (i, t) in labels.enumerated() {
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (bw + 8), y: D - 32,
+                                              width: bw, height: 30),
+                                title: t, icon: nil, compact: true)
+            b.onClick = { [weak self] _ in self?.choose(i) }
+            drawer.addSubview(b)
+            variantBtns.append(b)
+        }
+
+        draftScroll = NSScrollView(frame: NSRect(x: 0, y: 84, width: w, height: D - 124))
+        draftScroll.hasVerticalScroller = true
+        draftScroll.scrollerStyle = .overlay
+        draftScroll.drawsBackground = false
+        draftScroll.autoresizingMask = [.width, .height]
+        draftText = NSTextView(frame: NSRect(x: 0, y: 0, width: w, height: D - 124))
+        draftText.isEditable = true
+        draftText.isSelectable = true
+        draftText.isRichText = false
+        draftText.drawsBackground = false
+        draftText.font = NSFont.systemFont(ofSize: 13)
+        draftText.textContainerInset = NSSize(width: 12, height: 10)
+        draftText.isVerticallyResizable = true
+        draftText.isHorizontallyResizable = false
+        draftText.autoresizingMask = [.width]
+        draftText.textContainer?.widthTracksTextView = true
+        draftScroll.documentView = draftText
+        drawer.addSubview(draftScroll)
+
+        // Vos propres tournures, relevées dans vos messages envoyés. Un
+        // clic les insère au curseur. Elles ne sont pas placées d'office :
+        // une phrase de vous au mauvais endroit reste au mauvais endroit.
+        phraseHost = NSView(frame: NSRect(x: 0, y: 44, width: w, height: 30))
+        phraseHost.autoresizingMask = [.width, .maxYMargin]
+        drawer.addSubview(phraseHost)
+
+        let aw = (w - 16) / 3
+        editBtn = GlassButton(frame: NSRect(x: 0, y: 4, width: aw, height: 34),
+                              title: "Modifier", icon: "pencil")
+        editBtn.onClick = { [weak self] _ in self?.beginEditing() }
+        approveBtn = GlassButton(frame: NSRect(x: aw + 8, y: 4, width: aw, height: 34),
+                                 title: "Valider", icon: "checkmark")
+        approveBtn.onClick = { [weak self] _ in self?.approve() }
+        sendBtn = GlassButton(frame: NSRect(x: 2 * (aw + 8), y: 4, width: aw, height: 34),
+                              title: "Envoyer", icon: "paperplane.fill", prominent: true)
+        sendBtn.onClick = { [weak self] _ in self?.sendDraft() }
+        [editBtn, approveBtn, sendBtn].forEach { drawer.addSubview($0) }
+    }
+
+    /// Ouvre le tiroir sur un message, avec les trois propositions prêtes.
+    func compose(_ m: MailMessage, body: String, style: ReplyStyle) {
+        if message?.uid != m.uid { show(m) }
+        drafts = ReplyWriter.drafts(for: m, body: body, style: style)
+        chosen = 0
+        buildPhraseChips(style)
+        choose(0)
+        setDrawer(open: true)
+    }
+
+    private func choose(_ i: Int) {
+        guard drafts.indices.contains(i) else { return }
+        chosen = i
+        for (j, b) in variantBtns.enumerated() { b.prominent = (j == i) }
+        draftText.string = drafts[i].text
+        // Le texte n'est plus celui qu'on a approuvé : l'envoi se referme.
+        approved = false
+        refreshSendState()
+        selectPlaceholder()
+    }
+
+    /// Place le curseur là où BUD ne peut pas écrire à votre place, et
+    /// sélectionne le marqueur : il suffit de taper par-dessus.
+    private func selectPlaceholder() {
+        guard let r = draftText.string.range(of: ReplyWriter.placeholder) else {
+            draftText.setSelectedRange(NSRange(location: 0, length: 0))
+            return
+        }
+        let ns = NSRange(r, in: draftText.string)
+        draftText.setSelectedRange(ns)
+        draftText.scrollRangeToVisible(ns)
+    }
+
+    private func buildPhraseChips(_ style: ReplyStyle) {
+        phraseHost.subviews.forEach { $0.removeFromSuperview() }
+        let mine = style.phrases
+            .filter { $0.role == .ask || $0.role == .thanks || $0.role == .close }
+            .sorted { $0.count > $1.count }
+            .prefix(3)
+        guard !mine.isEmpty else { return }
+        var x: CGFloat = 0
+        for p in mine {
+            let short = p.text.count > 34 ? String(p.text.prefix(32)) + "…" : p.text
+            let w = min(phraseHost.bounds.width - x - 4,
+                        CGFloat(short.count) * 6.2 + 26)
+            guard w > 60 else { break }
+            let chip = GlassButton(frame: NSRect(x: x, y: 2, width: w, height: 26),
+                                   title: short, icon: nil, compact: true)
+            chip.onClick = { [weak self] _ in self?.insert(p.text) }
+            phraseHost.addSubview(chip)
+            x += w + 6
+        }
+    }
+
+    private func insert(_ phrase: String) {
+        let sel = draftText.selectedRange()
+        if draftText.shouldChangeText(in: sel, replacementString: phrase) {
+            draftText.replaceCharacters(in: sel, with: phrase)
+            draftText.didChangeText()
+        }
+        approved = false
+        refreshSendState()
+    }
+
+    private func beginEditing() {
+        window?.makeFirstResponder(draftText)
+        selectPlaceholder()
+        approved = false
+        refreshSendState()
+        setStatus("Modifiez librement le texte, puis validez.")
+    }
+
+    private func approve() {
+        let text = draftText.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            setStatus("Le message est vide.")
+            return
+        }
+        // Le marqueur laissé en place partirait tel quel au destinataire.
+        if text.contains(ReplyWriter.placeholder) {
+            setStatus("Il reste « \(ReplyWriter.placeholder) » dans le texte : remplacez-le avant de valider.")
+            selectPlaceholder()
+            return
+        }
+        approved = true
+        refreshSendState()
+        setStatus("Validé. « Envoyer » est maintenant actif.")
+    }
+
+    private func refreshSendState() {
+        sendBtn.enabledFlag = approved
+        approveBtn.prominent = !approved
+    }
+
+    private func sendDraft() {
+        guard approved, let m = message else {
+            setStatus("Validez d'abord le texte.")
+            return
+        }
+        let subject = m.subject.lowercased().hasPrefix("re")
+            ? m.subject : "Re: \(m.subject)"
+        onSend?(m, subject, draftText.string)
+        setDrawer(open: false)
+    }
+
+    /// Ouvre ou ferme le tiroir, en agrandissant la fenêtre plutôt qu'en
+    /// écrasant le message : le corps garde sa place.
+    private func setDrawer(open: Bool) {
+        guard drawerOpen != open, let w = window else { return }
+        drawerOpen = open
+        drawer.isHidden = !open
+
+        var f = w.frame
+        let top = f.maxY
+        let base = retracted ? MailReaderWindow.retractedHeight : MailReaderWindow.fullHeight
+        let target = open ? base + MailReaderWindow.drawerHeight : base
+        f.size.height = target
+        f.origin.y = top - target
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Motion.base
+            ctx.timingFunction = Motion.enter
+            w.animator().setFrame(f, display: true)
+        }
+        relayout()
+        if open { window?.makeFirstResponder(draftText) }
+    }
+
+    /// Replace le corps et le tiroir dans la hauteur disponible.
+    private func relayout() {
+        guard let content = window?.contentView else { return }
+        let H = content.bounds.height, W = content.bounds.width
+        let D = drawerOpen ? MailReaderWindow.drawerHeight : 0
+        drawer.frame = NSRect(x: 12, y: 58, width: W - 24,
+                              height: MailReaderWindow.drawerHeight)
+        let bodyTop = H - 152
+        let bodyBottom = 66 + D
+        bodyScroll.frame = NSRect(x: 12, y: bodyBottom, width: W - 24,
+                                  height: max(60, bodyTop - bodyBottom))
     }
 
     // ─────────────────────────────────────────────────────────
@@ -9980,7 +10502,8 @@ final class MailReaderWindow: NSWindowController {
     private func toggleRetract() {
         guard let w = window else { return }
         retracted.toggle()
-        let target = retracted ? MailReaderWindow.retractedHeight : MailReaderWindow.fullHeight
+        let base = retracted ? MailReaderWindow.retractedHeight : MailReaderWindow.fullHeight
+        let target = base + (drawerOpen ? MailReaderWindow.drawerHeight : 0)
         var f = w.frame
         let top = f.maxY
         f.size.height = target
@@ -9990,6 +10513,7 @@ final class MailReaderWindow: NSWindowController {
         statusLabel.isHidden = retracted
         actionRow.isHidden = retracted
         attachHost.isHidden = retracted || attachHost.subviews.isEmpty
+        drawer.isHidden = retracted || !drawerOpen
         retractBtn.title = retracted ? "Déplier" : "Rétracter"
         retractBtn.iconName = retracted ? "chevron.down" : "chevron.up"
 
@@ -13043,6 +13567,563 @@ final class RemindersPanelView: NSView {
     }
 }
 EOF_BUDREMINDERS_SWIFT
+
+cat << 'EOF_BUDREPLYSTYLE_SWIFT' > "$SRC_DIR/BudReplyStyle.swift"
+import Foundation
+
+// ═══════════════════════════════════════════════════════════
+//  Apprendre vos tournures
+//
+//  Il faut être précis sur ce que fait ce fichier, parce qu'il
+//  serait facile de laisser croire qu'il écrit à votre place.
+//
+//  Il ne génère pas de langue. Il lit vos messages déjà
+//  envoyés, en extrait les phrases que vous écrivez vraiment,
+//  les classe par fonction — attaquer, demander, remercier,
+//  conclure — et les ressort par fréquence. Une réponse
+//  proposée est donc un assemblage de vos phrases, pas une
+//  imitation de votre style par un modèle.
+//
+//  C'est moins impressionnant et beaucoup plus fiable : une
+//  phrase que vous avez écrite trente fois vous ressemble par
+//  construction, et aucun calcul ne peut la rendre maladroite.
+//
+//  Tout est local. Les corps envoyés sont lus par la connexion
+//  IMAP que BUD a déjà, résumés en quelques dizaines de lignes
+//  de statistiques, et les corps eux-mêmes ne sont pas gardés.
+//  Le profil vit dans `style.json`, hors du dépôt.
+// ═══════════════════════════════════════════════════════════
+
+struct ReplyStyle: Codable {
+
+    enum Role: String, Codable, CaseIterable {
+        case lead      // la phrase qui ouvre le corps
+        case ask       // une demande
+        case thanks    // un remerciement
+        case waiting   // « dans l'attente de votre retour »
+        case close     // la dernière phrase avant la signature
+    }
+
+    struct Phrase: Codable {
+        var text: String
+        var count: Int
+        var role: Role
+    }
+
+    /// Combien de messages envoyés ont été lus pour bâtir ce profil.
+    var sampled = 0
+    var updatedAt = ""
+    /// Vous vouvoyez ou vous tutoyez. Relevé, pas supposé.
+    var formal = true
+    /// Longueur moyenne de vos corps, en mots. Sert à choisir entre une
+    /// réponse de trois lignes et une réponse de dix.
+    var bodyWords = 45
+    var phrases: [Phrase] = []
+
+    /// Vos phrases pour une fonction donnée, la plus fréquente d'abord.
+    func best(_ role: Role, _ rank: Int = 0) -> String? {
+        let p = phrases.filter { $0.role == role }.sorted { $0.count > $1.count }
+        guard rank < p.count else { return nil }
+        return p[rank].text
+    }
+
+    var isEmpty: Bool { sampled == 0 }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le classement des phrases
+// ═══════════════════════════════════════════════════════════
+
+enum StyleLearner {
+
+    private static let file = budSupportDir.appendingPathComponent("style.json")
+
+    static func load() -> ReplyStyle {
+        guard let d = try? Data(contentsOf: file),
+              let s = try? JSONDecoder().decode(ReplyStyle.self, from: d) else {
+            return ReplyStyle()
+        }
+        return s
+    }
+
+    static func save(_ s: ReplyStyle) {
+        guard let d = try? JSONEncoder().encode(s) else { return }
+        try? d.write(to: file, options: .atomic)
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Nettoyer un corps envoyé
+    //
+    //  Un message envoyé contient presque toujours le message
+    //  d'origine en dessous. Le garder apprendrait les phrases
+    //  des autres, ce qui est exactement le contraire du but.
+    // ─────────────────────────────────────────────────────────
+
+    /// Les marqueurs de citation, dans les formes que produisent les
+    /// clients courants en français et en anglais.
+    private static let quoteCues = [
+        "le ", "on ",                     // « Le 12 mars 2026 à 09:14, X a écrit : »
+        "-----message d'origine",
+        "-----original message",
+        "de :", "from:", "envoyé :", "sent:",
+        "début du message transféré",
+        "begin forwarded message"
+    ]
+
+    private static let closers = ["cordialement", "bien à vous", "salutations",
+                                  "respectueusement", "bonne journée", "bonne réception",
+                                  "à bientôt", "sincères salutations"]
+
+    /// Retire la salutation et la signature.
+    ///
+    /// Sans cela, « Bonjour, » se recollait à la phrase suivante — il n'a
+    /// pas de ponctuation finale — et le répertoire retenait « Bonjour, Je
+    /// fais suite à votre message. » au lieu de la phrase seule. Trois
+    /// variantes de salutation donnaient alors trois phrases différentes,
+    /// et aucune n'atteignait le seuil d'habitude.
+    static func stripCivility(_ input: [String]) -> [String] {
+        var lines = input
+        while let first = lines.first {
+            let t = first.trimmingCharacters(in: .whitespaces)
+            let short = t.split(separator: " ").count <= 6
+            let isGreeting = short && greetingCues.contains { t.lowercased().hasPrefix($0) }
+            if t.isEmpty || isGreeting { lines.removeFirst() } else { break }
+        }
+        // À partir de la formule de clôture, plus rien n'est rédigé : ni la
+        // formule, ni le nom qui la suit, ni la signature complète.
+        for (i, l) in lines.enumerated() {
+            let low = l.trimmingCharacters(in: .whitespaces).lowercased()
+            if closers.contains(where: { low.hasPrefix($0) }) {
+                lines = Array(lines[0..<i])
+                break
+            }
+        }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.removeLast()
+        }
+        return lines
+    }
+
+    static func ownText(in body: String) -> String {
+        var kept: [String] = []
+        for raw in body.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix(">") { break }
+            let low = line.lowercased()
+            // « Le … a écrit : » n'est une citation que si la ligne le dit
+            // en entier : une phrase qui commence par « Le » ne l'est pas.
+            if low.hasSuffix("a écrit :") || low.hasSuffix("a écrit:")
+                || low.hasSuffix("wrote:") { break }
+            if quoteCues.contains(where: { low.hasPrefix($0) && low.contains("@") }) { break }
+            if low.hasPrefix("-----") { break }
+            // Une signature coupe aussi : ce qui suit n'est pas rédigé.
+            if line == "--" || line == "-- " { break }
+            kept.append(raw)
+        }
+        return stripCivility(kept).joined(separator: "\n")
+    }
+
+    /// Découpe en phrases. Le point d'une abréviation ne doit pas couper :
+    /// on exige donc une majuscule ou une fin de texte après le point.
+    static func sentences(in text: String) -> [String] {
+        var out: [String] = []
+        var cur = ""
+        let chars = Array(text.replacingOccurrences(of: "\n", with: " "))
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            cur.append(c)
+            if c == "." || c == "!" || c == "?" {
+                var j = i + 1
+                while j < chars.count, chars[j] == " " { j += 1 }
+                let atEnd = j >= chars.count
+                let nextIsUpper = !atEnd && (chars[j].isUppercase || chars[j].isNumber)
+                if atEnd || nextIsUpper {
+                    let s = cur.trimmingCharacters(in: .whitespaces)
+                    if !s.isEmpty { out.append(s) }
+                    cur = ""
+                }
+            }
+            i += 1
+        }
+        let s = cur.trimmingCharacters(in: .whitespaces)
+        if !s.isEmpty { out.append(s) }
+        return out
+    }
+
+    private static let askCues = ["pourriez-vous", "pouvez-vous", "serait-il possible",
+                                  "je souhaiterais", "j'aimerais", "auriez-vous",
+                                  "je vous prie de", "merci de bien vouloir"]
+    private static let thanksCues = ["merci", "je vous remercie", "remerciements"]
+    private static let waitCues = ["dans l'attente", "je reste", "je demeure",
+                                   "n'hésitez pas", "je me tiens", "à votre disposition"]
+    private static let greetingCues = ["bonjour", "bonsoir", "madame", "monsieur", "cher",
+                                       "chère", "cordialement", "salutations", "bien à vous",
+                                       "respectueusement"]
+
+    /// Les salutations et les signatures ne s'apprennent pas : elles sont
+    /// imposées par ailleurs, et les compter encombrerait le répertoire
+    /// sans rien apporter.
+    private static func isCivility(_ low: String) -> Bool {
+        let words = low.split(separator: " ").count
+        guard words <= 6 else { return false }
+        return greetingCues.contains { low.hasPrefix($0) }
+    }
+
+    static func role(of sentence: String, isFirst: Bool, isLast: Bool) -> ReplyStyle.Role? {
+        let low = sentence.lowercased()
+        if isCivility(low) { return nil }
+        // Une phrase trop courte ou trop longue n'est pas réutilisable :
+        // en dessous de trois mots elle ne dit rien, au-delà de quarante
+        // elle est trop liée à son contexte pour resservir.
+        let words = sentence.split(separator: " ").count
+        guard words >= 3, words <= 40 else { return nil }
+
+        if waitCues.contains(where: { low.contains($0) }) { return .waiting }
+        if askCues.contains(where: { low.contains($0) }) { return .ask }
+        if thanksCues.contains(where: { low.contains($0) }) { return .thanks }
+        if isFirst { return .lead }
+        if isLast { return .close }
+        return nil
+    }
+
+    /// Construit le profil depuis une liste de corps envoyés.
+    ///
+    /// Fonction pure : pas de réseau, pas de fichier. C'est ce qui permet
+    /// de la rejouer sur des exemples et de vérifier son verdict.
+    static func profile(from bodies: [String]) -> ReplyStyle {
+        var s = ReplyStyle()
+        var counts: [String: (count: Int, role: ReplyStyle.Role)] = [:]
+        var totalWords = 0
+        var bodiesKept = 0
+        var tu = 0, vous = 0
+
+        for body in bodies {
+            let own = ownText(in: body)
+            let sents = sentences(in: own).filter { !$0.isEmpty }
+            guard !sents.isEmpty else { continue }
+            bodiesKept += 1
+            totalWords += own.split(separator: " ").count
+
+            let low = own.lowercased()
+            // Le vouvoiement se compte sur des formes sans ambiguïté :
+            // « tu » isolé, « vous » isolé. « votre » appartient aux deux
+            // registres dans une formule de politesse.
+            for w in low.split(whereSeparator: { !$0.isLetter }) {
+                if w == "tu" || w == "toi" || w == "ton" || w == "ta" { tu += 1 }
+                if w == "vous" || w == "votre" || w == "vos" { vous += 1 }
+            }
+
+            for (i, sent) in sents.enumerated() {
+                guard let r = role(of: sent, isFirst: i == 0, isLast: i == sents.count - 1)
+                else { continue }
+                let key = canonical(sent)
+                if let old = counts[key] { counts[key] = (old.count + 1, old.role) }
+                else { counts[key] = (1, r) }
+            }
+        }
+
+        s.sampled = bodiesKept
+        s.formal = vous >= tu
+        s.bodyWords = bodiesKept > 0 ? max(12, totalWords / bodiesKept) : 45
+        s.updatedAt = shortDateString()
+
+        // On garde les trois meilleures par fonction : au-delà, ce sont
+        // des phrases vues une seule fois, qui ne disent rien d'une
+        // habitude.
+        var kept: [ReplyStyle.Phrase] = []
+        for r in ReplyStyle.Role.allCases {
+            let pool = counts.filter { $0.value.role == r }
+                .map { ReplyStyle.Phrase(text: $0.key, count: $0.value.count, role: r) }
+                .sorted { ($0.count, $1.text.count) > ($1.count, $0.text.count) }
+            kept.append(contentsOf: pool.prefix(3))
+        }
+        s.phrases = kept
+        return s
+    }
+
+    /// Verse une réponse que vous venez d'envoyer au profil.
+    ///
+    /// Le profil complet se refait depuis le serveur, mais attendre ce
+    /// relevé-là voudrait dire qu'une tournure adoptée aujourd'hui ne
+    /// compte que demain. Un message envoyé est un exemple immédiat.
+    static func absorbOne(_ body: String) {
+        var s = load()
+        let own = ownText(in: body)
+        let sents = sentences(in: own).filter { !$0.isEmpty }
+        guard !sents.isEmpty else { return }
+
+        for (i, sent) in sents.enumerated() {
+            guard let r = role(of: sent, isFirst: i == 0, isLast: i == sents.count - 1)
+            else { continue }
+            let key = canonical(sent)
+            if let idx = s.phrases.firstIndex(where: { $0.text == key && $0.role == r }) {
+                s.phrases[idx].count += 1
+            } else {
+                s.phrases.append(ReplyStyle.Phrase(text: key, count: 1, role: r))
+            }
+        }
+
+        // Le même plafond qu'au relevé complet : trois par fonction. Sans
+        // lui, le fichier grossirait d'une phrase à chaque envoi, et les
+        // phrases vues une fois noieraient les habitudes.
+        var kept: [ReplyStyle.Phrase] = []
+        for r in ReplyStyle.Role.allCases {
+            let pool = s.phrases.filter { $0.role == r }.sorted { $0.count > $1.count }
+            kept.append(contentsOf: pool.prefix(3))
+        }
+        s.phrases = kept
+        s.sampled += 1
+        s.updatedAt = shortDateString()
+        save(s)
+    }
+
+    /// Relit le dossier des envois et refait le profil. Hors fil principal :
+    /// quarante corps à rapatrier prennent plusieurs secondes.
+    static func relearn(_ done: @escaping (ReplyStyle) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            let bodies = MailRouter.sentBodies()
+            let s = bodies.isEmpty ? load() : profile(from: bodies)
+            if !bodies.isEmpty { save(s) }
+            DispatchQueue.main.async { done(s) }
+        }
+    }
+
+    /// Deux phrases identiques à un espace ou une majuscule près sont la
+    /// même phrase : sans cela, chaque variante compterait pour une et
+    /// aucune n'atteindrait le seuil d'habitude.
+    static func canonical(_ s: String) -> String {
+        let collapsed = s.split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+        return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Ce que le message reçu demande
+//
+//  Même détection que le sous-agent `mail-actions`, et pour la
+//  même raison : les en-têtes et les tournures explicites, pas
+//  les mots-clés d'un objet, qu'un expéditeur choisit.
+// ═══════════════════════════════════════════════════════════
+
+enum MailAsk: String {
+    case payment       // une facture, une échéance de paiement
+    case confirm       // une confirmation attendue
+    case question      // une question posée
+    case appointment   // un rendez-vous à fixer ou à confirmer
+    case document      // une pièce demandée
+    case plain         // rien de précis : un accusé de réception suffit
+
+    var label: String {
+        switch self {
+        case .payment:     return "Facture ou paiement"
+        case .confirm:     return "Confirmation attendue"
+        case .question:    return "Question posée"
+        case .appointment: return "Rendez-vous"
+        case .document:    return "Pièce demandée"
+        case .plain:       return "Accusé de réception"
+        }
+    }
+}
+
+enum MailReader {
+
+    /// Ce que le message attend de vous.
+    ///
+    /// L'ordre des tests est l'ordre des conséquences : une facture se
+    /// traite avant une question, parce que s'y tromper coûte plus cher.
+    static func ask(subject: String, body: String) -> MailAsk {
+        let t = fold(subject + " " + body)
+
+        if contains(t, ["facture", "echeance", "reglement", "prelevement", "impaye",
+                        "montant du", "a payer", "paiement"]) { return .payment }
+        if contains(t, ["rendez vous", "rdv", "creneau", "disponibilite",
+                        "vous recevoir", "entretien"]) { return .appointment }
+        if contains(t, ["merci de confirmer", "veuillez confirmer", "confirmez",
+                        "accuser reception", "votre accord", "valider"]) { return .confirm }
+        if contains(t, ["piece jointe manquante", "nous transmettre", "merci de nous envoyer",
+                        "justificatif", "attestation", "merci de fournir"]) { return .document }
+        if contains(t, ["pourriez vous", "pouvez vous", "quelle est", "quel est",
+                        "comment", "serait il possible", "?"]) { return .question }
+        return .plain
+    }
+
+    private static func contains(_ haystack: String, _ needles: [String]) -> Bool {
+        needles.contains { haystack.contains($0) }
+    }
+
+    /// Minuscules, sans accents, espaces réduits — mais le point
+    /// d'interrogation reste : c'est lui qui signale une question, et la
+    /// normalisation générale de la voix l'effacerait.
+    static func fold(_ s: String) -> String {
+        let folded = s.folding(options: [.diacriticInsensitive, .caseInsensitive],
+                               locale: Locale(identifier: "fr_FR"))
+        let kept = folded.map { ch -> Character in
+            (ch.isLetter || ch.isNumber || ch == "?") ? ch : " "
+        }
+        return String(kept).split(separator: " ").joined(separator: " ")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  La rédaction
+//
+//  Deux règles imposées, qui ne se discutent pas : l'ouverture
+//  est « Bonjour, Monsieur ou Madame, » et la clôture
+//  « Cordialement, merci. ». Elles encadrent le corps, et le
+//  corps seul est touché par le style appris.
+// ═══════════════════════════════════════════════════════════
+
+enum ReplyWriter {
+
+    static let opening = "Bonjour, Monsieur ou Madame,"
+    static let closing = "Cordialement, merci."
+    /// L'endroit où BUD ne peut pas écrire à votre place. Le tiroir le
+    /// sélectionne à l'ouverture : il suffit de taper par-dessus.
+    static let placeholder = "(votre réponse ici)"
+
+    struct Draft {
+        var label: String        // le nom du bouton qui le choisit
+        var text: String
+    }
+
+    /// Trois propositions pour un même message : l'une accuse réception,
+    /// l'une répond sur le fond, l'une demande un délai. On ne devine pas
+    /// laquelle vous voulez — vous choisissez.
+    static func drafts(for m: MailMessage, body: String, style: ReplyStyle) -> [Draft] {
+        let ask = MailReader.ask(subject: m.subject, body: body)
+        let who = MailGuard.displayName(in: m.sender)
+        let about = subjectPhrase(m.subject)
+
+        var out: [Draft] = []
+        out.append(Draft(label: "Accusé de réception",
+                         text: assemble(core: acknowledge(ask, about: about), style: style)))
+        out.append(Draft(label: "Réponse sur le fond",
+                         text: assemble(core: substantive(ask, about: about, who: who,
+                                                          style: style),
+                                        style: style)))
+        out.append(Draft(label: "Demande de délai",
+                         text: assemble(core: delay(ask, about: about), style: style)))
+        return out
+    }
+
+    /// Le corps, encadré par l'ouverture et la clôture imposées, et
+    /// terminé par une de vos phrases d'attente quand BUD en connaît une.
+    static func assemble(core: [String], style: ReplyStyle) -> String {
+        var lines = [opening, ""]
+        lines.append(contentsOf: core)
+
+        // Votre tournure d'attente, si elle a été relevée. Sinon rien :
+        // mieux vaut une réponse courte qu'une phrase qui n'est pas la
+        // vôtre ajoutée pour faire nombre.
+        if let w = style.best(.waiting) {
+            lines.append("")
+            lines.append(w)
+        }
+        lines.append("")
+        lines.append(closing)
+        return lines.joined(separator: "\n")
+    }
+
+    /// L'objet transformé en complément utilisable dans une phrase.
+    /// « Re: Facture novembre » devient « votre message au sujet de
+    /// « Facture novembre » ».
+    static func subjectPhrase(_ subject: String) -> String {
+        var s = subject.trimmingCharacters(in: .whitespaces)
+        // Les préfixes de réponse et de transfert s'empilent : on les
+        // retire tous, pas seulement le premier.
+        var cut = true
+        while cut {
+            cut = false
+            for p in ["re :", "re:", "ref :", "ref:", "rép :", "rep:", "tr :", "tr:",
+                      "fwd :", "fwd:", "fw :", "fw:"] {
+                if s.lowercased().hasPrefix(p) {
+                    s = String(s.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+                    cut = true
+                }
+            }
+        }
+        return s.isEmpty ? "votre message" : "votre message au sujet de « \(s) »"
+    }
+
+    private static func acknowledge(_ ask: MailAsk, about: String) -> [String] {
+        switch ask {
+        case .payment:
+            return ["J'ai bien reçu \(about) et j'en prends connaissance.",
+                    "Je reviens vers vous dès que j'ai procédé aux vérifications nécessaires."]
+        case .appointment:
+            return ["J'ai bien reçu \(about).",
+                    "Je vous confirme ma disponibilité et reste à votre écoute pour arrêter un créneau."]
+        case .confirm:
+            return ["J'ai bien reçu \(about) et je vous en confirme la bonne réception."]
+        case .document:
+            return ["J'ai bien reçu \(about).",
+                    "Je vous fais parvenir les éléments demandés dans les meilleurs délais."]
+        case .question, .plain:
+            return ["J'ai bien reçu \(about) et je vous en remercie.",
+                    "Je reviens vers vous rapidement."]
+        }
+    }
+
+    /// Votre phrase d'attaque, quand BUD en connaît une, avec l'objet du
+    /// message greffé dedans.
+    ///
+    /// C'est là que l'apprentissage sert vraiment. Si vous écrivez
+    /// systématiquement « Je fais suite à votre message. », la réponse
+    /// proposée commence par cette phrase-là — la vôtre — et non par une
+    /// formule que BUD aurait choisie. L'objet s'y glisse à la place de
+    /// « votre message », ce qui donne « Je fais suite à votre message au
+    /// sujet de « Facture novembre ». »
+    static func lead(_ style: ReplyStyle, about: String) -> String {
+        guard let own = style.best(.lead) else { return "Je fais suite à \(about)." }
+        guard about != "votre message",
+              let r = own.range(of: "votre message") else { return own }
+        return own.replacingCharacters(in: r, with: about)
+    }
+
+    private static func substantive(_ ask: MailAsk, about: String, who: String,
+                                    style: ReplyStyle) -> [String] {
+        let party = who.isEmpty ? "" : " auprès de \(who)"
+        let opener = lead(style, about: about)
+        switch ask {
+        case .payment:
+            return [opener,
+                    "Après vérification, le règlement sera effectué dans les délais indiqués.",
+                    "Si un élément manque à mon dossier\(party), merci de me le préciser."]
+        case .appointment:
+            return [opener,
+                    "Le créneau proposé me convient. À défaut, je suis disponible en fin de journée."]
+        case .confirm:
+            return [opener,
+                    "Je vous confirme mon accord sur les éléments que vous m'avez transmis."]
+        case .document:
+            return [opener,
+                    "Vous trouverez les pièces demandées en réponse à ce message."]
+        case .question:
+            return [opener,
+                    "Voici les éléments de réponse :",
+                    placeholder]
+        case .plain:
+            return [opener,
+                    placeholder]
+        }
+    }
+
+    private static func delay(_ ask: MailAsk, about: String) -> [String] {
+        let what: String
+        switch ask {
+        case .payment:   what = "le règlement"
+        case .document:  what = "la transmission des pièces"
+        case .confirm:   what = "ma confirmation"
+        default:         what = "ma réponse complète"
+        }
+        return ["J'ai bien reçu \(about).",
+                "Pourriez-vous m'accorder un délai supplémentaire pour \(what) ?",
+                "Je reviens vers vous au plus tard la semaine prochaine."]
+    }
+}
+EOF_BUDREPLYSTYLE_SWIFT
 
 cat << 'EOF_BUDSCRIPTEXAMPLES_SWIFT' > "$SRC_DIR/BudScriptExamples.swift"
 import Foundation
@@ -16514,6 +17595,12 @@ import AVFoundation
 //  Donc : si ce Mac ne sait pas reconnaître le français hors
 //  ligne, BUD refuse la dictée et dit pourquoi. Pas de repli
 //  silencieux sur le réseau.
+//
+//  Deux modes partagent le même moteur audio, et un seul à la
+//  fois. On ne peut pas poser deux prises sur la même entrée :
+//  armer le mot d'activation pendant une dictée, ou l'inverse,
+//  ferait tomber l'application. L'un cède donc la place à
+//  l'autre, et le mot d'activation se réarme tout seul après.
 // ═══════════════════════════════════════════════════════════
 
 final class BudVoice {
@@ -16528,7 +17615,16 @@ final class BudVoice {
     private var silence: Timer?
     private var lastText = ""
 
-    private(set) var listening = false
+    private enum Mode { case idle, dictation, wake }
+    private var mode: Mode = .idle
+
+    /// Vrai pendant une dictée demandée par le bouton micro. L'écoute du
+    /// mot d'activation ne compte pas : elle n'est pas une dictée, et le
+    /// bouton ne doit pas pulser en permanence.
+    var listening: Bool { mode == .dictation }
+
+    /// Vrai quand BUD guette « Hey Bud ».
+    private(set) var wakeArmed = false
 
     /// Texte en cours de reconnaissance, à chaque mot.
     var onPartial: ((String) -> Void)?
@@ -16538,6 +17634,12 @@ final class BudVoice {
     var onTrouble: ((String) -> Void)?
     /// Changement d'état, pour que le bouton suive.
     var onState: (() -> Void)?
+
+    /// Le mot d'activation vient d'être entendu : BUD se déverrouille et
+    /// attend la suite. Sert à montrer qu'on écoute avant de comprendre.
+    var onWake: (() -> Void)?
+    /// La phrase prononcée après le mot d'activation, une fois terminée.
+    var onWakeCommand: ((String) -> Void)?
 
     private init() {}
 
@@ -16567,8 +17669,10 @@ final class BudVoice {
 
     func toggle() { listening ? stop(final: true) : start() }
 
-    func start() {
-        guard !listening else { return }
+    func start() { begin(.dictation) }
+
+    private func begin(_ want: Mode) {
+        guard mode != want else { return }
         if let why = unavailableReason() { onTrouble?(why); return }
 
         // Deux autorisations distinctes, et deux refus distincts : la
@@ -16579,7 +17683,7 @@ final class BudVoice {
                 guard let s = self else { return }
                 switch status {
                 case .authorized:
-                    s.askMicrophone()
+                    s.askMicrophone(want)
                 case .denied, .restricted:
                     s.onTrouble?("La reconnaissance vocale est refusée pour BUD. "
                         + "Réglages Système → Confidentialité et sécurité → Reconnaissance vocale.")
@@ -16592,15 +17696,15 @@ final class BudVoice {
         }
     }
 
-    private func askMicrophone() {
+    private func askMicrophone(_ want: Mode) {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            beginListening()
+            beginListening(want)
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] ok in
                 DispatchQueue.main.async {
                     guard let s = self else { return }
-                    if ok { s.beginListening() }
+                    if ok { s.beginListening(want) }
                     else { s.onTrouble?("Sans microphone, BUD ne peut pas vous entendre.") }
                 }
             }
@@ -16610,8 +17714,10 @@ final class BudVoice {
         }
     }
 
-    private func beginListening() {
-        guard !listening, let recognizer = recognizer else { return }
+    private func beginListening(_ want: Mode) {
+        guard let recognizer = recognizer else { return }
+        // Le moteur est unique : on démonte proprement avant de remonter.
+        teardown()
 
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
@@ -16647,38 +17753,61 @@ final class BudVoice {
         }
 
         lastText = ""
-        listening = true
+        wakeHeard = false
+        wakeTail = ""
+        mode = want
         onState?()
 
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             DispatchQueue.main.async {
-                guard let s = self, s.listening else { return }
+                guard let s = self, s.mode != .idle else { return }
                 if let r = result {
                     let text = r.bestTranscription.formattedString
-                    if !text.isEmpty {
-                        s.lastText = text
-                        s.onPartial?(text)
-                        s.armSilence()
+                    if !text.isEmpty { s.heard(text) }
+                    if r.isFinal {
+                        if s.mode == .wake { s.recycleWake() } else { s.stop(final: true) }
                     }
-                    if r.isFinal { s.stop(final: true) }
                 } else if error != nil {
-                    // Une erreur après de la parole reconnue n'est pas un
-                    // échec : c'est souvent la fin du flux. On garde le texte.
-                    s.stop(final: !s.lastText.isEmpty)
-                    if s.lastText.isEmpty {
-                        s.onTrouble?("Je n'ai rien compris. Réessayez en parlant un peu plus fort.")
+                    if s.mode == .wake {
+                        // En veille, une erreur est presque toujours la fin
+                        // d'un flux silencieux. On se remet à écouter.
+                        s.recycleWake()
+                    } else {
+                        // Une erreur après de la parole reconnue n'est pas un
+                        // échec : c'est souvent la fin du flux. On garde le texte.
+                        s.stop(final: !s.lastText.isEmpty)
+                        if s.lastText.isEmpty {
+                            s.onTrouble?("Je n'ai rien compris. Réessayez en parlant un peu plus fort.")
+                        }
                     }
                 }
             }
         }
 
-        // Deux garde-fous : on ne reste pas à écouter indéfiniment, et on
-        // conclut dès que la phrase est finie plutôt que d'attendre.
-        hardStop?.invalidate()
-        hardStop = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
-            self?.stop(final: true)
+        if want == .dictation {
+            // Deux garde-fous : on ne reste pas à écouter indéfiniment, et on
+            // conclut dès que la phrase est finie plutôt que d'attendre.
+            hardStop?.invalidate()
+            hardStop = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
+                self?.stop(final: true)
+            }
+            armSilence()
+        } else {
+            armWakeRecycle()
         }
-        armSilence()
+    }
+
+    private func heard(_ text: String) {
+        lastText = text
+        switch mode {
+        case .dictation:
+            onPartial?(text)
+            armSilence()
+        case .wake:
+            absorbWake(text)
+        case .idle:
+            break
+        }
     }
 
     /// Relancé à chaque mot reconnu : deux secondes sans rien de neuf, et
@@ -16690,12 +17819,11 @@ final class BudVoice {
         }
     }
 
-    func stop(final: Bool) {
+    /// Démonte le moteur sans toucher au mode : la remontée s'en charge.
+    private func teardown() {
         hardStop?.invalidate(); hardStop = nil
         silence?.invalidate();  silence = nil
-        guard listening else { return }
-        listening = false
-
+        wakeRecycle?.invalidate(); wakeRecycle = nil
         if engine.isRunning {
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)
@@ -16704,11 +17832,193 @@ final class BudVoice {
         task?.cancel()
         request = nil
         task = nil
+    }
+
+    func stop(final: Bool) {
+        let wasDictation = mode == .dictation
+        guard mode != .idle else { return }
+        teardown()
+        mode = .idle
         onState?()
 
         let text = lastText.trimmingCharacters(in: .whitespacesAndNewlines)
         lastText = ""
-        if final && !text.isEmpty { onFinal?(text) }
+        if final && wasDictation && !text.isEmpty { onFinal?(text) }
+
+        // La dictée rend la main : si la veille était armée, elle reprend.
+        if wasDictation && wakeArmed {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let s = self, s.wakeArmed, s.mode == .idle else { return }
+                s.begin(.wake)
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Le mot d'activation
+    //
+    //  Écouter en permanence n'est pas gratuit, et BUD ne le fera
+    //  pas dans votre dos : la veille s'arme explicitement, et
+    //  l'interface le montre tant qu'elle est armée. Le micro
+    //  reste ouvert, la reconnaissance tourne sur le processeur,
+    //  et sur batterie cela se sent. C'est pourquoi c'est un
+    //  interrupteur et non un réglage par défaut.
+    //
+    //  Ce qui est écouté ne quitte toujours pas la machine :
+    //  même moteur sur l'appareil, même refus de repli réseau.
+    //
+    //  Une tâche de reconnaissance ne vit pas indéfiniment —
+    //  autour d'une minute — et son texte s'accumule. On la
+    //  renouvelle donc pendant un silence, jamais au milieu
+    //  d'une phrase, sinon on couperait la commande en deux.
+    // ═══════════════════════════════════════════════════════════
+
+    private var wakeHeard = false
+    private var wakeTail = ""
+    private var wakeRecycle: Timer?
+    private var wakeQuiet: Timer?
+    private var wakeLastChange = Date()
+
+    /// Les formes que la reconnaissance rend pour « Hey Bud ». Le français
+    /// n'écrit pas « Hey », et « Bud » n'est pas un mot du dictionnaire :
+    /// la transcription varie. On accepte donc une famille, et au-delà une
+    /// petite distance d'édition.
+    private static let wakeForms = [
+        "hey bud", "hey bude", "he bud", "hé bud", "et bud", "eh bud",
+        "ok bud", "hey buddy", "hey but", "hey boude", "hey boud"
+    ]
+
+    func armWake() {
+        guard !wakeArmed else { return }
+        if let why = unavailableReason() { onTrouble?(why); return }
+        wakeArmed = true
+        onState?()
+        if mode == .idle { begin(.wake) }
+    }
+
+    func disarmWake() {
+        wakeArmed = false
+        if mode == .wake { stop(final: false) }
+        onState?()
+    }
+
+    func toggleWake() { wakeArmed ? disarmWake() : armWake() }
+
+    private func armWakeRecycle() {
+        wakeRecycle?.invalidate()
+        // Toutes les dix secondes on regarde s'il est temps de renouveler
+        // la tâche : seulement si plus rien n'a bougé depuis deux secondes
+        // et qu'aucune commande n'est en cours.
+        wakeRecycle = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            guard let s = self, s.mode == .wake else { return }
+            guard !s.wakeHeard, Date().timeIntervalSince(s.wakeLastChange) > 2 else { return }
+            s.recycleWake()
+        }
+    }
+
+    /// Repart sur une tâche neuve, texte vidé.
+    private func recycleWake() {
+        guard wakeArmed else { stop(final: false); return }
+        teardown()
+        mode = .idle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let s = self, s.wakeArmed, s.mode == .idle else { return }
+            s.begin(.wake)
+        }
+    }
+
+    private func absorbWake(_ text: String) {
+        wakeLastChange = Date()
+        let norm = BudVoice.normalize(text)
+
+        if !wakeHeard {
+            guard let after = BudVoice.afterWake(norm, raw: text) else { return }
+            wakeHeard = true
+            wakeTail = after
+            onWake?()
+        } else if let after = BudVoice.afterWake(norm, raw: text) {
+            wakeTail = after
+        }
+
+        // La commande est close par un silence court : on vient de parler,
+        // on n'attend pas deux secondes de plus comme pour une dictée.
+        wakeQuiet?.invalidate()
+        wakeQuiet = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { [weak self] _ in
+            self?.closeWakeCommand()
+        }
+    }
+
+    private func closeWakeCommand() {
+        wakeQuiet?.invalidate(); wakeQuiet = nil
+        let cmd = wakeTail.trimmingCharacters(in: .whitespacesAndNewlines)
+        wakeHeard = false
+        wakeTail = ""
+        if !cmd.isEmpty { onWakeCommand?(cmd) }
+        recycleWake()
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Reconnaître « Hey Bud » dans un flux
+    // ─────────────────────────────────────────────────────────
+
+    /// Minuscules, sans accents, sans ponctuation, espaces réduits à un.
+    static func normalize(_ s: String) -> String {
+        let folded = s.folding(options: [.diacriticInsensitive, .caseInsensitive],
+                               locale: Locale(identifier: "fr_FR"))
+        let kept = folded.map { ch -> Character in
+            (ch.isLetter || ch.isNumber) ? ch : " "
+        }
+        return String(kept).split(separator: " ").joined(separator: " ")
+    }
+
+    /// Rend ce qui suit le mot d'activation, ou `nil` s'il n'y est pas.
+    ///
+    /// Le découpage se fait sur le texte normalisé, mais la commande rendue
+    /// vient du texte brut : « Réponds au mail de Free » doit garder ses
+    /// accents et ses majuscules pour la suite.
+    static func afterWake(_ norm: String, raw: String) -> String? {
+        let words = norm.split(separator: " ").map(String.init)
+        guard words.count >= 2 else { return nil }
+
+        for i in 0..<(words.count - 1) {
+            let pair = "\(words[i]) \(words[i + 1])"
+            guard matchesWake(pair) else { continue }
+            // Position du mot d'activation dans la suite normalisée : on
+            // reprend le brut au même rang de mot, les deux listes ayant le
+            // même nombre d'éléments à la ponctuation près.
+            let rawWords = raw.split(separator: " ").map(String.init)
+            let start = i + 2
+            guard start < rawWords.count else { return "" }
+            return rawWords[start...].joined(separator: " ")
+        }
+        return nil
+    }
+
+    private static func matchesWake(_ pair: String) -> Bool {
+        if wakeForms.contains(pair) { return true }
+        // Une faute de reconnaissance près : « hey bad », « ey bud ».
+        for f in wakeForms where abs(f.count - pair.count) <= 2 {
+            if editDistance(f, pair) <= 1 { return true }
+        }
+        return false
+    }
+
+    /// Distance de Levenshtein, deux lignes de tampon.
+    static func editDistance(_ a: String, _ b: String) -> Int {
+        let x = Array(a), y = Array(b)
+        if x.isEmpty { return y.count }
+        if y.isEmpty { return x.count }
+        var prev = Array(0...y.count)
+        var cur = [Int](repeating: 0, count: y.count + 1)
+        for i in 1...x.count {
+            cur[0] = i
+            for j in 1...y.count {
+                let cost = x[i - 1] == y[j - 1] ? 0 : 1
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            prev = cur
+        }
+        return prev[y.count]
     }
 }
 

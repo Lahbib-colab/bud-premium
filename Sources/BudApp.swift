@@ -173,6 +173,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         MusicFeed.onChange = { [weak self] in self?.musicAnnounced() }
         MusicFeed.start()
 
+        wireWakeWord()
+
         animTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.animate() }
         RunLoop.main.add(animTimer!, forMode: .common)
         tickTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
@@ -453,6 +455,78 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             s.applyNowPlaying(n)
             if s.currentTab == s.tabMusic { s.musicPanel.apply(n) }
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  « Hey Bud »
+    //
+    //  Le mot d'activation déverrouille, la phrase qui suit est
+    //  la commande. Une seule intention est traitée ici — celle
+    //  qui ouvre une réponse à un message — parce qu'elle
+    //  déclenche une action sur le monde. Tout le reste est
+    //  renvoyé au chat, qui sait déjà interpréter une phrase et
+    //  qui, lui, ne fait rien d'irréversible.
+    // ═══════════════════════════════════════════════════════════
+
+    private func wireWakeWord() {
+        let v = BudVoice.shared
+        v.onWake = { [weak self] in
+            guard let s = self else { return }
+            // On montre qu'on écoute avant d'avoir compris : sans ce
+            // signe, on répète la phrase en croyant n'avoir pas été
+            // entendu, et les deux se mélangent.
+            s.coucou("Je vous écoute", "", hold: 3)
+            s.avatar?.needsDisplay = true
+        }
+        v.onWakeCommand = { [weak self] text in self?.handleWakeCommand(text) }
+        if state.wakeWord { v.armWake() }
+    }
+
+    private func handleWakeCommand(_ said: String) {
+        let t = MailReader.fold(said)
+        guard !t.isEmpty else { return }
+
+        // « Réponds au mail de Free », « réponse au message de la banque » :
+        // on cherche le verbe, puis ce qui suit « de ».
+        let wantsReply = ["repond", "reponds", "reponse", "repondre", "reponre"]
+            .contains { t.contains($0) }
+        let aboutMail = ["mail", "message", "courriel", "courrier", "mel"]
+            .contains { t.contains($0) }
+
+        if wantsReply && aboutMail, let who = Self.targetName(in: t) {
+            openPanel()
+            selectTab(tabMail)
+            guard let m = mailPanel.findBySpokenName(who) else {
+                coucou("Aucun message trouvé", "Rien de « \(who) » dans la boîte.", hold: 6)
+                setStatus("Aucun message de « \(who) » dans les messages relevés.")
+                return
+            }
+            mailPanel.composeReply(to: m) { [weak self] msg in self?.setStatus(msg) }
+            coucou("Réponse préparée", m.shortSender, hold: 5)
+            return
+        }
+
+        // Rien de reconnu comme action sur le courrier : au chat, qui
+        // répondra ou dira qu'il n'a pas compris.
+        openPanel()
+        selectTab(tabChat)
+        chatPanel.send(said)
+    }
+
+    /// Le nom visé : ce qui suit « de » ou « du », jusqu'à la fin.
+    ///
+    /// « reponds au mail de free » → « free ». Les articles sont écartés,
+    /// et un nom vide vaut mieux qu'un faux : sans nom, BUD le dit au lieu
+    /// de répondre au premier message venu.
+    static func targetName(in folded: String) -> String? {
+        let words = folded.split(separator: " ").map(String.init)
+        let markers = ["de", "du", "des", "d"]
+        guard let i = words.lastIndex(where: { markers.contains($0) }),
+              i + 1 < words.count else { return nil }
+        let tail = words[(i + 1)...]
+            .filter { !["la", "le", "les", "l", "mon", "ma", "mes"].contains($0) }
+        let name = tail.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
     }
 
     /// Ce que Musique vient d'annoncer, répercuté sans attendre le sondage.
@@ -1144,7 +1218,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             ("sound", "Sons", "speaker.wave.2.fill"),
             ("login", "Démarrage", "power"),
             ("mailWatch", "Veille courrier", "envelope.badge.fill"),
-            ("alarmSound", "Son des alarmes", "alarm.fill")
+            ("alarmSound", "Son des alarmes", "alarm.fill"),
+            ("wake", "Écoute « Hey Bud »", "waveform")
         ]
         // Quatre colonnes et non trois : les treize interrupteurs tiennent
         // alors en quatre rangées au lieu de cinq, et la rangée gagnée
@@ -1997,6 +2072,15 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                 sidebarItems[tabMail].badgeCount = 0
             }
         case "alarmSound": state.alarmSound.toggle()
+        case "wake":
+            // Un interrupteur, pas un réglage par défaut : le micro reste
+            // ouvert et la reconnaissance tourne tant qu'il est armé.
+            state.wakeWord.toggle()
+            if state.wakeWord { BudVoice.shared.armWake() }
+            else { BudVoice.shared.disarmWake() }
+            setStatus(state.wakeWord
+                      ? "BUD écoute « Hey Bud ». Le micro reste ouvert, et cela consomme."
+                      : "Écoute permanente arrêtée.")
         case "login": toggleLogin(); return
         default: break
         }
@@ -2040,7 +2124,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             "fullscreen": state.hideInFullscreen, "paste": state.pasteToFrontApp,
             "notify": state.notifyEnabled, "sound": state.soundEnabled,
             "login": FileManager.default.fileExists(atPath: agentURL.path),
-            "mailWatch": state.mailWatch, "alarmSound": state.alarmSound
+            "mailWatch": state.mailWatch, "alarmSound": state.alarmSound,
+            "wake": state.wakeWord
         ]
         for (k, v) in map { toggleRows[k]?.setOn(v) }
         settingsHero?.set(trailing: accentPalette[state.accentIndex].0)

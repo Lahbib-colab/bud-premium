@@ -539,9 +539,13 @@ enum GmailClient {
     /// Début du corps, pour l'analyse des liens et du vocabulaire.
     /// On ne lit que la première partie et on s'arrête vite : il ne s'agit
     /// pas d'afficher le message, seulement de le jauger.
+    /// `bySequence` relève par numéro de séquence plutôt que par UID.
+    /// Les messages envoyés se désignent ainsi : on veut « les quarante
+    /// derniers », et le numéro de séquence donne ce rang directement,
+    /// là où les UID sont des identités sans ordre garanti contigu.
     static func fetchSnippet(_ s: TLSLineSocket, uid: String, tag: String,
-                             maxChars: Int = 8000) -> String {
-        s.write("\(tag) UID FETCH \(uid) (BODY.PEEK[1]<0.8192>)")
+                             maxChars: Int = 8000, bySequence: Bool = false) -> String {
+        s.write("\(tag) \(bySequence ? "FETCH" : "UID FETCH") \(uid) (BODY.PEEK[1]<0.8192>)")
         var lines: [String] = []
         var total = 0
         var first = true
@@ -675,6 +679,73 @@ enum GmailClient {
     }
 
     /// Déplace des messages vers l'indésirable.
+    /// Les corps de vos derniers messages envoyés, pour apprendre vos
+    /// tournures.
+    ///
+    /// Le dossier des envois n'a pas de nom fixe : « Sent », « Messages
+    /// envoyés », « [Gmail]/Messages envoyés » selon la langue du compte.
+    /// On le demande donc au serveur par son rôle `\\Sent`, comme pour les
+    /// indésirables, plutôt que de deviner une traduction.
+    ///
+    /// `EXAMINE` et non `SELECT` : lire ses propres messages envoyés pour
+    /// en apprendre le style ne doit rien modifier sur le serveur.
+    static func sentBodies(user: String, auth: GmailAuthMode, limit: Int = 40) -> [String] {
+        guard let s = TLSLineSocket(host: imapHost, port: 993) else { return [] }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("s1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("s1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("s1 OK") { logged = true; break }
+            if l.hasPrefix("s1 NO") || l.hasPrefix("s1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return [] }
+
+        var box = ""
+        s.write("s2 LIST (SPECIAL-USE) \"\" \"*\"")
+        while let l = s.readLine() {
+            if l.hasPrefix("s2 ") { break }
+            if l.contains("\\Sent"), let last = l.range(of: "\"", options: .backwards) {
+                let head = l[l.startIndex..<last.lowerBound]
+                if let open = head.range(of: "\"", options: .backwards) {
+                    box = String(head[open.upperBound...])
+                }
+            }
+        }
+        if box.isEmpty { box = "[Gmail]/Sent Mail" }
+
+        var count = 0
+        s.write("s3 EXAMINE \"\(box)\"")
+        while let l = s.readLine() {
+            if l.hasPrefix("s3 ") { break }
+            // « * 128 EXISTS » : le nombre de messages du dossier.
+            if l.hasSuffix("EXISTS") {
+                let parts = l.split(separator: " ")
+                if parts.count >= 2 { count = Int(parts[1]) ?? 0 }
+            }
+        }
+        guard count > 0 else { s.write("s9 LOGOUT"); return [] }
+
+        // Les plus récents, par numéro de séquence : c'est le style
+        // d'aujourd'hui qu'on veut apprendre, pas celui d'il y a cinq ans.
+        let from = max(1, count - limit + 1)
+        var bodies: [String] = []
+        for n in stride(from: count, through: from, by: -1) {
+            // Une étiquette par commande, jamais réutilisée : deux
+            // commandes de même étiquette dans une session se confondent
+            // à la lecture des réponses.
+            let b = fetchSnippet(s, uid: String(n), tag: "sf\(n)", bySequence: true)
+            if !b.isEmpty { bodies.append(b) }
+            if bodies.count >= limit { break }
+        }
+        s.write("s9 LOGOUT")
+        return bodies
+    }
+
     static func quarantine(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
         move(user: user, auth: auth, uids: uids, role: "\\Junk", fallback: "[Gmail]/Spam")
     }

@@ -2,6 +2,26 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.5 — répondre à la voix
+
+**« Hey Bud, réponds au mail de Free. »** Le mot d'activation déverrouille, la phrase qui suit est la commande.
+
+**L'écoute permanente est un interrupteur, pas un défaut.** Elle s'arme dans Réglages et l'interface le montre tant qu'elle l'est. Le micro reste ouvert, la reconnaissance tourne sur le processeur, et sur batterie cela se sent : personne ne doit le découvrir après coup. Ce qui est entendu ne quitte pas la machine — même moteur sur l'appareil que la dictée, même refus de repli sur les serveurs d'Apple.
+
+**Un moteur audio, deux modes, jamais les deux à la fois.** On ne peut pas poser deux prises sur la même entrée : armer le mot d'activation pendant une dictée ferait tomber l'application. La dictée prend la place, et la veille se réarme seule après. La tâche de reconnaissance ne vit qu'une minute environ : elle est renouvelée pendant un silence, jamais au milieu d'une phrase.
+
+**« Hey Bud » se reconnaît de travers.** Le français n'écrit pas « Hey », et « Bud » n'est pas un mot du dictionnaire : la transcription rend « hey bude », « hé bud », « et bud ». Onze formes sont acceptées, et au-delà une distance d'édition d'un caractère. Neuf transcriptions sur neuf sont reconnues à l'essai.
+
+**Le destinataire se retrouve par trois rangs de certitude** : le nom affiché, puis le domaine de l'adresse, puis l'objet. Sans nom trouvé, BUD le dit — il ne répond pas au premier message venu.
+
+**L'apprentissage lit vos messages envoyés, et ne génère pas de langue.** `Sources/BudReplyStyle.swift` relève vos phrases réelles dans le dossier des envois, les classe par fonction — attaquer, demander, remercier, conclure — et les ressort par fréquence. Une proposition est donc un assemblage de **vos** phrases. Si vous écrivez toujours « Je fais suite à votre message. », la réponse commence par cette phrase-là, avec l'objet greffé dedans. Les citations du correspondant, la salutation et la signature sont retirées avant l'analyse : sans cela le répertoire apprendrait les phrases des autres, et « Bonjour, » se recollait à la phrase suivante au point qu'aucune habitude n'atteignait son seuil.
+
+**L'ouverture et la clôture sont imposées** : « Bonjour, Monsieur ou Madame, » et « Cordialement, merci. ». Le style appris ne touche que le corps.
+
+**Trois propositions, et rien ne part tout seul.** Accusé de réception, réponse sur le fond, demande de délai. Le tiroir s'ouvre **sous** le message, qui reste lisible au-dessus — répondre sans pouvoir relire ce à quoi on répond est une mauvaise façon de répondre. Il faut **Valider** avant que **Envoyer** s'active : une phrase dite à voix haute et mal entendue ne doit jamais atteindre un destinataire. Le marqueur « (votre réponse ici) » bloque la validation tant qu'il est là.
+
+**Les mêmes gardes qu'au clic.** Un message dangereux demande confirmation, le `Reply-To` détourné est ignoré. La voix n'ouvre aucune porte que la souris n'ouvre pas.
+
 ## 24.4 — un mot de deux lettres
 
 **`st` est un mot réservé d'AppleScript.** C'est un suffixe ordinal, de la famille de `st`/`nd`/`rd`/`th`, comme dans `1st item`. Les deux scripts de BUD commençaient par `set st to "stopped"` : aucun des deux ne compilait.

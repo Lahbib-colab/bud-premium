@@ -525,6 +525,14 @@ enum MailRouter {
         return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil, "")
     }
 
+    /// Vos derniers messages envoyés, pour l'apprentissage du style.
+    /// Possible en IMAP seulement : la passerelle Mail.app n'expose pas
+    /// le dossier des envois.
+    static func sentBodies(limit: Int = 40) -> [String] {
+        guard let (user, auth) = mode() else { return [] }
+        return GmailClient.sentBodies(user: user, auth: auth, limit: limit)
+    }
+
     static func send(to: String, subject: String, body: String, mailFrom: String,
                      inReplyTo: String = "") -> String {
         if let (user, auth) = mode() {
@@ -1165,8 +1173,122 @@ final class MailPanelView: NSView {
             self?.select(m)
             self?.quarantineSelected()
         }
+        r.onSend = { [weak self] m, subject, body in
+            self?.sendReply(to: m, subject: subject, body: body)
+        }
         reader = r
         return r
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Répondre à la voix
+    //
+    //  « Hey Bud, réponds au mail de Free. » Trois choses
+    //  séparées : retrouver le message, en rapatrier le corps,
+    //  et proposer une réponse. Rien ne part tout seul — le
+    //  tiroir s'ouvre, et il faut valider puis envoyer.
+    // ═══════════════════════════════════════════════════════════
+
+    /// Le message auquel « le mail de X » fait référence.
+    ///
+    /// Le plus récent dont l'expéditeur, le domaine ou l'objet contient le
+    /// nom dit. Trois rangs de priorité, parce que « Free » peut être un
+    /// nom affiché, un domaine, ou un mot de l'objet — et dans cet ordre
+    /// de certitude décroissante.
+    func findBySpokenName(_ spoken: String) -> MailMessage? {
+        let want = MailReader.fold(spoken)
+        guard want.count >= 2 else { return nil }
+        let pool = lastMessages
+
+        if let m = pool.first(where: { MailReader.fold($0.shortSender).contains(want) }) {
+            return m
+        }
+        if let m = pool.first(where: { MailReader.fold($0.address).contains(want) }) {
+            return m
+        }
+        return pool.first { MailReader.fold($0.subject).contains(want) }
+    }
+
+    /// Ouvre le tiroir de réponse pré-rempli pour ce message.
+    func composeReply(to m: MailMessage, status: ((String) -> Void)? = nil) {
+        // Les mêmes gardes qu'au clic. Une phrase dite à voix haute ne doit
+        // pas ouvrir une porte que la souris n'ouvre pas : répondre confirme
+        // à l'expéditeur que l'adresse est active, et c'est précisément ce
+        // qu'un message de hameçonnage cherche.
+        if m.threat.level == .dangerous {
+            let a = NSAlert()
+            a.messageText = "Répondre à un message dangereux ?"
+            a.informativeText = "BUD a relevé : \(m.threat.summary)\n\n"
+                + "Répondre confirme à l'expéditeur que votre adresse est active."
+            a.addButton(withTitle: "Annuler")
+            a.addButton(withTitle: "Répondre quand même")
+            NSApp.activate(ignoringOtherApps: true)
+            guard a.runModal() == .alertSecondButtonReturn else {
+                status?("Réponse annulée.")
+                return
+            }
+        }
+        select(m)
+        let r = readerWindow()
+        r.show(m)
+        let style = StyleLearner.load()
+
+        if !m.readableBody.isEmpty {
+            r.compose(m, body: m.readableBody, style: style)
+            status?("Réponse proposée. Validez, puis envoyez.")
+            return
+        }
+        // Sans le corps, la proposition serait aveugle : on le rapatrie
+        // d'abord, hors du fil principal.
+        guard !m.uid.isEmpty, MailRouter.gmailReady else {
+            r.compose(m, body: m.subject, style: style)
+            status?("Réponse proposée depuis l'objet seul : le corps n'est pas disponible.")
+            return
+        }
+        r.setBody("Chargement du message…")
+        let uid = m.uid
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fetched = MailRouter.body(uid: uid) ?? ""
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self, let win = s.reader, win.message?.uid == uid else { return }
+                var filled = m
+                if !fetched.isEmpty {
+                    filled.snippet = fetched
+                    if let i = s.lastMessages.firstIndex(where: { $0.uid == uid }) {
+                        s.lastMessages[i].snippet = fetched
+                    }
+                    s.selected = filled
+                    win.show(filled)
+                }
+                win.compose(filled, body: filled.readableBody.isEmpty ? filled.subject
+                                                                      : filled.readableBody,
+                            style: style)
+                status?("Réponse proposée. Validez, puis envoyez.")
+            }
+        }
+    }
+
+    private func sendReply(to m: MailMessage, subject: String, body: String) {
+        let from = MailRouter.account
+        onStatus?("Envoi en cours…")
+        var dest = m.address
+        if !m.replyTo.isEmpty && m.threat.level == .clean {
+            let r = MailGuard.address(in: m.replyTo)
+            if r.contains("@") { dest = r }
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = MailRouter.send(to: dest, subject: subject, body: body,
+                                         mailFrom: from, inReplyTo: m.messageID)
+            DispatchQueue.main.async { [weak self] in
+                self?.onStatus?(result)
+                // Une réponse envoyée est un exemple de plus de votre
+                // façon d'écrire : on la verse au profil sans attendre le
+                // prochain relevé du dossier des envois.
+                if result.lowercased().contains("envoyé") {
+                    StyleLearner.absorbOne(body)
+                }
+            }
+        }
     }
 
     /// Met le message sélectionné à la corbeille du compte. Rien n'est

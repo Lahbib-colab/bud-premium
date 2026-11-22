@@ -53,6 +53,11 @@ struct BudState: Codable {
     var lastUpdateCheck: TimeInterval = 0
     var musicSource: Int = 0            // obsolète depuis la v23 : Apple Music seule
     var alarmSound: Bool = true       // sonnerie répétée des rappels
+    /// Écoute permanente du mot d'activation. Faux par défaut, et ce
+    /// défaut est un choix : garder le micro ouvert et la reconnaissance
+    /// en marche se paie en batterie, et personne ne doit le découvrir
+    /// après coup.
+    var wakeWord: Bool = false
     var budPremium: Bool = false      // v17 : conservé pour la migration
     var budSkin: Int = 0              // 0 à plat · 1 nacré-or · 2 métal
 
@@ -613,7 +618,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.4"
+let budVersion = "24.5"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult

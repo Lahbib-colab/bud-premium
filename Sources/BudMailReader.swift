@@ -48,6 +48,31 @@ final class MailReaderWindow: NSWindowController {
     var onReply: ((MailMessage) -> Void)?
     var onDelete: ((MailMessage) -> Void)?
     var onQuarantine: ((MailMessage) -> Void)?
+    /// Envoi demandé : le destinataire, l'objet et le corps approuvé.
+    var onSend: ((MailMessage, String, String) -> Void)?
+
+    // ─────────────────────────────────────────────────────────
+    //  Le tiroir de réponse
+    // ─────────────────────────────────────────────────────────
+
+    private static let drawerHeight: CGFloat = 286
+
+    private var drawer: NSView!
+    private var draftText: NSTextView!
+    private var draftScroll: NSScrollView!
+    private var variantBtns: [GlassButton] = []
+    private var phraseHost: NSView!
+    private var approveBtn: GlassButton!
+    private var editBtn: GlassButton!
+    private var sendBtn: GlassButton!
+    private var drawerOpen = false
+    private var drafts: [ReplyWriter.Draft] = []
+    private var chosen = 0
+    /// Rien ne part sans deux gestes. Une réponse née d'une phrase dite à
+    /// voix haute mérite une confirmation de plus qu'un texte tapé : un
+    /// « Réponds au mail de Free » mal entendu ne doit jamais pouvoir
+    /// atteindre un destinataire.
+    private var approved = false
 
     init() {
         let w = NSPanel(contentRect: NSRect(x: 0, y: 0,
@@ -138,6 +163,220 @@ final class MailReaderWindow: NSWindowController {
         actionRow = NSView(frame: NSRect(x: 12, y: 8, width: W - 24, height: 30))
         actionRow.autoresizingMask = [.width, .maxYMargin]
         content.addSubview(actionRow)
+
+        buildDrawer(content, W)
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Le tiroir de réponse
+    //
+    //  Il ne remplace pas le message : il s'ouvre dessous, et
+    //  le message reste visible au-dessus. Répondre sans
+    //  pouvoir relire ce à quoi on répond est une mauvaise
+    //  façon de répondre.
+    // ─────────────────────────────────────────────────────────
+
+    private func buildDrawer(_ content: NSView, _ W: CGFloat) {
+        let D = MailReaderWindow.drawerHeight
+        drawer = NSView(frame: NSRect(x: 12, y: 58, width: W - 24, height: D))
+        drawer.autoresizingMask = [.width, .maxYMargin]
+        drawer.wantsLayer = true
+        drawer.isHidden = true
+        content.addSubview(drawer)
+
+        let w = W - 24
+
+        // Les trois propositions. On ne devine pas laquelle vous voulez :
+        // l'accusé de réception, la réponse sur le fond et la demande de
+        // délai répondent à trois intentions différentes.
+        let labels = ["Accusé de réception", "Réponse sur le fond", "Demande de délai"]
+        let bw = (w - 16) / 3
+        for (i, t) in labels.enumerated() {
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (bw + 8), y: D - 32,
+                                              width: bw, height: 30),
+                                title: t, icon: nil, compact: true)
+            b.onClick = { [weak self] _ in self?.choose(i) }
+            drawer.addSubview(b)
+            variantBtns.append(b)
+        }
+
+        draftScroll = NSScrollView(frame: NSRect(x: 0, y: 84, width: w, height: D - 124))
+        draftScroll.hasVerticalScroller = true
+        draftScroll.scrollerStyle = .overlay
+        draftScroll.drawsBackground = false
+        draftScroll.autoresizingMask = [.width, .height]
+        draftText = NSTextView(frame: NSRect(x: 0, y: 0, width: w, height: D - 124))
+        draftText.isEditable = true
+        draftText.isSelectable = true
+        draftText.isRichText = false
+        draftText.drawsBackground = false
+        draftText.font = NSFont.systemFont(ofSize: 13)
+        draftText.textContainerInset = NSSize(width: 12, height: 10)
+        draftText.isVerticallyResizable = true
+        draftText.isHorizontallyResizable = false
+        draftText.autoresizingMask = [.width]
+        draftText.textContainer?.widthTracksTextView = true
+        draftScroll.documentView = draftText
+        drawer.addSubview(draftScroll)
+
+        // Vos propres tournures, relevées dans vos messages envoyés. Un
+        // clic les insère au curseur. Elles ne sont pas placées d'office :
+        // une phrase de vous au mauvais endroit reste au mauvais endroit.
+        phraseHost = NSView(frame: NSRect(x: 0, y: 44, width: w, height: 30))
+        phraseHost.autoresizingMask = [.width, .maxYMargin]
+        drawer.addSubview(phraseHost)
+
+        let aw = (w - 16) / 3
+        editBtn = GlassButton(frame: NSRect(x: 0, y: 4, width: aw, height: 34),
+                              title: "Modifier", icon: "pencil")
+        editBtn.onClick = { [weak self] _ in self?.beginEditing() }
+        approveBtn = GlassButton(frame: NSRect(x: aw + 8, y: 4, width: aw, height: 34),
+                                 title: "Valider", icon: "checkmark")
+        approveBtn.onClick = { [weak self] _ in self?.approve() }
+        sendBtn = GlassButton(frame: NSRect(x: 2 * (aw + 8), y: 4, width: aw, height: 34),
+                              title: "Envoyer", icon: "paperplane.fill", prominent: true)
+        sendBtn.onClick = { [weak self] _ in self?.sendDraft() }
+        [editBtn, approveBtn, sendBtn].forEach { drawer.addSubview($0) }
+    }
+
+    /// Ouvre le tiroir sur un message, avec les trois propositions prêtes.
+    func compose(_ m: MailMessage, body: String, style: ReplyStyle) {
+        if message?.uid != m.uid { show(m) }
+        drafts = ReplyWriter.drafts(for: m, body: body, style: style)
+        chosen = 0
+        buildPhraseChips(style)
+        choose(0)
+        setDrawer(open: true)
+    }
+
+    private func choose(_ i: Int) {
+        guard drafts.indices.contains(i) else { return }
+        chosen = i
+        for (j, b) in variantBtns.enumerated() { b.prominent = (j == i) }
+        draftText.string = drafts[i].text
+        // Le texte n'est plus celui qu'on a approuvé : l'envoi se referme.
+        approved = false
+        refreshSendState()
+        selectPlaceholder()
+    }
+
+    /// Place le curseur là où BUD ne peut pas écrire à votre place, et
+    /// sélectionne le marqueur : il suffit de taper par-dessus.
+    private func selectPlaceholder() {
+        guard let r = draftText.string.range(of: ReplyWriter.placeholder) else {
+            draftText.setSelectedRange(NSRange(location: 0, length: 0))
+            return
+        }
+        let ns = NSRange(r, in: draftText.string)
+        draftText.setSelectedRange(ns)
+        draftText.scrollRangeToVisible(ns)
+    }
+
+    private func buildPhraseChips(_ style: ReplyStyle) {
+        phraseHost.subviews.forEach { $0.removeFromSuperview() }
+        let mine = style.phrases
+            .filter { $0.role == .ask || $0.role == .thanks || $0.role == .close }
+            .sorted { $0.count > $1.count }
+            .prefix(3)
+        guard !mine.isEmpty else { return }
+        var x: CGFloat = 0
+        for p in mine {
+            let short = p.text.count > 34 ? String(p.text.prefix(32)) + "…" : p.text
+            let w = min(phraseHost.bounds.width - x - 4,
+                        CGFloat(short.count) * 6.2 + 26)
+            guard w > 60 else { break }
+            let chip = GlassButton(frame: NSRect(x: x, y: 2, width: w, height: 26),
+                                   title: short, icon: nil, compact: true)
+            chip.onClick = { [weak self] _ in self?.insert(p.text) }
+            phraseHost.addSubview(chip)
+            x += w + 6
+        }
+    }
+
+    private func insert(_ phrase: String) {
+        let sel = draftText.selectedRange()
+        if draftText.shouldChangeText(in: sel, replacementString: phrase) {
+            draftText.replaceCharacters(in: sel, with: phrase)
+            draftText.didChangeText()
+        }
+        approved = false
+        refreshSendState()
+    }
+
+    private func beginEditing() {
+        window?.makeFirstResponder(draftText)
+        selectPlaceholder()
+        approved = false
+        refreshSendState()
+        setStatus("Modifiez librement le texte, puis validez.")
+    }
+
+    private func approve() {
+        let text = draftText.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            setStatus("Le message est vide.")
+            return
+        }
+        // Le marqueur laissé en place partirait tel quel au destinataire.
+        if text.contains(ReplyWriter.placeholder) {
+            setStatus("Il reste « \(ReplyWriter.placeholder) » dans le texte : remplacez-le avant de valider.")
+            selectPlaceholder()
+            return
+        }
+        approved = true
+        refreshSendState()
+        setStatus("Validé. « Envoyer » est maintenant actif.")
+    }
+
+    private func refreshSendState() {
+        sendBtn.enabledFlag = approved
+        approveBtn.prominent = !approved
+    }
+
+    private func sendDraft() {
+        guard approved, let m = message else {
+            setStatus("Validez d'abord le texte.")
+            return
+        }
+        let subject = m.subject.lowercased().hasPrefix("re")
+            ? m.subject : "Re: \(m.subject)"
+        onSend?(m, subject, draftText.string)
+        setDrawer(open: false)
+    }
+
+    /// Ouvre ou ferme le tiroir, en agrandissant la fenêtre plutôt qu'en
+    /// écrasant le message : le corps garde sa place.
+    private func setDrawer(open: Bool) {
+        guard drawerOpen != open, let w = window else { return }
+        drawerOpen = open
+        drawer.isHidden = !open
+
+        var f = w.frame
+        let top = f.maxY
+        let base = retracted ? MailReaderWindow.retractedHeight : MailReaderWindow.fullHeight
+        let target = open ? base + MailReaderWindow.drawerHeight : base
+        f.size.height = target
+        f.origin.y = top - target
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Motion.base
+            ctx.timingFunction = Motion.enter
+            w.animator().setFrame(f, display: true)
+        }
+        relayout()
+        if open { window?.makeFirstResponder(draftText) }
+    }
+
+    /// Replace le corps et le tiroir dans la hauteur disponible.
+    private func relayout() {
+        guard let content = window?.contentView else { return }
+        let H = content.bounds.height, W = content.bounds.width
+        let D = drawerOpen ? MailReaderWindow.drawerHeight : 0
+        drawer.frame = NSRect(x: 12, y: 58, width: W - 24,
+                              height: MailReaderWindow.drawerHeight)
+        let bodyTop = H - 152
+        let bodyBottom = 66 + D
+        bodyScroll.frame = NSRect(x: 12, y: bodyBottom, width: W - 24,
+                                  height: max(60, bodyTop - bodyBottom))
     }
 
     // ─────────────────────────────────────────────────────────
@@ -317,7 +556,8 @@ final class MailReaderWindow: NSWindowController {
     private func toggleRetract() {
         guard let w = window else { return }
         retracted.toggle()
-        let target = retracted ? MailReaderWindow.retractedHeight : MailReaderWindow.fullHeight
+        let base = retracted ? MailReaderWindow.retractedHeight : MailReaderWindow.fullHeight
+        let target = base + (drawerOpen ? MailReaderWindow.drawerHeight : 0)
         var f = w.frame
         let top = f.maxY
         f.size.height = target
@@ -327,6 +567,7 @@ final class MailReaderWindow: NSWindowController {
         statusLabel.isHidden = retracted
         actionRow.isHidden = retracted
         attachHost.isHidden = retracted || attachHost.subviews.isEmpty
+        drawer.isHidden = retracted || !drawerOpen
         retractBtn.title = retracted ? "Déplier" : "Rétracter"
         retractBtn.iconName = retracted ? "chevron.down" : "chevron.up"
 
