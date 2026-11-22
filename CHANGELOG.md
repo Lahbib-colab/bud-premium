@@ -2,6 +2,26 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.5 — lisibilité du courrier, remise en ordre des outils
+
+**Le courrier**
+
+- **Trois lignes par message** au lieu de deux : expéditeur, objet, et enfin un **aperçu du corps**. Le texte était déjà récupéré — il servait à citer le message dans une réponse — mais la liste ne le montrait jamais.
+- **Les colonnes s'alignent.** La pastille de non-lu décalait le texte de 12 pt vers la droite : un message lu et un non-lu ne commençaient pas à la même abscisse, et la colonne ondulait d'une ligne à l'autre. La pastille garde maintenant sa place, occupée ou non.
+- **Les dates deviennent lisibles.** `String(date.prefix(17))` coupait l'en-tête au caractère près, au milieu d'un mot dès que le fuseau s'écrivait autrement. La date est analysée puis réécrite comme dans un logiciel de courrier : l'heure aujourd'hui, « hier », le jour et le mois cette année. L'analyse se fait en locale POSIX — un Mac en français ne reconnaît ni « Sun » ni « Nov » — et l'affichage suit la langue du système.
+- **L'objet occupe toute la largeur.** Il héritait de la largeur réservée à la date et au verdict, qui ne concernent que la première ligne, et se trouvait tronqué pour rien.
+- L'interligne était de 1 pt entre l'expéditeur et l'objet, avec 7 pt perdus en haut et en bas. Les trois lignes descendent maintenant d'un pas régulier.
+- La passerelle Mail.app rapporte l'aperçu elle aussi, **coupé à 200 caractères du côté d'AppleScript** : un message de plusieurs mégaoctets n'a pas à traverser la sortie d'`osascript` pour qu'on n'en garde qu'une ligne.
+- La carte d'analyse **reste en place** même sans sélection : elle apparaissait et disparaissait au clic, et le bas du panneau sursautait.
+- Les deux modes — Boîte et Rédiger — partagent désormais le même cadre, bord haut et bord bas : la bascule ne décale plus rien.
+
+**Les outils**
+
+- Quatre groupes titrés — Recherche, Système, Applications, Capture d'écran — là où un seul des quatre portait un intertitre.
+- Un seul rythme vertical. Les rangées mesuraient 42, 44 et 48 pt selon l'endroit ; les positions, calculées une à une, se contredisaient. Elles descendent maintenant d'un pas constant, donc elles ne peuvent plus diverger.
+- Le trou de 60 pt au-dessus du pied est comblé.
+- **Une seule zone de compte rendu** au lieu de deux étiquettes concurrentes — l'une sous les outils système, l'autre sous la capture. Apparence basculée, adresse IP, application ouverte, capture enregistrée : tout arrive au même endroit, dans une carte qui le distingue des boutons.
+
 ## 23.4 — la pochette
 
 - **La pochette de l'album s'affiche** : en grand dans le panneau Musique, et en vignette de 18 pt dans le notch replié, à côté des barres de l'égaliseur et du titre défilant. En pause, elle reste mais s'assombrit — l'album ne change pas parce que la lecture s'arrête.

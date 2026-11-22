@@ -80,8 +80,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var lastClipChange = NSPasteboard.general.changeCount
     private var searchField: NSSearchField!
     private var captureSeg: SegmentedBar!
-    private var captureInfo: NSTextField!
     private var lastCapture: URL?
+    // Une seule zone de compte rendu pour tout l'onglet : deux étiquettes
+    // de statut dans le même panneau, l'une sous les outils système et
+    // l'autre sous la capture, se faisaient concurrence.
     private var revealBtn: GlassButton!, toolsInfo: NSTextField!
     private var sortPathLabel: NSTextField!, sortStatsLabel: NSTextField!
     private var sortLogLabels: [NSTextField] = []
@@ -472,12 +474,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private func capture(_ mode: CaptureMode) {
         let target: CaptureTarget = captureSeg.selected == 1 ? .clipboard : .desktop
         collapse()
-        captureInfo.stringValue = mode.interactive
+        toolsInfo.stringValue = mode.interactive
             ? "Cliquez la fenêtre ou tracez la zone…"
             : "Prise dans un instant…"
         ScreenCapture.run(mode, to: target) { [weak self] r in
             guard let s = self else { return }
-            s.captureInfo.stringValue = r.message
+            s.toolsInfo.stringValue = r.message
             s.lastCapture = r.url
             s.revealBtn.enabledFlag = (r.url != nil)
             if r.ok {
@@ -912,59 +914,83 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                              NSRect(x: 0, y: 14, width: W, height: 16), 11, .regular, alpha: 0.33, .center))
     }
 
+    /// Quatre groupes titrés, un seul rythme vertical.
+    ///
+    /// L'onglet mêlait des rangées de 42, 44 et 48 pt, un seul intertitre
+    /// pour quatre groupes, un trou de 60 pt au-dessus du pied, et deux
+    /// étiquettes de statut qui se faisaient concurrence. Tout passe par
+    /// `row(_:)` et `section(_:)`, qui descendent d'un pas constant : les
+    /// positions ne sont plus calculées une à une, donc elles ne peuvent
+    /// plus se contredire.
     private func buildTools(_ p: NSView) {
         let W = p.bounds.width, H = p.bounds.height
         toolsHero = addHero(p, "Outils", "Les raccourcis système dont vous vous servez tous les jours.")
 
-        searchField = NSSearchField(frame: NSRect(x: 0, y: H - 134, width: W, height: 32))
+        var y = H - 92                       // sous le bandeau de titre
+        func section(_ t: String) {
+            y -= 26
+            mkSection(p, y, W, t)
+        }
+        /// Réserve une bande de `h` points et rend son ordonnée.
+        func row(_ h: CGFloat, gap: CGFloat = 8) -> CGFloat {
+            y -= gap + h
+            return y
+        }
+
+        section("Recherche")
+        searchField = NSSearchField(frame: NSRect(x: 0, y: row(32), width: W, height: 32))
         searchField.placeholderString = "Rechercher sur le web…"
         searchField.font = NSFont.systemFont(ofSize: 12.5)
         searchField.target = self
         searchField.action = #selector(webSearch(_:))
         p.addSubview(searchField)
 
+        section("Système")
         let bw = (W - 12) / 2
-        func tool(_ x: CGFloat, _ y: CGFloat, _ t: String, _ i: String, _ run: @escaping () -> Void) {
-            let b = GlassButton(frame: NSRect(x: x, y: y, width: bw, height: 44), title: t, icon: i)
+        func tool(_ x: CGFloat, _ yy: CGFloat, _ t: String, _ i: String, _ run: @escaping () -> Void) {
+            let b = GlassButton(frame: NSRect(x: x, y: yy, width: bw, height: 44), title: t, icon: i)
             b.onClick = { _ in run() }
             p.addSubview(b)
         }
-        let r1 = H - 192, r2 = r1 - 56, r3 = r2 - 56
+        let r1 = row(44)
         tool(0, r1, "Veille écran", "moon.fill") { runShell("/usr/bin/pmset", ["displaysleepnow"]) }
         tool(bw + 12, r1, "Clair / sombre système", "circle.lefthalf.fill") { [weak self] in self?.toggleSystemDark() }
+        let r2 = row(44)
         tool(0, r2, "Corbeille", "trash.fill") {
             NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash"))
         }
         tool(bw + 12, r2, "Infos réseau", "wifi") { [weak self] in self?.networkInfo() }
 
+        section("Applications")
         let apps: [(String, String)] = [("Finder", "folder.fill"), ("Safari", "safari.fill"),
                                         ("Mail", "envelope.fill"), ("Terminal", "terminal.fill")]
         let aw = (W - 36) / 4
+        let ry = row(44)
         for (i, a) in apps.enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: r3, width: aw, height: 42),
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: ry, width: aw, height: 44),
                                 title: a.0, icon: a.1, compact: true)
             b.idx = i
             b.onClick = { [weak self] btn in self?.launchApp(btn.idx) }
             p.addSubview(b)
         }
 
-        // ── Capture d'écran ──
-        mkSection(p, 250, W, "Capture d'écran")
-        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: 206, width: W, height: 38),
+        section("Capture d'écran")
+        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: row(36, gap: 6), width: W, height: 36),
                                   items: [SegmentedBar.Item(title: "Sur le Bureau", icon: "desktopcomputer"),
                                           SegmentedBar.Item(title: "Presse-papiers", icon: "doc.on.clipboard")],
                                   selected: 0)
         p.addSubview(captureSeg)
 
         let cw = (W - 36) / 4
+        let cy = row(46)
         for (i, m) in [CaptureMode.screen, .window, .selection].enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: 152, width: cw, height: 48),
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: cy, width: cw, height: 46),
                                 title: m.label, icon: m.icon, prominent: i == 0)
             b.idx = m.rawValue
             b.onClick = { [weak self] btn in self?.capture(CaptureMode(rawValue: btn.idx) ?? .screen) }
             p.addSubview(b)
         }
-        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: 152, width: cw, height: 48),
+        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: cy, width: cw, height: 46),
                                 title: "Révéler", icon: "folder.badge.questionmark")
         revealBtn.enabledFlag = false
         revealBtn.onClick = { [weak self] _ in
@@ -973,20 +999,21 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
         p.addSubview(revealBtn)
 
-        captureInfo = mkLabel("Le notch se replie avant la prise. « Une fenêtre » et « Sélection » attendent votre clic.",
-                              NSRect(x: 0, y: 112, width: W, height: 32), 10.5, .regular, alpha: 0.40, .center)
-        captureInfo.lineBreakMode = .byWordWrapping
-        captureInfo.maximumNumberOfLines = 2
-        captureInfo.cell?.usesSingleLineMode = false
-        captureInfo.cell?.wraps = true
-        p.addSubview(captureInfo)
-
-        toolsInfo = mkLabel("Finder · Safari · Mail · Terminal", NSRect(x: 0, y: 10, width: W, height: 40),
-                            11.5, .regular, alpha: 0.5, .center)
+        // Le compte rendu occupe la place qui reste, en bas, dans une carte
+        // qui le distingue des boutons : apparence système basculée, IP
+        // locale, application ouverte, capture enregistrée — tout arrive ici.
+        // Plafonnée à trois lignes : laisser la carte avaler toute la place
+        // restante lui donnait l'air vide sous une phrase d'une ligne.
+        let infoH = min(56, max(44, y - 18))
+        let card = mkCard(p, NSRect(x: 0, y: 10, width: W, height: infoH), radius: 13, alpha: 0.05)
+        toolsInfo = mkLabel("Le notch se replie avant une capture. « Une fenêtre » et « Sélection » attendent votre clic.",
+                            NSRect(x: 14, y: 6, width: W - 28, height: infoH - 12),
+                            11, .regular, alpha: 0.46, .center)
         toolsInfo.lineBreakMode = .byWordWrapping
-        toolsInfo.maximumNumberOfLines = 2
+        toolsInfo.maximumNumberOfLines = 3
         toolsInfo.cell?.usesSingleLineMode = false
-        p.addSubview(toolsInfo)
+        toolsInfo.cell?.wraps = true
+        card.addSubview(toolsInfo)
     }
 
     private func buildSettings(_ p: NSView) {

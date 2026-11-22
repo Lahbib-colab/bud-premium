@@ -184,9 +184,17 @@ L'agent dépose `agents/<id>.json`, BUD écrit `<id>.reply`. Surveillance par `D
 2. **Mot de passe d'application** — IMAP sur 993 et SMTP sur 465, clients écrits à la main sur Network.framework.
 3. **Mail.app** — par AppleScript, si aucun compte n'est relié.
 
-Le panneau a **deux modes**, *Boîte* et *Rédiger* : ils se partageaient la même hauteur et s'y retrouvaient tous deux à l'étroit. Chacun occupe maintenant tout l'espace — la liste passe de 174 à 274 pt, le corps du message de 70 à 294 pt. « Répondre » bascule en rédaction, l'envoi réussi ramène à la boîte.
+Le panneau a **deux modes**, *Boîte* et *Rédiger* : ils se partageaient la même hauteur et s'y retrouvaient tous deux à l'étroit. Chacun occupe maintenant tout l'espace — la liste 290 pt, le corps du message 300 pt — et les deux partagent le même cadre, bord haut et bord bas, pour que la bascule ne décale rien à l'écran.
 
-La boîte affiche les huit derniers messages, lus ou non, chacun sur une ligne cliquable : expéditeur, objet, date, pastille de non-lu, trombone s'il y a une pièce jointe, et un liseré de couleur donnant le verdict de l'analyse. Trois compteurs en tête : non lus, suspects, voie utilisée.
+La boîte affiche les huit derniers messages, lus ou non, chacun sur une carte cliquable de **trois lignes** : l'expéditeur avec la date à droite, l'objet, puis un **aperçu du corps**. S'y ajoutent la pastille de non-lu, le trombone d'une pièce jointe, un liseré de couleur donnant le verdict de l'analyse et, pour un message signalé, une capsule rouge ou ambre. Trois compteurs en tête : non lus, suspects, voie utilisée.
+
+Trois détails de lisibilité qui n'en sont pas :
+
+- **La pastille de non-lu garde sa place, occupée ou non.** Sans cette réserve, le texte d'un message lu commençait 12 pt à gauche de celui d'un non-lu, et la colonne ondulait d'une ligne à l'autre.
+- **La date est analysée, pas tronquée.** Couper l'en-tête à 17 caractères donnait « Sun, 22 Nov 2026 », et n'importe quel autre format de fuseau la coupait au milieu d'un mot. Elle est lue en locale POSIX — un Mac en français ne reconnaît ni « Sun » ni « Nov » — puis réécrite dans la langue du système : l'heure aujourd'hui, « hier », le jour et le mois cette année.
+- **L'objet occupe toute la largeur.** La place réservée à la date et au verdict ne vaut que pour la première ligne ; l'objet en héritait et se trouvait tronqué pour rien.
+
+L'aperçu vient du corps déjà récupéré pour citer le message dans une réponse. Par la passerelle Mail.app, il est **coupé à 200 caractères du côté d'AppleScript** : un message de plusieurs mégaoctets n'a pas à traverser la sortie d'`osascript` pour qu'on n'en garde qu'une ligne.
 
 **Répondre** — sélectionnez un message, BUD préfixe l'objet par `Re:`, cite le corps d'origine et vise la bonne adresse. Le `Message-ID` est repris en `In-Reply-To` et `References`, sans quoi votre réponse arriverait comme un message isolé au lieu de se ranger dans le fil. Si le `Reply-To` diverge du `From`, BUD garde le `From` : c'est exactement la manœuvre qu'un hameçonneur utilise pour détourner la réponse. Répondre à un message classé dangereux demande une confirmation — répondre prouve à l'expéditeur que votre adresse est vivante.
 
@@ -255,6 +263,8 @@ Spotify et Alexa ont été retirés en version 23. Alexa surtout : Amazon n'expo
 ### Système
 
 **Outils** — recherche web, veille écran, bascule clair/sombre du système, corbeille, IP locale et nom du Wi-Fi, lancement rapide de Finder, Safari, Mail et Terminal.
+
+L'onglet est rangé en **quatre groupes titrés** — Recherche, Système, Applications, Capture d'écran — là où un seul des quatre portait un intertitre. Les rangées mesuraient 42, 44 et 48 pt selon l'endroit, et chaque ordonnée était calculée à la main, donc elles finissaient par se contredire ; elles descendent maintenant d'un pas constant. Les comptes rendus — apparence basculée, adresse IP, application ouverte, capture enregistrée — arrivent tous dans **une seule carte** au bas du panneau, au lieu de deux étiquettes concurrentes placées à deux endroits.
 
 **Capture d'écran** — tout l'écran, une fenêtre, ou une sélection au réticule, vers le **Bureau** ou le **presse-papiers**. BUD n'écrit pas son propre code de capture : il appelle `screencapture`, l'outil du système, qui sait déjà gérer les écrans multiples, les densités Retina et l'espace colorimétrique. Le notch se replie avant la prise, sinon il figurerait sur chaque capture plein écran. Un bouton **Révéler** ouvre la dernière image dans le Finder.
 

@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 23.4 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 23.5 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -355,8 +355,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var lastClipChange = NSPasteboard.general.changeCount
     private var searchField: NSSearchField!
     private var captureSeg: SegmentedBar!
-    private var captureInfo: NSTextField!
     private var lastCapture: URL?
+    // Une seule zone de compte rendu pour tout l'onglet : deux étiquettes
+    // de statut dans le même panneau, l'une sous les outils système et
+    // l'autre sous la capture, se faisaient concurrence.
     private var revealBtn: GlassButton!, toolsInfo: NSTextField!
     private var sortPathLabel: NSTextField!, sortStatsLabel: NSTextField!
     private var sortLogLabels: [NSTextField] = []
@@ -747,12 +749,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private func capture(_ mode: CaptureMode) {
         let target: CaptureTarget = captureSeg.selected == 1 ? .clipboard : .desktop
         collapse()
-        captureInfo.stringValue = mode.interactive
+        toolsInfo.stringValue = mode.interactive
             ? "Cliquez la fenêtre ou tracez la zone…"
             : "Prise dans un instant…"
         ScreenCapture.run(mode, to: target) { [weak self] r in
             guard let s = self else { return }
-            s.captureInfo.stringValue = r.message
+            s.toolsInfo.stringValue = r.message
             s.lastCapture = r.url
             s.revealBtn.enabledFlag = (r.url != nil)
             if r.ok {
@@ -1187,59 +1189,83 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                              NSRect(x: 0, y: 14, width: W, height: 16), 11, .regular, alpha: 0.33, .center))
     }
 
+    /// Quatre groupes titrés, un seul rythme vertical.
+    ///
+    /// L'onglet mêlait des rangées de 42, 44 et 48 pt, un seul intertitre
+    /// pour quatre groupes, un trou de 60 pt au-dessus du pied, et deux
+    /// étiquettes de statut qui se faisaient concurrence. Tout passe par
+    /// `row(_:)` et `section(_:)`, qui descendent d'un pas constant : les
+    /// positions ne sont plus calculées une à une, donc elles ne peuvent
+    /// plus se contredire.
     private func buildTools(_ p: NSView) {
         let W = p.bounds.width, H = p.bounds.height
         toolsHero = addHero(p, "Outils", "Les raccourcis système dont vous vous servez tous les jours.")
 
-        searchField = NSSearchField(frame: NSRect(x: 0, y: H - 134, width: W, height: 32))
+        var y = H - 92                       // sous le bandeau de titre
+        func section(_ t: String) {
+            y -= 26
+            mkSection(p, y, W, t)
+        }
+        /// Réserve une bande de `h` points et rend son ordonnée.
+        func row(_ h: CGFloat, gap: CGFloat = 8) -> CGFloat {
+            y -= gap + h
+            return y
+        }
+
+        section("Recherche")
+        searchField = NSSearchField(frame: NSRect(x: 0, y: row(32), width: W, height: 32))
         searchField.placeholderString = "Rechercher sur le web…"
         searchField.font = NSFont.systemFont(ofSize: 12.5)
         searchField.target = self
         searchField.action = #selector(webSearch(_:))
         p.addSubview(searchField)
 
+        section("Système")
         let bw = (W - 12) / 2
-        func tool(_ x: CGFloat, _ y: CGFloat, _ t: String, _ i: String, _ run: @escaping () -> Void) {
-            let b = GlassButton(frame: NSRect(x: x, y: y, width: bw, height: 44), title: t, icon: i)
+        func tool(_ x: CGFloat, _ yy: CGFloat, _ t: String, _ i: String, _ run: @escaping () -> Void) {
+            let b = GlassButton(frame: NSRect(x: x, y: yy, width: bw, height: 44), title: t, icon: i)
             b.onClick = { _ in run() }
             p.addSubview(b)
         }
-        let r1 = H - 192, r2 = r1 - 56, r3 = r2 - 56
+        let r1 = row(44)
         tool(0, r1, "Veille écran", "moon.fill") { runShell("/usr/bin/pmset", ["displaysleepnow"]) }
         tool(bw + 12, r1, "Clair / sombre système", "circle.lefthalf.fill") { [weak self] in self?.toggleSystemDark() }
+        let r2 = row(44)
         tool(0, r2, "Corbeille", "trash.fill") {
             NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash"))
         }
         tool(bw + 12, r2, "Infos réseau", "wifi") { [weak self] in self?.networkInfo() }
 
+        section("Applications")
         let apps: [(String, String)] = [("Finder", "folder.fill"), ("Safari", "safari.fill"),
                                         ("Mail", "envelope.fill"), ("Terminal", "terminal.fill")]
         let aw = (W - 36) / 4
+        let ry = row(44)
         for (i, a) in apps.enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: r3, width: aw, height: 42),
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: ry, width: aw, height: 44),
                                 title: a.0, icon: a.1, compact: true)
             b.idx = i
             b.onClick = { [weak self] btn in self?.launchApp(btn.idx) }
             p.addSubview(b)
         }
 
-        // ── Capture d'écran ──
-        mkSection(p, 250, W, "Capture d'écran")
-        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: 206, width: W, height: 38),
+        section("Capture d'écran")
+        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: row(36, gap: 6), width: W, height: 36),
                                   items: [SegmentedBar.Item(title: "Sur le Bureau", icon: "desktopcomputer"),
                                           SegmentedBar.Item(title: "Presse-papiers", icon: "doc.on.clipboard")],
                                   selected: 0)
         p.addSubview(captureSeg)
 
         let cw = (W - 36) / 4
+        let cy = row(46)
         for (i, m) in [CaptureMode.screen, .window, .selection].enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: 152, width: cw, height: 48),
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: cy, width: cw, height: 46),
                                 title: m.label, icon: m.icon, prominent: i == 0)
             b.idx = m.rawValue
             b.onClick = { [weak self] btn in self?.capture(CaptureMode(rawValue: btn.idx) ?? .screen) }
             p.addSubview(b)
         }
-        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: 152, width: cw, height: 48),
+        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: cy, width: cw, height: 46),
                                 title: "Révéler", icon: "folder.badge.questionmark")
         revealBtn.enabledFlag = false
         revealBtn.onClick = { [weak self] _ in
@@ -1248,20 +1274,21 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
         p.addSubview(revealBtn)
 
-        captureInfo = mkLabel("Le notch se replie avant la prise. « Une fenêtre » et « Sélection » attendent votre clic.",
-                              NSRect(x: 0, y: 112, width: W, height: 32), 10.5, .regular, alpha: 0.40, .center)
-        captureInfo.lineBreakMode = .byWordWrapping
-        captureInfo.maximumNumberOfLines = 2
-        captureInfo.cell?.usesSingleLineMode = false
-        captureInfo.cell?.wraps = true
-        p.addSubview(captureInfo)
-
-        toolsInfo = mkLabel("Finder · Safari · Mail · Terminal", NSRect(x: 0, y: 10, width: W, height: 40),
-                            11.5, .regular, alpha: 0.5, .center)
+        // Le compte rendu occupe la place qui reste, en bas, dans une carte
+        // qui le distingue des boutons : apparence système basculée, IP
+        // locale, application ouverte, capture enregistrée — tout arrive ici.
+        // Plafonnée à trois lignes : laisser la carte avaler toute la place
+        // restante lui donnait l'air vide sous une phrase d'une ligne.
+        let infoH = min(56, max(44, y - 18))
+        let card = mkCard(p, NSRect(x: 0, y: 10, width: W, height: infoH), radius: 13, alpha: 0.05)
+        toolsInfo = mkLabel("Le notch se replie avant une capture. « Une fenêtre » et « Sélection » attendent votre clic.",
+                            NSRect(x: 14, y: 6, width: W - 28, height: infoH - 12),
+                            11, .regular, alpha: 0.46, .center)
         toolsInfo.lineBreakMode = .byWordWrapping
-        toolsInfo.maximumNumberOfLines = 2
+        toolsInfo.maximumNumberOfLines = 3
         toolsInfo.cell?.usesSingleLineMode = false
-        p.addSubview(toolsInfo)
+        toolsInfo.cell?.wraps = true
+        card.addSubview(toolsInfo)
     }
 
     private func buildSettings(_ p: NSView) {
@@ -3955,7 +3982,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.4"
+let budVersion = "23.5"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -6165,6 +6192,96 @@ struct MailMessage {
         let n = MailGuard.displayName(in: sender)
         return n.isEmpty ? address : n
     }
+
+    /// La date telle qu'une liste la montre.
+    var shortDate: String { MailDate.short(header: date) }
+
+    /// Première ligne du corps, pour l'aperçu : les retours à la ligne, les
+    /// tabulations et les espaces insécables d'un courriel HTML converti
+    /// deviennent un seul espace, sinon l'aperçu affiche des trous.
+    var preview: String {
+        let flat = snippet
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            // L'espace insécable est écrit en échappement Swift, et non en
+            // « \u » d'expression régulière, qu'ICU n'accepte pas entre
+            // accolades : la classe reçoit donc le caractère lui-même.
+            .replacingOccurrences(of: "[\\s\u{00A0}]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(flat.prefix(200))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Les dates d'en-tête
+//
+//  « Sun, 22 Nov 2026 09:41:00 +0100 » tronqué à 17 caractères
+//  donnait « Sun, 22 Nov 2026 », coupé au milieu d'un mot dès
+//  que le fuseau s'écrivait autrement. On analyse donc la date
+//  pour de bon, puis on l'écrit comme une liste de courrier :
+//  l'heure aujourd'hui, le jour et le mois cette année.
+//
+//  L'analyse se fait en locale POSIX, jamais celle du système :
+//  un Mac en français ne reconnaîtrait ni « Sun » ni « Nov ».
+//  L'affichage, lui, suit la langue de l'utilisateur.
+// ═══════════════════════════════════════════════════════════
+
+enum MailDate {
+    private static let parsers: [DateFormatter] = {
+        [
+            "EEE, d MMM yyyy HH:mm:ss Z",
+            "EEE, d MMM yyyy HH:mm Z",
+            "d MMM yyyy HH:mm:ss Z",
+            "d MMM yyyy HH:mm Z",
+            "EEE, d MMM yyyy HH:mm:ss",
+            "d MMM yyyy HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss Z",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss"
+        ].map { f -> DateFormatter in
+            let d = DateFormatter()
+            d.locale = Locale(identifier: "en_US_POSIX")
+            d.dateFormat = f
+            return d
+        }
+    }()
+
+    private static func display(_ format: String) -> DateFormatter {
+        let d = DateFormatter()
+        d.setLocalizedDateFormatFromTemplate(format)
+        return d
+    }
+    private static let hhmm = display("Hm")
+    private static let dayMonth = display("dMMM")
+    private static let full = display("dMMMyy")
+
+    static func parse(_ s: String) -> Date? {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        // La RFC 5322 autorise un commentaire en queue : « +0100 (CET) ».
+        if let i = t.firstIndex(of: "(") {
+            t = String(t[t.startIndex..<i]).trimmingCharacters(in: .whitespaces)
+        }
+        for p in parsers {
+            if let d = p.date(from: t) { return d }
+        }
+        return nil
+    }
+
+    static func short(header s: String) -> String {
+        guard let d = parse(s) else {
+            // Analyse impossible : on garde les mots entiers du jour et du
+            // mois plutôt que de couper la chaîne au hasard.
+            let w = s.split(separator: " ")
+            return w.count >= 3 ? w[1...2].joined(separator: " ") : String(s.prefix(12))
+        }
+        let cal = Calendar.current
+        if cal.isDateInToday(d) { return hhmm.string(from: d) }
+        if cal.isDateInYesterday(d) { return "hier" }
+        if cal.component(.year, from: d) == cal.component(.year, from: Date()) {
+            return dayMonth.string(from: d)
+        }
+        return full.string(from: d)
+    }
 }
 
 enum MailBridge {
@@ -6220,7 +6337,16 @@ enum MailBridge {
                 if n > \(limit) then set n to \(limit)
                 repeat with i from 1 to n
                     set m to item i of msgs
-                    set res to res & (subject of m) & "|~|" & (sender of m) & "|~|" & ((date received of m) as string) & "|#|"
+                    -- Le corps est coupé à 200 caractères du côté
+                    -- d'AppleScript : un message de plusieurs mégaoctets
+                    -- ne doit pas traverser la sortie d'osascript pour
+                    -- qu'on n'en garde qu'une ligne d'aperçu.
+                    set c to ""
+                    try
+                        set c to (content of m)
+                        if (count of c) > 200 then set c to (text 1 thru 200 of c)
+                    end try
+                    set res to res & (subject of m) & "|~|" & (sender of m) & "|~|" & ((date received of m) as string) & "|~|" & c & "|#|"
                 end repeat
                 return res
             on error
@@ -6231,9 +6357,11 @@ enum MailBridge {
         return out.components(separatedBy: "|#|").compactMap { block in
             let p = block.components(separatedBy: "|~|")
             guard p.count >= 3 else { return nil }
-            return MailMessage(subject: p[0].trimmingCharacters(in: .whitespacesAndNewlines),
-                               sender: p[1].trimmingCharacters(in: .whitespacesAndNewlines),
-                               date: p[2].trimmingCharacters(in: .whitespacesAndNewlines))
+            var m = MailMessage(subject: p[0].trimmingCharacters(in: .whitespacesAndNewlines),
+                                sender: p[1].trimmingCharacters(in: .whitespacesAndNewlines),
+                                date: p[2].trimmingCharacters(in: .whitespacesAndNewlines))
+            if p.count >= 4 { m.snippet = p[3] }
+            return m
         }
     }
 
@@ -6384,25 +6512,34 @@ final class MailRow: NSView {
 
         let lvl = message.threat.level
         // Liseré de verdict à gauche : vert, ambre ou rouge.
-        let bar = NSBezierPath(roundedRect: NSRect(x: 8, y: 9, width: 4, height: r.height - 18),
+        let bar = NSBezierPath(roundedRect: NSRect(x: 8, y: 10, width: 4, height: r.height - 20),
                                xRadius: 2, yRadius: 2)
         lvl.color.withAlphaComponent(lvl == .clean ? 0.45 : 0.95).setFill()
         bar.fill()
 
-        // Pastille de non-lu.
-        var x: CGFloat = 20
+        // Trois lignes : expéditeur, objet, aperçu. Les ordonnées descendent
+        // d'un pas régulier depuis le haut, ce qui garde le même interligne
+        // quelle que soit la hauteur de la ligne.
+        let top = r.height
+        let line1 = NSRect(x: 0, y: top - 23, width: 0, height: 17)   // expéditeur
+        let line2 = NSRect(x: 0, y: top - 41, width: 0, height: 16)   // objet
+        let line3 = NSRect(x: 0, y: top - 58, width: 0, height: 14)   // aperçu
+
+        // La pastille de non-lu garde sa place même absente : sans cette
+        // réserve, le texte d'un message lu partait 12 pt à gauche de celui
+        // d'un non-lu, et la colonne ondulait d'une ligne à l'autre.
+        let x: CGFloat = 34
         if message.unread {
             TH.accent.setFill()
-            NSBezierPath(ovalIn: NSRect(x: x, y: r.height / 2 - 3, width: 6, height: 6)).fill()
-            x += 12
+            NSBezierPath(ovalIn: NSRect(x: 20, y: line1.midY - 3.5, width: 7, height: 7)).fill()
         }
 
-        // Date à droite, et badge de menace s'il y a lieu.
-        var rightEdge = r.width - 12
+        // Date et verdict à droite de la première ligne.
+        var rightEdge = r.width - 14
         if lvl != .clean {
             let txt = lvl.label
             let w = textWidth(txt, size: 9.5, weight: .bold) + 18
-            let box = NSRect(x: rightEdge - w, y: r.height / 2 - 9, width: w, height: 18)
+            let box = NSRect(x: rightEdge - w, y: line1.midY - 9, width: w, height: 18)
             lvl.color.withAlphaComponent(0.20).setFill()
             capsule(box).fill()
             lvl.color.withAlphaComponent(0.75).setStroke()
@@ -6411,26 +6548,41 @@ final class MailRow: NSView {
                        size: 9.5, weight: .bold, color: lvl.color, align: .center)
             rightEdge -= w + 8
         }
-        let shortDate = String(message.date.prefix(17))
-        if !shortDate.isEmpty {
-            let dw = min(textWidth(shortDate, size: 9.5, weight: .regular), 110)
-            drawString(shortDate,
-                       in: NSRect(x: rightEdge - dw, y: r.height - 21, width: dw, height: 13),
-                       size: 9.5, weight: .regular, color: TH.dim(0.38), align: .right)
+        let when = message.shortDate
+        if !when.isEmpty {
+            // Même rectangle que l'expéditeur : le texte étant dessiné
+            // depuis le haut, les deux lignes partent du même bord.
+            let dw = min(textWidth(when, size: 10, weight: .medium) + 4, 96)
+            drawString(when,
+                       in: NSRect(x: rightEdge - dw, y: line1.minY, width: dw, height: line1.height),
+                       size: 10, weight: .medium, color: TH.dim(0.40), align: .right)
             rightEdge -= dw + 10
         }
 
-        let textW = max(60, rightEdge - x)
         drawString(message.shortSender.isEmpty ? "(inconnu)" : message.shortSender,
-                   in: NSRect(x: x, y: r.height - 23, width: textW, height: 16),
-                   size: 12, weight: message.unread ? .bold : .semibold, color: TH.text)
-        drawString(message.subject.isEmpty ? "(sans objet)" : message.subject,
-                   in: NSRect(x: x, y: 7, width: textW, height: 15),
-                   size: 11, weight: .regular, color: TH.dim(0.55))
+                   in: NSRect(x: x, y: line1.minY, width: max(60, rightEdge - x), height: line1.height),
+                   size: 12.5, weight: message.unread ? .bold : .semibold, color: TH.text)
 
+        // L'objet et l'aperçu courent sur toute la largeur : la réserve de
+        // la date ne vaut que pour la première ligne, et l'objet héritait
+        // d'une largeur amputée pour rien.
+        var wide = r.width - 14 - x
         if !message.attachments.isEmpty {
-            drawSymbol("paperclip", center: NSPoint(x: r.width - 10, y: 14),
-                       size: 10, weight: .semibold, color: TH.dim(0.45))
+            drawSymbol("paperclip", center: NSPoint(x: r.width - 20, y: line2.midY),
+                       size: 10.5, weight: .semibold, color: TH.dim(0.45))
+            wide -= 20
+        }
+        drawString(message.subject.isEmpty ? "(sans objet)" : message.subject,
+                   in: NSRect(x: x, y: line2.minY, width: max(60, wide), height: line2.height),
+                   size: 11.5, weight: message.unread ? .semibold : .regular,
+                   color: TH.dim(message.unread ? 0.78 : 0.62))
+
+        let preview = message.preview
+        if !preview.isEmpty {
+            drawString(preview,
+                       in: NSRect(x: x, y: line3.minY, width: max(60, r.width - 14 - x),
+                                  height: line3.height),
+                       size: 10.5, weight: .regular, color: TH.dim(0.34))
         }
     }
 }
@@ -6494,7 +6646,9 @@ final class MailPanelView: NSView {
         modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
         addSubview(modeSeg)
 
-        scroll.frame = NSRect(x: 0, y: 132, width: W, height: 274)
+        // Les deux modes partagent le même cadre — bord haut à 424, bord bas
+        // à 66 — pour que la bascule ne décale rien à l'écran.
+        scroll.frame = NSRect(x: 0, y: 134, width: W, height: 290)
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false
@@ -6504,11 +6658,11 @@ final class MailPanelView: NSView {
         addSubview(scroll)
 
         // Carte de verdict du message sélectionné.
-        threatCard = mkCard(self, NSRect(x: 0, y: 68, width: W, height: 58), radius: 13, alpha: 0.07)
+        threatCard = mkCard(self, NSRect(x: 0, y: 66, width: W, height: 60), radius: 13, alpha: 0.07)
         threatTitle = mkLabel("Sélectionnez un message pour voir son analyse.",
-                              NSRect(x: 14, y: 34, width: W - 130, height: 16), 11.5, .semibold, alpha: 0.72)
+                              NSRect(x: 14, y: 36, width: W - 130, height: 16), 11.5, .semibold, alpha: 0.72)
         threatCard.addSubview(threatTitle)
-        threatBody = NSTextField(frame: NSRect(x: 14, y: 6, width: W - 130, height: 28))
+        threatBody = NSTextField(frame: NSRect(x: 14, y: 8, width: W - 130, height: 28))
         threatBody.isBezeled = false
         threatBody.drawsBackground = false
         threatBody.isEditable = false
@@ -6529,18 +6683,18 @@ final class MailPanelView: NSView {
         isolateBtn.onClick = { [weak self] _ in self?.quarantineSelected() }
         threatCard.addSubview(isolateBtn)
 
-        toField = NSTextField(frame: NSRect(x: 0, y: 370, width: W * 0.48, height: 30))
+        toField = NSTextField(frame: NSRect(x: 0, y: 394, width: W * 0.48, height: 30))
         toField.placeholderString = "Destinataire"
         toField.font = NSFont.systemFont(ofSize: 12.5)
-        subjectField = NSTextField(frame: NSRect(x: W * 0.48 + 10, y: 370, width: W * 0.52 - 10, height: 30))
+        subjectField = NSTextField(frame: NSRect(x: W * 0.48 + 10, y: 394, width: W * 0.52 - 10, height: 30))
         subjectField.placeholderString = "Objet"
         subjectField.font = NSFont.systemFont(ofSize: 12.5)
         [toField, subjectField].forEach { addSubview($0) }
 
-        accountLabel = mkLabel("", NSRect(x: 2, y: 412, width: W - 4, height: 14), 10, .regular, alpha: 0.38)
+        accountLabel = mkLabel("", NSRect(x: 2, y: 374, width: W - 4, height: 14), 10, .regular, alpha: 0.38)
         addSubview(accountLabel)
 
-        let bodyScroll = NSScrollView(frame: NSRect(x: 0, y: 68, width: W, height: 294))
+        let bodyScroll = NSScrollView(frame: NSRect(x: 0, y: 66, width: W, height: 300))
         bodyScrollView = bodyScroll
         bodyScroll.hasVerticalScroller = true
         bodyScroll.scrollerStyle = .overlay
@@ -6550,8 +6704,8 @@ final class MailPanelView: NSView {
         bodyScroll.layer?.cornerRadius = 12
         bodyScroll.layer?.masksToBounds = true
         let big: CGFloat = 1_000_000
-        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 294))
-        tv.minSize = NSSize(width: 0, height: 294)
+        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 300))
+        tv.minSize = NSSize(width: 0, height: 300)
         tv.maxSize = NSSize(width: big, height: big)
         tv.isVerticallyResizable = true
         tv.autoresizingMask = [.width]
@@ -6599,7 +6753,10 @@ final class MailPanelView: NSView {
         modeSeg.selected = i
         let box = (i == 0)
         scroll.isHidden = !box
-        threatCard.isHidden = !box || selected == nil
+        // La carte d'analyse reste en place même sans sélection, avec sa
+        // phrase d'attente : la faire apparaître et disparaître faisait
+        // sursauter le bas du panneau à chaque clic.
+        threatCard.isHidden = !box
         toField.isHidden = box
         subjectField.isHidden = box
         bodyScrollView?.isHidden = box
@@ -6955,7 +7112,10 @@ final class MailPanelView: NSView {
         lastMessages = msgs
 
         let W = scroll.bounds.width - 6
-        let rowH: CGFloat = 52
+        // 68 pt, dont 6 d'écart entre les cartes : il faut trois lignes —
+        // expéditeur, objet, aperçu — là où 52 n'en tenaient que deux, et
+        // encore collées l'une à l'autre.
+        let rowH: CGFloat = 68
         let totalH = max(scroll.bounds.height, CGFloat(msgs.count) * rowH)
         listHost.frame = NSRect(x: 0, y: 0, width: W, height: totalH)
 
@@ -6985,7 +7145,7 @@ final class MailPanelView: NSView {
             threatTitle?.stringValue = "Sélectionnez un message pour voir son analyse."
             threatTitle?.textColor = TH.dim(0.72)
             threatBody?.stringValue = ""
-            threatCard?.isHidden = true
+            threatCard?.isHidden = (mode != 0)
         }
     }
 
