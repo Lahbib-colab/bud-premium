@@ -32,6 +32,10 @@ struct NowPlaying {
     /// L'identifiant persistant de Music quand il existe ; sinon le
     /// couple titre/artiste, qui suffit pour une radio ou un flux.
     var trackKey = ""
+    /// Pourquoi Musique n'a rien dit, quand elle n'a rien dit. Affiché tel
+    /// quel sous les commandes : une liste vide sans explication laissait
+    /// croire à une panne de BUD.
+    var trouble = ""
 
     var hasTrack: Bool { !title.isEmpty }
 
@@ -67,9 +71,38 @@ enum MusicBridge {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID }
     }
 
+    /// La dernière raison pour laquelle Musique n'a pas répondu, en clair.
+    /// Vide quand tout va bien.
+    private(set) static var lastTrouble = ""
+
     @discardableResult
     private static func osa(_ s: String) -> String {
-        runShell("/usr/bin/osascript", ["-e", s])
+        let r = runShellDetailed("/usr/bin/osascript", ["-e", s])
+        lastTrouble = r.status == 0 ? "" : explain(r.err)
+        return r.out
+    }
+
+    /// Traduit l'erreur d'AppleScript en une phrase qui dit quoi faire.
+    ///
+    /// -1743 est le cas qui compte. BUD est signé à la volée, et macOS
+    /// identifie une application autorisée par sa signature : chaque mise à
+    /// jour en produit une nouvelle, donc l'autorisation accordée à la
+    /// version précédente ne vaut plus pour celle-ci. Le système refuse
+    /// alors en silence, et sans lire stderr on ne voyait qu'une réponse
+    /// vide — indiscernable d'un lecteur à l'arrêt.
+    private static func explain(_ err: String) -> String {
+        if err.contains("-1743") || err.lowercased().contains("not authorized") {
+            return "Musique est ouverte mais BUD n'a pas le droit de la piloter. "
+                + "Réglages Système → Confidentialité et sécurité → Automatisation → BUD, "
+                + "puis cochez Musique. Une mise à jour de BUD peut retirer cette coche."
+        }
+        if err.contains("-600") || err.lowercased().contains("isn't running") {
+            return "Musique s'est fermée pendant la lecture."
+        }
+        if err.contains("-1728") {
+            return "Aucun morceau en cours dans Musique."
+        }
+        return err.isEmpty ? "" : "Musique n'a pas répondu : \(String(err.prefix(140)))"
     }
 
     /// AppleScript peut rendre « 12,345 » selon la langue du système.
@@ -129,7 +162,12 @@ enum MusicBridge {
         """)
 
         let p = out.components(separatedBy: "|~|")
-        guard p.count >= 9 else { return n }
+        guard p.count >= 9 else {
+            // Réponse inexploitable : on remonte la raison plutôt que de
+            // rendre un état vide qui ressemble à « rien en lecture ».
+            n.trouble = lastTrouble
+            return n
+        }
         n.playing = p[0].contains("playing")
         n.title = p[1].trimmingCharacters(in: .whitespacesAndNewlines)
         n.artist = p[2].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -259,26 +297,35 @@ enum MusicBridge {
     // ─────────────────────────────────────────────────────────
 
     /// Volume de sortie du Mac, 0 à 100, et son état de coupure.
-    static func systemVolume() -> (level: Int, muted: Bool) {
-        let out = runShell("/usr/bin/osascript",
+    ///
+    /// CoreAudio d'abord : c'est un appel direct au pilote, sans processus
+    /// ni événement Apple. AppleScript ne sert plus que de filet, pour les
+    /// rares sorties dont CoreAudio n'expose pas le volume.
+    static func systemVolume() -> (level: Int, muted: Bool, settable: Bool) {
+        if let v = SystemAudio.volume() {
+            return (Int((v * 100).rounded()), SystemAudio.muted() ?? false, true)
+        }
+        let r = runShellDetailed("/usr/bin/osascript",
                            ["-e", "set v to output volume of (get volume settings)",
                             "-e", "set m to output muted of (get volume settings)",
                             "-e", "return (v as string) & \"|\" & (m as string)"])
-        let p = out.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "|")
-        guard p.count >= 2 else { return (50, false) }
-        // Un Mac sans sortie réglable renvoie -1 : on n'en fait pas un 0,
-        // qui laisserait croire que le son est coupé.
+        let p = r.out.components(separatedBy: "|")
+        guard p.count >= 2 else { return (50, false, false) }
+        // Une sortie sans volume réglable renvoie -1 : on n'en fait pas un
+        // 0, qui laisserait croire que le son est coupé.
         let lvl = Int(p[0].trimmingCharacters(in: .whitespaces)) ?? 50
         let muted = p[1].trimmingCharacters(in: .whitespaces).lowercased() == "true"
-        return (lvl < 0 ? 50 : min(100, lvl), muted)
+        return (lvl < 0 ? 50 : min(100, lvl), muted, lvl >= 0)
     }
 
     static func setSystemVolume(_ v: Int) {
         let n = max(0, min(100, v))
+        if SystemAudio.setVolume(Float(n) / 100) { return }
         runShell("/usr/bin/osascript", ["-e", "set volume output volume \(n)"])
     }
 
     static func setSystemMuted(_ m: Bool) {
+        if SystemAudio.setMuted(m) { return }
         runShell("/usr/bin/osascript", ["-e", "set volume output muted \(m)"])
     }
 
@@ -435,6 +482,7 @@ final class MusicPanelView: NSView {
     private var sysLabel: NSTextField!
     private var sysSlider: NSSlider!
     private var muteBtn: GlassButton!
+    private var authBtn: GlassButton!
     private var stopBtn: GlassButton!
     private var sysHeld = false
     private var sysMuted = false
@@ -574,6 +622,15 @@ final class MusicPanelView: NSView {
         ThemeRegistry.shared.register(hint, alpha: 0.42)
         addSubview(hint)
 
+        authBtn = GlassButton(frame: NSRect(x: (W - 230) / 2, y: 54, width: 230, height: 30),
+                              title: "Ouvrir les réglages d'automatisation",
+                              icon: "lock.open", compact: true)
+        authBtn.onClick = { [weak self] _ in self?.openAutomationSettings() }
+        authBtn.isHidden = true
+        addSubview(authBtn)
+
+        followSystemVolume()
+
         let bw = (W - 12) / 2
         let openBtn = GlassButton(frame: NSRect(x: 0, y: 0, width: bw, height: 44),
                                   title: "Ouvrir Musique", icon: "arrow.up.forward.app.fill")
@@ -593,7 +650,7 @@ final class MusicPanelView: NSView {
         let v = Int(s.doubleValue.rounded())
         sysLabel.stringValue = "\(v)"
         sysHeld = true
-        MusicBridge.setSystemVolume(v)
+        MusicBridge.setSystemVolume(v)   // appel direct : aucune attente
         // Monter le son d'un Mac coupé doit le rallumer : autrement le
         // curseur bouge et rien ne sort.
         if sysMuted && v > 0 {
@@ -603,7 +660,10 @@ final class MusicPanelView: NSView {
         }
         NSObject.cancelPreviousPerformRequests(withTarget: self,
                                                selector: #selector(releaseSystemVolume), object: nil)
-        perform(#selector(releaseSystemVolume), with: nil, afterDelay: 0.8)
+        // Court délai : il ne sert plus qu'à ignorer l'écho de notre propre
+        // écriture, pas à attendre une relecture. Huit dixièmes étaient
+        // calés sur AppleScript ; un cinquième suffit à CoreAudio.
+        perform(#selector(releaseSystemVolume), with: nil, afterDelay: 0.2)
     }
 
     @objc private func releaseSystemVolume() { sysHeld = false }
@@ -615,16 +675,34 @@ final class MusicPanelView: NSView {
         hint.stringValue = sysMuted ? "Son du Mac coupé." : "Son du Mac rétabli."
     }
 
-    /// Relit le volume du Mac. Appelé par le sondage du panneau, pas par
-    /// un minuteur à lui : un aller-retour AppleScript par seconde pour
-    /// un curseur serait cher payé.
+    /// Relit le volume du Mac.
+    ///
+    /// Appelé par l'écouteur CoreAudio, qui prévient dès que le volume
+    /// change — touches du clavier, centre de contrôle, autre application.
+    /// Plus de sondage : il n'y a rien à interroger, le système parle.
     private func refreshSystemVolume() {
         guard !sysHeld else { return }
-        let (lvl, muted) = MusicBridge.systemVolume()
-        sysSlider.doubleValue = Double(lvl)
-        sysLabel.stringValue = muted ? "coupé" : "\(lvl)"
-        sysMuted = muted
-        muteBtn.selected = muted
+        let v = MusicBridge.systemVolume()
+        sysSlider.doubleValue = Double(v.level)
+        sysSlider.isEnabled = v.settable
+        muteBtn.enabledFlag = v.settable
+        sysLabel.stringValue = !v.settable ? "n/d" : (v.muted ? "coupé" : "\(v.level)")
+        sysMuted = v.muted
+        muteBtn.selected = v.muted
+    }
+
+    /// Branche le panneau sur les changements de volume du système.
+    private func followSystemVolume() {
+        SystemAudio.onChange = { [weak self] in
+            guard let s = self else { return }
+            // Pendant un glissement, c'est le doigt qui commande : on
+            // ignore l'écho du système, sans quoi le curseur sauterait
+            // entre la valeur tenue et celle qui revient.
+            guard !s.sysHeld else { return }
+            s.refreshSystemVolume()
+        }
+        SystemAudio.startObserving()
+        refreshSystemVolume()
     }
 
     @objc private func volumeChanged(_ s: NSSlider) {
@@ -676,7 +754,6 @@ final class MusicPanelView: NSView {
             ArtworkStore.clear()
             // Le volume du Mac ne dépend pas de Musique : il reste réglable
             // même l'application fermée, et c'est souvent là qu'on le cherche.
-            refreshSystemVolume()
             return
         }
 
@@ -697,8 +774,6 @@ final class MusicPanelView: NSView {
             volSlider.doubleValue = Double(n.volume)
             volLabel.stringValue = "\(n.volume)"
         }
-        refreshSystemVolume()
-
         // L'icône dit l'action à venir, pas l'état présent : pendant la
         // lecture on offre la pause, à l'arrêt on offre la lecture.
         playBtn.iconName = n.playing ? "pause.fill" : "play.fill"
@@ -710,9 +785,28 @@ final class MusicPanelView: NSView {
                         : (n.repeatMode == "all" ? "Répéter tout" : "Répétition")
         repeatBtn.iconName = n.repeatMode == "one" ? "repeat.1" : "repeat"
 
-        hint.stringValue = n.playing
-            ? "BUD s'animera dans le notch pendant la lecture."
-            : (n.hasTrack ? "En pause." : "Lancez un morceau dans Musique.")
+        // Un obstacle l'emporte sur tout le reste : tant qu'on ne dit pas
+        // pourquoi rien ne s'affiche, l'utilisateur croit à une panne.
+        if !n.trouble.isEmpty {
+            hint.stringValue = n.trouble
+            hint.textColor = warnColor
+            authBtn.isHidden = false
+        } else {
+            hint.textColor = TH.dim(0.42)
+            authBtn.isHidden = true
+            hint.stringValue = n.playing
+                ? "BUD s'animera dans le notch pendant la lecture."
+                : (n.hasTrack ? "En pause." : "Lancez un morceau dans Musique.")
+        }
+    }
+
+    /// Ouvre directement le volet d'automatisation des réglages système.
+    /// Quand l'autorisation a été retirée, la redemander par un événement
+    /// Apple ne provoque plus de dialogue : macOS refuse en silence. Il
+    /// faut y retourner à la main, et autant y conduire.
+    @objc private func openAutomationSettings() {
+        let u = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        if let url = URL(string: u) { NSWorkspace.shared.open(url) }
     }
 
     /// Intentions du chat. Renvoie la phrase que BUD répondra.

@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 24.0 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 24.1 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -2721,6 +2721,213 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 }
 EOF_BUDAPP_SWIFT
 
+cat << 'EOF_BUDAUDIO_SWIFT' > "$SRC_DIR/BudAudio.swift"
+import Cocoa
+import CoreAudio
+import AudioToolbox
+
+// ═══════════════════════════════════════════════════════════
+//  Volume du Mac — en direct
+//
+//  Ce que remplace ce fichier : le volume passait par
+//  `osascript -e "set volume output volume N"`, et se relisait
+//  par un sondage toutes les secondes.
+//
+//  Deux latences s'additionnaient. Lancer `osascript` demande de
+//  créer un processus, de charger AppleScript et d'envoyer un
+//  événement Apple — une bonne centaine de millisecondes, à
+//  chaque mouvement du curseur. Et comme la relecture était un
+//  sondage, un changement fait ailleurs — les touches du
+//  clavier, le centre de contrôle — mettait jusqu'à une seconde
+//  à remonter dans BUD.
+//
+//  CoreAudio supprime les deux. Lire et écrire le volume y est
+//  un appel direct au pilote, sans processus ni événement. Et le
+//  système prévient par un écouteur de propriété dès que le
+//  volume change, quelle qu'en soit l'origine : plus de sondage,
+//  et le curseur de BUD suit les touches du clavier à l'instant.
+//
+//  Toutes les valeurs sont vérifiées. Un périphérique de sortie
+//  n'expose pas toujours un volume réglable — une sortie
+//  numérique optique, un agrégat — et dans ce cas BUD le dit au
+//  lieu d'afficher un curseur qui ne fait rien.
+// ═══════════════════════════════════════════════════════════
+
+enum SystemAudio {
+
+    /// Appelé sur le fil principal quand le volume ou la coupure change,
+    /// quelle que soit l'application à l'origine du changement.
+    static var onChange: (() -> Void)?
+
+    private static var listeningOn: AudioDeviceID = 0
+    private static var installed = false
+
+    // ─────────────────────────────────────────────────────────
+    //  Le périphérique de sortie
+    // ─────────────────────────────────────────────────────────
+
+    private static var systemAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        // 0 est l'élément principal. On écrit le nombre plutôt que la
+        // constante : elle s'est appelée `…ElementMaster` jusqu'à macOS 12
+        // puis `…ElementMain`, et le nom choisi déciderait du SDK qui
+        // accepte de compiler.
+        mElement: 0)
+
+    static func defaultOutput() -> AudioDeviceID? {
+        var dev = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let st = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                            &systemAddress, 0, nil, &size, &dev)
+        return (st == noErr && dev != 0) ? dev : nil
+    }
+
+    private static func address(_ selector: AudioObjectPropertySelector,
+                                _ element: UInt32 = 0) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector,
+                                   mScope: kAudioDevicePropertyScopeOutput,
+                                   mElement: element)
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Lire
+    // ─────────────────────────────────────────────────────────
+
+    /// Volume de sortie, 0 à 1. `nil` si ce périphérique n'en a pas.
+    static func volume() -> Float? {
+        guard let dev = defaultOutput() else { return nil }
+
+        // L'élément principal d'abord. Beaucoup de périphériques ne
+        // l'exposent pas et ne connaissent que leurs canaux : on fait
+        // alors la moyenne de la gauche et de la droite, ce que fait
+        // aussi le réglage du système.
+        if let v = scalar(dev, element: 0) { return v }
+        let l = scalar(dev, element: 1), r = scalar(dev, element: 2)
+        switch (l, r) {
+        case let (.some(a), .some(b)): return (a + b) / 2
+        case let (.some(a), .none):    return a
+        case let (.none, .some(b)):    return b
+        default:                       return nil
+        }
+    }
+
+    private static func scalar(_ dev: AudioDeviceID, element: UInt32) -> Float? {
+        var addr = address(kAudioDevicePropertyVolumeScalar, element)
+        guard AudioObjectHasProperty(dev, &addr) else { return nil }
+        var v = Float32(0)
+        var size = UInt32(MemoryLayout<Float32>.size)
+        let st = AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &v)
+        return st == noErr ? Float(v) : nil
+    }
+
+    static func muted() -> Bool? {
+        guard let dev = defaultOutput() else { return nil }
+        var addr = address(kAudioDevicePropertyMute)
+        guard AudioObjectHasProperty(dev, &addr) else { return nil }
+        var m = UInt32(0)
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let st = AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &m)
+        return st == noErr ? (m != 0) : nil
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Écrire
+    // ─────────────────────────────────────────────────────────
+
+    /// Règle le volume. Rend `false` si le périphérique refuse, auquel cas
+    /// l'appelant retombe sur AppleScript plutôt que de ne rien faire.
+    @discardableResult
+    static func setVolume(_ v: Float) -> Bool {
+        guard let dev = defaultOutput() else { return false }
+        let clamped = max(0, min(1, v))
+        if write(dev, element: 0, clamped) { return true }
+        // Sans élément principal, on règle chaque canal.
+        let a = write(dev, element: 1, clamped)
+        let b = write(dev, element: 2, clamped)
+        return a || b
+    }
+
+    private static func write(_ dev: AudioDeviceID, element: UInt32, _ v: Float) -> Bool {
+        var addr = address(kAudioDevicePropertyVolumeScalar, element)
+        guard AudioObjectHasProperty(dev, &addr) else { return false }
+        var settable = DarwinBoolean(false)
+        guard AudioObjectIsPropertySettable(dev, &addr, &settable) == noErr,
+              settable.boolValue else { return false }
+        var value = Float32(v)
+        let size = UInt32(MemoryLayout<Float32>.size)
+        return AudioObjectSetPropertyData(dev, &addr, 0, nil, size, &value) == noErr
+    }
+
+    @discardableResult
+    static func setMuted(_ m: Bool) -> Bool {
+        guard let dev = defaultOutput() else { return false }
+        var addr = address(kAudioDevicePropertyMute)
+        var settable = DarwinBoolean(false)
+        guard AudioObjectHasProperty(dev, &addr),
+              AudioObjectIsPropertySettable(dev, &addr, &settable) == noErr,
+              settable.boolValue else { return false }
+        var value = UInt32(m ? 1 : 0)
+        let size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectSetPropertyData(dev, &addr, 0, nil, size, &value) == noErr
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Observer
+    // ─────────────────────────────────────────────────────────
+
+    /// Installe les écouteurs. À appeler une fois au démarrage.
+    ///
+    /// Trois propriétés sont surveillées : le volume, la coupure, et le
+    /// périphérique de sortie par défaut. Cette troisième est celle qu'on
+    /// oublie : brancher un casque change de périphérique, et un écouteur
+    /// resté attaché à l'ancien ne dirait plus rien.
+    static func startObserving() {
+        guard !installed else { return }
+        installed = true
+
+        var sys = systemAddress
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &sys, DispatchQueue.main) { _, _ in
+                attachToCurrentDevice()
+                onChange?()
+            }
+        attachToCurrentDevice()
+    }
+
+    private static func attachToCurrentDevice() {
+        guard let dev = defaultOutput() else { return }
+        guard dev != listeningOn else { return }
+
+        if listeningOn != 0 {
+            for sel in [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute] {
+                for el in UInt32(0)...2 {
+                    var a = address(sel, el)
+                    AudioObjectRemovePropertyListenerBlock(listeningOn, &a,
+                                                           DispatchQueue.main, deviceListener)
+                }
+            }
+        }
+
+        listeningOn = dev
+        for sel in [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute] {
+            for el in UInt32(0)...2 {
+                var a = address(sel, el)
+                guard AudioObjectHasProperty(dev, &a) else { continue }
+                AudioObjectAddPropertyListenerBlock(dev, &a, DispatchQueue.main, deviceListener)
+            }
+        }
+    }
+
+    /// Le même bloc pour tous les écouteurs : il faut la même référence
+    /// pour pouvoir les retirer, et deux fermetures écrites à l'identique
+    /// ne sont pas la même référence.
+    private static let deviceListener: AudioObjectPropertyListenerBlock = { _, _ in
+        onChange?()
+    }
+}
+EOF_BUDAUDIO_SWIFT
+
 cat << 'EOF_BUDCAPTURE_SWIFT' > "$SRC_DIR/BudCapture.swift"
 import Foundation
 import AppKit
@@ -4772,7 +4979,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.0"
+let budVersion = "24.1"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -4787,6 +4994,44 @@ func runShell(_ path: String, _ args: [String]) -> String {
     let d = pipe.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
     return String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+/// Comme `runShell`, mais rend aussi la sortie d'erreur et le code de
+/// sortie.
+///
+/// `runShell` jette stderr. Pour `osascript`, c'est un angle mort grave :
+/// un refus d'autorisation — « Not authorized to send Apple events to
+/// Music. (-1743) » — s'écrit entièrement sur stderr, et l'appelant ne
+/// recevait qu'une chaîne vide, impossible à distinguer d'une réponse
+/// légitimement vide. BUD affichait alors « rien en lecture » au lieu de
+/// dire que l'autorisation manquait.
+func runShellDetailed(_ path: String, _ args: [String]) -> (out: String, err: String, status: Int32) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: path)
+    p.arguments = args
+    let op = Pipe(), ep = Pipe()
+    p.standardOutput = op
+    p.standardError = ep
+    do { try p.run() } catch {
+        return ("", "lancement impossible : \(error.localizedDescription)", -1)
+    }
+
+    // Les deux tuyaux se lisent en parallèle. Vider l'un jusqu'au bout
+    // pendant que l'autre se remplit bloque le processus dès que son
+    // tampon de 64 Ko est plein, et plus rien n'avance.
+    var outData = Data(), errData = Data()
+    let g = DispatchGroup()
+    let q = DispatchQueue(label: "fr.lahbib.bud.shell", attributes: .concurrent)
+    g.enter(); q.async { outData = op.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+    g.enter(); q.async { errData = ep.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+    g.wait()
+    p.waitUntilExit()
+
+    let trim = { (d: Data) in
+        String(data: d, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+    return (trim(outData), trim(errData), p.terminationStatus)
 }
 
 func notify(_ t: String, _ b: String) {
@@ -9384,6 +9629,10 @@ struct NowPlaying {
     /// L'identifiant persistant de Music quand il existe ; sinon le
     /// couple titre/artiste, qui suffit pour une radio ou un flux.
     var trackKey = ""
+    /// Pourquoi Musique n'a rien dit, quand elle n'a rien dit. Affiché tel
+    /// quel sous les commandes : une liste vide sans explication laissait
+    /// croire à une panne de BUD.
+    var trouble = ""
 
     var hasTrack: Bool { !title.isEmpty }
 
@@ -9419,9 +9668,38 @@ enum MusicBridge {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID }
     }
 
+    /// La dernière raison pour laquelle Musique n'a pas répondu, en clair.
+    /// Vide quand tout va bien.
+    private(set) static var lastTrouble = ""
+
     @discardableResult
     private static func osa(_ s: String) -> String {
-        runShell("/usr/bin/osascript", ["-e", s])
+        let r = runShellDetailed("/usr/bin/osascript", ["-e", s])
+        lastTrouble = r.status == 0 ? "" : explain(r.err)
+        return r.out
+    }
+
+    /// Traduit l'erreur d'AppleScript en une phrase qui dit quoi faire.
+    ///
+    /// -1743 est le cas qui compte. BUD est signé à la volée, et macOS
+    /// identifie une application autorisée par sa signature : chaque mise à
+    /// jour en produit une nouvelle, donc l'autorisation accordée à la
+    /// version précédente ne vaut plus pour celle-ci. Le système refuse
+    /// alors en silence, et sans lire stderr on ne voyait qu'une réponse
+    /// vide — indiscernable d'un lecteur à l'arrêt.
+    private static func explain(_ err: String) -> String {
+        if err.contains("-1743") || err.lowercased().contains("not authorized") {
+            return "Musique est ouverte mais BUD n'a pas le droit de la piloter. "
+                + "Réglages Système → Confidentialité et sécurité → Automatisation → BUD, "
+                + "puis cochez Musique. Une mise à jour de BUD peut retirer cette coche."
+        }
+        if err.contains("-600") || err.lowercased().contains("isn't running") {
+            return "Musique s'est fermée pendant la lecture."
+        }
+        if err.contains("-1728") {
+            return "Aucun morceau en cours dans Musique."
+        }
+        return err.isEmpty ? "" : "Musique n'a pas répondu : \(String(err.prefix(140)))"
     }
 
     /// AppleScript peut rendre « 12,345 » selon la langue du système.
@@ -9481,7 +9759,12 @@ enum MusicBridge {
         """)
 
         let p = out.components(separatedBy: "|~|")
-        guard p.count >= 9 else { return n }
+        guard p.count >= 9 else {
+            // Réponse inexploitable : on remonte la raison plutôt que de
+            // rendre un état vide qui ressemble à « rien en lecture ».
+            n.trouble = lastTrouble
+            return n
+        }
         n.playing = p[0].contains("playing")
         n.title = p[1].trimmingCharacters(in: .whitespacesAndNewlines)
         n.artist = p[2].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9611,26 +9894,35 @@ enum MusicBridge {
     // ─────────────────────────────────────────────────────────
 
     /// Volume de sortie du Mac, 0 à 100, et son état de coupure.
-    static func systemVolume() -> (level: Int, muted: Bool) {
-        let out = runShell("/usr/bin/osascript",
+    ///
+    /// CoreAudio d'abord : c'est un appel direct au pilote, sans processus
+    /// ni événement Apple. AppleScript ne sert plus que de filet, pour les
+    /// rares sorties dont CoreAudio n'expose pas le volume.
+    static func systemVolume() -> (level: Int, muted: Bool, settable: Bool) {
+        if let v = SystemAudio.volume() {
+            return (Int((v * 100).rounded()), SystemAudio.muted() ?? false, true)
+        }
+        let r = runShellDetailed("/usr/bin/osascript",
                            ["-e", "set v to output volume of (get volume settings)",
                             "-e", "set m to output muted of (get volume settings)",
                             "-e", "return (v as string) & \"|\" & (m as string)"])
-        let p = out.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "|")
-        guard p.count >= 2 else { return (50, false) }
-        // Un Mac sans sortie réglable renvoie -1 : on n'en fait pas un 0,
-        // qui laisserait croire que le son est coupé.
+        let p = r.out.components(separatedBy: "|")
+        guard p.count >= 2 else { return (50, false, false) }
+        // Une sortie sans volume réglable renvoie -1 : on n'en fait pas un
+        // 0, qui laisserait croire que le son est coupé.
         let lvl = Int(p[0].trimmingCharacters(in: .whitespaces)) ?? 50
         let muted = p[1].trimmingCharacters(in: .whitespaces).lowercased() == "true"
-        return (lvl < 0 ? 50 : min(100, lvl), muted)
+        return (lvl < 0 ? 50 : min(100, lvl), muted, lvl >= 0)
     }
 
     static func setSystemVolume(_ v: Int) {
         let n = max(0, min(100, v))
+        if SystemAudio.setVolume(Float(n) / 100) { return }
         runShell("/usr/bin/osascript", ["-e", "set volume output volume \(n)"])
     }
 
     static func setSystemMuted(_ m: Bool) {
+        if SystemAudio.setMuted(m) { return }
         runShell("/usr/bin/osascript", ["-e", "set volume output muted \(m)"])
     }
 
@@ -9787,6 +10079,7 @@ final class MusicPanelView: NSView {
     private var sysLabel: NSTextField!
     private var sysSlider: NSSlider!
     private var muteBtn: GlassButton!
+    private var authBtn: GlassButton!
     private var stopBtn: GlassButton!
     private var sysHeld = false
     private var sysMuted = false
@@ -9926,6 +10219,15 @@ final class MusicPanelView: NSView {
         ThemeRegistry.shared.register(hint, alpha: 0.42)
         addSubview(hint)
 
+        authBtn = GlassButton(frame: NSRect(x: (W - 230) / 2, y: 54, width: 230, height: 30),
+                              title: "Ouvrir les réglages d'automatisation",
+                              icon: "lock.open", compact: true)
+        authBtn.onClick = { [weak self] _ in self?.openAutomationSettings() }
+        authBtn.isHidden = true
+        addSubview(authBtn)
+
+        followSystemVolume()
+
         let bw = (W - 12) / 2
         let openBtn = GlassButton(frame: NSRect(x: 0, y: 0, width: bw, height: 44),
                                   title: "Ouvrir Musique", icon: "arrow.up.forward.app.fill")
@@ -9945,7 +10247,7 @@ final class MusicPanelView: NSView {
         let v = Int(s.doubleValue.rounded())
         sysLabel.stringValue = "\(v)"
         sysHeld = true
-        MusicBridge.setSystemVolume(v)
+        MusicBridge.setSystemVolume(v)   // appel direct : aucune attente
         // Monter le son d'un Mac coupé doit le rallumer : autrement le
         // curseur bouge et rien ne sort.
         if sysMuted && v > 0 {
@@ -9955,7 +10257,10 @@ final class MusicPanelView: NSView {
         }
         NSObject.cancelPreviousPerformRequests(withTarget: self,
                                                selector: #selector(releaseSystemVolume), object: nil)
-        perform(#selector(releaseSystemVolume), with: nil, afterDelay: 0.8)
+        // Court délai : il ne sert plus qu'à ignorer l'écho de notre propre
+        // écriture, pas à attendre une relecture. Huit dixièmes étaient
+        // calés sur AppleScript ; un cinquième suffit à CoreAudio.
+        perform(#selector(releaseSystemVolume), with: nil, afterDelay: 0.2)
     }
 
     @objc private func releaseSystemVolume() { sysHeld = false }
@@ -9967,16 +10272,34 @@ final class MusicPanelView: NSView {
         hint.stringValue = sysMuted ? "Son du Mac coupé." : "Son du Mac rétabli."
     }
 
-    /// Relit le volume du Mac. Appelé par le sondage du panneau, pas par
-    /// un minuteur à lui : un aller-retour AppleScript par seconde pour
-    /// un curseur serait cher payé.
+    /// Relit le volume du Mac.
+    ///
+    /// Appelé par l'écouteur CoreAudio, qui prévient dès que le volume
+    /// change — touches du clavier, centre de contrôle, autre application.
+    /// Plus de sondage : il n'y a rien à interroger, le système parle.
     private func refreshSystemVolume() {
         guard !sysHeld else { return }
-        let (lvl, muted) = MusicBridge.systemVolume()
-        sysSlider.doubleValue = Double(lvl)
-        sysLabel.stringValue = muted ? "coupé" : "\(lvl)"
-        sysMuted = muted
-        muteBtn.selected = muted
+        let v = MusicBridge.systemVolume()
+        sysSlider.doubleValue = Double(v.level)
+        sysSlider.isEnabled = v.settable
+        muteBtn.enabledFlag = v.settable
+        sysLabel.stringValue = !v.settable ? "n/d" : (v.muted ? "coupé" : "\(v.level)")
+        sysMuted = v.muted
+        muteBtn.selected = v.muted
+    }
+
+    /// Branche le panneau sur les changements de volume du système.
+    private func followSystemVolume() {
+        SystemAudio.onChange = { [weak self] in
+            guard let s = self else { return }
+            // Pendant un glissement, c'est le doigt qui commande : on
+            // ignore l'écho du système, sans quoi le curseur sauterait
+            // entre la valeur tenue et celle qui revient.
+            guard !s.sysHeld else { return }
+            s.refreshSystemVolume()
+        }
+        SystemAudio.startObserving()
+        refreshSystemVolume()
     }
 
     @objc private func volumeChanged(_ s: NSSlider) {
@@ -10028,7 +10351,6 @@ final class MusicPanelView: NSView {
             ArtworkStore.clear()
             // Le volume du Mac ne dépend pas de Musique : il reste réglable
             // même l'application fermée, et c'est souvent là qu'on le cherche.
-            refreshSystemVolume()
             return
         }
 
@@ -10049,8 +10371,6 @@ final class MusicPanelView: NSView {
             volSlider.doubleValue = Double(n.volume)
             volLabel.stringValue = "\(n.volume)"
         }
-        refreshSystemVolume()
-
         // L'icône dit l'action à venir, pas l'état présent : pendant la
         // lecture on offre la pause, à l'arrêt on offre la lecture.
         playBtn.iconName = n.playing ? "pause.fill" : "play.fill"
@@ -10062,9 +10382,28 @@ final class MusicPanelView: NSView {
                         : (n.repeatMode == "all" ? "Répéter tout" : "Répétition")
         repeatBtn.iconName = n.repeatMode == "one" ? "repeat.1" : "repeat"
 
-        hint.stringValue = n.playing
-            ? "BUD s'animera dans le notch pendant la lecture."
-            : (n.hasTrack ? "En pause." : "Lancez un morceau dans Musique.")
+        // Un obstacle l'emporte sur tout le reste : tant qu'on ne dit pas
+        // pourquoi rien ne s'affiche, l'utilisateur croit à une panne.
+        if !n.trouble.isEmpty {
+            hint.stringValue = n.trouble
+            hint.textColor = warnColor
+            authBtn.isHidden = false
+        } else {
+            hint.textColor = TH.dim(0.42)
+            authBtn.isHidden = true
+            hint.stringValue = n.playing
+                ? "BUD s'animera dans le notch pendant la lecture."
+                : (n.hasTrack ? "En pause." : "Lancez un morceau dans Musique.")
+        }
+    }
+
+    /// Ouvre directement le volet d'automatisation des réglages système.
+    /// Quand l'autorisation a été retirée, la redemander par un événement
+    /// Apple ne provoque plus de dialogue : macOS refuse en silence. Il
+    /// faut y retourner à la main, et autant y conduire.
+    @objc private func openAutomationSettings() {
+        let u = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        if let url = URL(string: u) { NSWorkspace.shared.open(url) }
     }
 
     /// Intentions du chat. Renvoie la phrase que BUD répondra.
@@ -15072,7 +15411,8 @@ fi
 
 FRAMEWORKS=(-framework Cocoa -framework IOKit -framework Carbon
             -framework Security -framework Network -framework CoreImage
-            -framework Speech -framework AVFoundation)
+            -framework Speech -framework AVFoundation
+            -framework CoreAudio -framework AudioToolbox)
 
 # ─────────────────────────────────────────────────────────────────
 #  Compilation

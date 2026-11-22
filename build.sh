@@ -221,7 +221,8 @@ fi
 
 FRAMEWORKS=(-framework Cocoa -framework IOKit -framework Carbon
             -framework Security -framework Network -framework CoreImage
-            -framework Speech -framework AVFoundation)
+            -framework Speech -framework AVFoundation
+            -framework CoreAudio -framework AudioToolbox)
 
 # ─────────────────────────────────────────────────────────────────
 #  Compilation

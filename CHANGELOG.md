@@ -2,6 +2,31 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.1 — Musique qui parle, volume sans latence
+
+**Pourquoi la pochette et les métadonnées ne s'affichaient pas**
+
+La cause n'était pas dans le code qui lit Musique, mais dans celui qui le fait tourner. `runShell` **jetait la sortie d'erreur**. Or un refus d'autorisation — « Not authorized to send Apple events to Music. (-1743) » — s'écrit entièrement sur stderr : BUD ne recevait qu'une chaîne vide, impossible à distinguer d'un lecteur à l'arrêt. Il affichait donc « Lancez un morceau dans Musique » alors que le vrai message était « je n'ai pas le droit de lui parler ».
+
+Et cette autorisation se perd : macOS identifie une application autorisée par sa **signature**, BUD est signé à la volée, et chaque mise à jour en produit une nouvelle. L'accord donné à la version précédente ne vaut plus pour celle-ci — après huit mises à jour dans la journée, il y a toutes les chances qu'il ait sauté.
+
+- `runShellDetailed` rend la sortie d'erreur et le code de sortie, en lisant les deux tuyaux **en parallèle** : vider l'un pendant que l'autre se remplit bloque le processus dès que son tampon de 64 Ko est plein.
+- Les erreurs d'AppleScript sont traduites en phrases qui disent quoi faire. −1743 nomme le volet exact des réglages, et prévient qu'une mise à jour peut retirer la coche.
+- Un bouton **« Ouvrir les réglages d'automatisation »** apparaît dans ce cas : une fois l'autorisation retirée, la redemander par un événement Apple ne provoque plus de dialogue — macOS refuse en silence.
+
+**Pourquoi le volume était en retard**
+
+Deux latences s'additionnaient. Écrire le volume passait par `osascript` : création d'un processus, chargement d'AppleScript, envoi d'un événement Apple — une bonne centaine de millisecondes à chaque mouvement du curseur. Et la relecture était un **sondage**, donc un changement fait ailleurs — touches du clavier, centre de contrôle — mettait jusqu'à une seconde à remonter.
+
+- **CoreAudio remplace les deux.** Lire et écrire le volume est un appel direct au pilote, sans processus ni événement.
+- **Un écouteur de propriété remplace le sondage.** Le système prévient dès que le volume change, quelle qu'en soit l'origine : le curseur de BUD suit les touches du clavier à l'instant.
+- Le **changement de périphérique** est surveillé aussi. C'est celui qu'on oublie : brancher un casque change de sortie, et un écouteur resté attaché à l'ancienne ne dirait plus rien.
+- Les sorties sans volume réglable — optique, agrégat — sont reconnues : le curseur se désactive et affiche « n/d » au lieu de faire semblant.
+- AppleScript reste en **filet** pour les rares sorties que CoreAudio n'expose pas.
+- Le délai d'anti-écho pendant un glissement passe de 0,8 s à 0,2 s : il était calé sur la lenteur d'AppleScript.
+
+**Sur MusicKit.** Elle demande un compte développeur, des droits signés par Apple et un abonnement Apple Music actif. BUD est signé à la volée sur votre machine : aucune de ces trois conditions n'est remplie, et le serait-elle que MusicKit ne lit pas la lecture en cours de l'application Musique — elle sert à lire le catalogue Apple Music. L'accès direct par événements Apple est la bonne voie, et c'est celle qui est en place ; ce qui manquait, c'était de dire quand elle est bloquée.
+
 ## 24.0 — la fenêtre réparée, le courrier instantané
 
 **Fenêtre « Raccourcis et aperçu »**

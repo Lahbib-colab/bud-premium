@@ -613,7 +613,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.0"
+let budVersion = "24.1"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -628,6 +628,44 @@ func runShell(_ path: String, _ args: [String]) -> String {
     let d = pipe.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
     return String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+/// Comme `runShell`, mais rend aussi la sortie d'erreur et le code de
+/// sortie.
+///
+/// `runShell` jette stderr. Pour `osascript`, c'est un angle mort grave :
+/// un refus d'autorisation — « Not authorized to send Apple events to
+/// Music. (-1743) » — s'écrit entièrement sur stderr, et l'appelant ne
+/// recevait qu'une chaîne vide, impossible à distinguer d'une réponse
+/// légitimement vide. BUD affichait alors « rien en lecture » au lieu de
+/// dire que l'autorisation manquait.
+func runShellDetailed(_ path: String, _ args: [String]) -> (out: String, err: String, status: Int32) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: path)
+    p.arguments = args
+    let op = Pipe(), ep = Pipe()
+    p.standardOutput = op
+    p.standardError = ep
+    do { try p.run() } catch {
+        return ("", "lancement impossible : \(error.localizedDescription)", -1)
+    }
+
+    // Les deux tuyaux se lisent en parallèle. Vider l'un jusqu'au bout
+    // pendant que l'autre se remplit bloque le processus dès que son
+    // tampon de 64 Ko est plein, et plus rien n'avance.
+    var outData = Data(), errData = Data()
+    let g = DispatchGroup()
+    let q = DispatchQueue(label: "fr.lahbib.bud.shell", attributes: .concurrent)
+    g.enter(); q.async { outData = op.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+    g.enter(); q.async { errData = ep.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+    g.wait()
+    p.waitUntilExit()
+
+    let trim = { (d: Data) in
+        String(data: d, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+    return (trim(outData), trim(errData), p.terminationStatus)
 }
 
 func notify(_ t: String, _ b: String) {
