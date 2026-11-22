@@ -3,6 +3,9 @@
 #   make            compile et installe dans ~/Applications
 #   make check      compile sans installer (ce que fait la CI)
 #   make installer  régénère dist/Installer_BUD_Premium.command
+#
+# Les scripts sont appelés par « bash », jamais par « ./ » : le dépôt
+# fonctionne même si le bit d'exécution a été perdu en route.
 #   make clean      efface l'installeur généré
 
 .PHONY: all install check installer clean
@@ -10,13 +13,13 @@
 all: install
 
 install:
-	@./build.sh install
+	@bash build.sh install
 
 check:
-	@./build.sh check
+	@bash build.sh check
 
 installer:
-	@./Tools/make-installer.sh
+	@bash Tools/make-installer.sh
 
 clean:
 	@rm -f dist/*.command

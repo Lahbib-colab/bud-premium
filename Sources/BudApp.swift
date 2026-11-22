@@ -78,7 +78,11 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var clipButtons: [GlassButton] = []
     private var clipHistory: [String] = []
     private var lastClipChange = NSPasteboard.general.changeCount
-    private var searchField: NSSearchField!, toolsInfo: NSTextField!
+    private var searchField: NSSearchField!
+    private var captureSeg: SegmentedBar!
+    private var captureInfo: NSTextField!
+    private var lastCapture: URL?
+    private var revealBtn: GlassButton!, toolsInfo: NSTextField!
     private var sortPathLabel: NSTextField!, sortStatsLabel: NSTextField!
     private var sortLogLabels: [NSTextField] = []
     private var undoBtn: GlassButton!
@@ -98,6 +102,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     fileprivate var state = BudStore.shared.load()
     private var animTimer: Timer?, tickTimer: Timer?
     private var currentTab = 0, ticks = 0
+    private var nowPlayingTitle = ""
+    private var musicPollInFlight = false
     fileprivate var phase: FocusPhase = .idle
     fileprivate var phaseEnd: Date?
     private var lastBreak = Date()
@@ -414,6 +420,67 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
     }
 
+    /// Relit l'état de Music hors du fil principal : osascript coûte
+    /// une centaine de millisecondes, ce qui se verrait sur l'animation.
+    private func pollMusic() {
+        guard MusicBridge.running() else {
+            if nowPlayingTitle != "" || chrome.musicPlaying { applyNowPlaying(NowPlaying()) }
+            return
+        }
+        guard !musicPollInFlight else { return }
+        musicPollInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let n = MusicBridge.nowPlaying()
+            DispatchQueue.main.async {
+                guard let s = self else { return }
+                s.musicPollInFlight = false
+                s.applyNowPlaying(n)
+                if s.currentTab == s.tabMusic { s.musicPanel.apply(n) }
+            }
+        }
+    }
+
+    /// Répercute la lecture sur le notch et sur le personnage.
+    private func applyNowPlaying(_ n: NowPlaying) {
+        let line = n.playing ? n.oneLine : ""
+        if line != nowPlayingTitle {
+            nowPlayingTitle = line
+            chrome.nowPlaying = line
+        }
+        if chrome.musicPlaying != n.playing {
+            chrome.musicPlaying = n.playing
+            avatar?.musicPlaying = n.playing
+            chrome.needsDisplay = true
+        }
+    }
+
+    // ── Capture d'écran ──
+    //
+    //  Le notch se replie et l'application se retire avant la prise :
+    //  sans ça, BUD figurerait sur toutes les captures plein écran.
+    private func capture(_ mode: CaptureMode) {
+        let target: CaptureTarget = captureSeg.selected == 1 ? .clipboard : .desktop
+        collapse()
+        captureInfo.stringValue = mode.interactive
+            ? "Cliquez la fenêtre ou tracez la zone…"
+            : "Prise dans un instant…"
+        ScreenCapture.run(mode, to: target) { [weak self] r in
+            guard let s = self else { return }
+            s.captureInfo.stringValue = r.message
+            s.lastCapture = r.url
+            s.revealBtn.enabledFlag = (r.url != nil)
+            if r.ok {
+                s.setStatus(r.message)
+                s.avatar?.react()
+                if let u = r.url {
+                    s.coucou("Capture enregistrée", u.lastPathComponent, hold: 5, push: false)
+                }
+            } else {
+                s.setStatus(r.message)
+            }
+        }
+    }
+
     private func buildContent() {
         let W = sizeOpen.width, H = sizeOpen.height
 
@@ -495,7 +562,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         mailPanel = MailPanelView(frame: pf)
         phonePanel = PhonePanelView(frame: pf)
         remindersPanel = RemindersPanelView(frame: pf)
-        musicPanel = MusicPanelView(frame: pf, source: state.musicSource)
+        musicPanel = MusicPanelView(frame: pf)
         storagePanel = StoragePanelView(frame: pf)
         cleanPanel = CleanupPanelView(frame: pf)
         let focus = NSView(frame: pf)
@@ -562,10 +629,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         remindersPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         remindersPanel.onChanged = { [weak self] in self?.refreshReminderBadge() }
         musicPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
-        musicPanel.onSourceChange = { [weak self] i in
-            self?.state.musicSource = i
-            if let st = self?.state { BudStore.shared.save(st) }
-        }
+        // Le notch suit la lecture dès que le panneau relit l'état.
+        musicPanel.onNowPlaying = { [weak self] n in self?.applyNowPlaying(n) }
         wireChat()
 
         buildCompanion(companion)
@@ -871,6 +936,39 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             b.onClick = { [weak self] btn in self?.launchApp(btn.idx) }
             p.addSubview(b)
         }
+
+        // ── Capture d'écran ──
+        mkSection(p, 250, W, "Capture d'écran")
+        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: 206, width: W, height: 38),
+                                  items: [SegmentedBar.Item(title: "Sur le Bureau", icon: "desktopcomputer"),
+                                          SegmentedBar.Item(title: "Presse-papiers", icon: "doc.on.clipboard")],
+                                  selected: 0)
+        p.addSubview(captureSeg)
+
+        let cw = (W - 36) / 4
+        for (i, m) in [CaptureMode.screen, .window, .selection].enumerated() {
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: 152, width: cw, height: 48),
+                                title: m.label, icon: m.icon, prominent: i == 0)
+            b.idx = m.rawValue
+            b.onClick = { [weak self] btn in self?.capture(CaptureMode(rawValue: btn.idx) ?? .screen) }
+            p.addSubview(b)
+        }
+        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: 152, width: cw, height: 48),
+                                title: "Révéler", icon: "folder.badge.questionmark")
+        revealBtn.enabledFlag = false
+        revealBtn.onClick = { [weak self] _ in
+            guard let u = self?.lastCapture else { return }
+            ScreenCapture.reveal(u)
+        }
+        p.addSubview(revealBtn)
+
+        captureInfo = mkLabel("Le notch se replie avant la prise. « Une fenêtre » et « Sélection » attendent votre clic.",
+                              NSRect(x: 0, y: 112, width: W, height: 32), 10.5, .regular, alpha: 0.40, .center)
+        captureInfo.lineBreakMode = .byWordWrapping
+        captureInfo.maximumNumberOfLines = 2
+        captureInfo.cell?.usesSingleLineMode = false
+        captureInfo.cell?.wraps = true
+        p.addSubview(captureInfo)
 
         toolsInfo = mkLabel("Finder · Safari · Mail · Terminal", NSRect(x: 0, y: 10, width: W, height: 40),
                             11.5, .regular, alpha: 0.5, .center)
@@ -1691,6 +1789,9 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         checkReminders()
         if ticks % 60 == 0 { checkMail() }
         if ticks % 10 == 0 { refreshReminderBadge() }
+        // Musique : toutes les 4 s si Music tourne, sinon rien. Le test
+        // d'exécution passe par NSWorkspace, donc sans lancer de processus.
+        if ticks % 4 == 0 { pollMusic() }
         updateFullscreenVisibility()
         let hr = Calendar.current.component(.hour, from: now)
         avatar?.sleepy = (hr >= 23 || hr < 5) && pendingAgents == 0

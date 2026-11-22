@@ -2,6 +2,15 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.0
+
+- **Capture d'écran** — tout l'écran, une fenêtre, ou une sélection, vers le Bureau ou le presse-papiers. BUD délègue à `screencapture`, l'outil du système, qui sait déjà gérer les écrans multiples, le Retina et l'espace colorimétrique. Le notch se replie avant la prise, sinon il figurerait sur chaque capture. Une image de moins de 4 Ko trahit l'autorisation « Enregistrement de l'écran » manquante : BUD le dit au lieu de laisser un fichier noir sur le Bureau.
+- **Courrier en deux modes** — *Boîte* et *Rédiger* se partageaient 570 pt et se retrouvaient tous deux à l'étroit. Chacun occupe maintenant toute la hauteur : la liste passe de 174 à 274 pt, le corps du message de 70 à 294 pt. « Répondre » bascule en rédaction, l'envoi réussi ramène à la boîte.
+- **Musique recentrée sur Apple Music.** Spotify et surtout Alexa sont retirés : Amazon n'expose aucune interface locale sur macOS, et le piloter par les touches média d'un lecteur web était un bricolage qui réclamait l'autorisation Accessibilité pour un résultat imprévisible.
+- Contrôle enrichi : barre de progression, position et durée, recul et avance de 15 s, curseur de volume, lecture aléatoire, répétition (aucune, tout, ce titre). Un seul aller-retour AppleScript rapporte l'état complet, chaque propriété lue dans son propre `try`.
+- **BUD danse pendant la lecture.** Le notch replié montre le titre défilant à la place de l'heure, avec quatre barres d'égaliseur, et le personnage prend le rythme par impulsions dans ses ressorts. Honnêteté : macOS n'expose aucun niveau audio en sortie sans capturer le flux, ce que BUD ne fait pas — le rythme est régulier et synthétique, c'est un signe de vie, pas une mesure du morceau.
+- Le sondage de lecture ne coûte rien quand Musique est fermée : le test d'exécution passe par `NSWorkspace`, sans lancer de processus.
+
 ## 22.0
 
 - **Compilation réparée.** Les versions 20 et 21 appelaient `swiftc` par son chemin résolu (`xcrun --find swiftc`) au lieu de passer par `xcrun`. Or c'est `xcrun` qui positionne `SDKROOT` : sans lui le compilateur échouait sur `unable to load standard library`. Toutes les compilations repassent par `xcrun --sdk macosx swiftc`.

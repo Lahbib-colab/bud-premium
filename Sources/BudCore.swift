@@ -51,7 +51,7 @@ struct BudState: Codable {
     var oauthEmail: String = ""         // adresse connectée par OAuth Google
     var updateChannel: String = ""      // vide = canal par défaut
     var lastUpdateCheck: TimeInterval = 0
-    var musicSource: Int = 0            // 0 Musique · 1 Spotify · 2 Alexa
+    var musicSource: Int = 0            // obsolète depuis la v23 : Apple Music seule
     var alarmSound: Bool = true       // sonnerie répétée des rappels
     var budPremium: Bool = false      // v17 : conservé pour la migration
     var budSkin: Int = 0              // 0 à plat · 1 nacré-or · 2 métal
@@ -370,7 +370,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "22.0"
+let budVersion = "23.0"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult

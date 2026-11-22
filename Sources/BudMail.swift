@@ -313,6 +313,9 @@ final class MailPanelView: NSView {
     private var threatBody: NSTextField!
     private var isolateBtn: GlassButton!
     private var replyBtn: GlassButton!
+    private var modeSeg: SegmentedBar!
+    private var bodyScrollView: NSScrollView!
+    private var mode = 0                  // 0 boîte · 1 rédaction
     private var selected: MailMessage?
     private var lastMessages: [MailMessage] = []
     private var replyRef: String = ""
@@ -349,8 +352,17 @@ final class MailPanelView: NSView {
                              caption: "Voie", hint: "—")
         [unreadTile, riskTile, stateTile].forEach { addSubview($0) }
 
-        mkSection(self, 456, W, "Boîte de réception — cliquez un message")
-        scroll.frame = NSRect(x: 0, y: 278, width: W, height: 174)
+        // Deux modes plutôt qu'un empilement : la liste et le formulaire
+        // se disputaient 570 pt et se retrouvaient tous deux à l'étroit.
+        // Chacun occupe maintenant toute la hauteur disponible.
+        modeSeg = SegmentedBar(frame: NSRect(x: 0, y: 436, width: W, height: 36),
+                               items: [SegmentedBar.Item(title: "Boîte", icon: "tray.full.fill"),
+                                       SegmentedBar.Item(title: "Rédiger", icon: "square.and.pencil")],
+                               selected: 0)
+        modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
+        addSubview(modeSeg)
+
+        scroll.frame = NSRect(x: 0, y: 132, width: W, height: 274)
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false
@@ -360,11 +372,11 @@ final class MailPanelView: NSView {
         addSubview(scroll)
 
         // Carte de verdict du message sélectionné.
-        threatCard = mkCard(self, NSRect(x: 0, y: 210, width: W, height: 62), radius: 13, alpha: 0.07)
+        threatCard = mkCard(self, NSRect(x: 0, y: 68, width: W, height: 58), radius: 13, alpha: 0.07)
         threatTitle = mkLabel("Sélectionnez un message pour voir son analyse.",
-                              NSRect(x: 14, y: 36, width: W - 130, height: 16), 11.5, .semibold, alpha: 0.72)
+                              NSRect(x: 14, y: 34, width: W - 130, height: 16), 11.5, .semibold, alpha: 0.72)
         threatCard.addSubview(threatTitle)
-        threatBody = NSTextField(frame: NSRect(x: 14, y: 8, width: W - 130, height: 28))
+        threatBody = NSTextField(frame: NSRect(x: 14, y: 6, width: W - 130, height: 28))
         threatBody.isBezeled = false
         threatBody.drawsBackground = false
         threatBody.isEditable = false
@@ -378,26 +390,26 @@ final class MailPanelView: NSView {
         ThemeRegistry.shared.register(threatBody, alpha: 0.50)
         threatCard.addSubview(threatBody)
 
-        isolateBtn = GlassButton(frame: NSRect(x: W - 110, y: 14, width: 96, height: 34),
+        isolateBtn = GlassButton(frame: NSRect(x: W - 110, y: 12, width: 96, height: 34),
                                  title: "Isoler", icon: "tray.and.arrow.down.fill")
         isolateBtn.destructive = true
         isolateBtn.enabledFlag = false
         isolateBtn.onClick = { [weak self] _ in self?.quarantineSelected() }
         threatCard.addSubview(isolateBtn)
 
-        mkSection(self, 190, W, "Rédiger")
-        toField = NSTextField(frame: NSRect(x: 0, y: 156, width: W * 0.48, height: 30))
+        toField = NSTextField(frame: NSRect(x: 0, y: 370, width: W * 0.48, height: 30))
         toField.placeholderString = "Destinataire"
         toField.font = NSFont.systemFont(ofSize: 12.5)
-        subjectField = NSTextField(frame: NSRect(x: W * 0.48 + 10, y: 156, width: W * 0.52 - 10, height: 30))
+        subjectField = NSTextField(frame: NSRect(x: W * 0.48 + 10, y: 370, width: W * 0.52 - 10, height: 30))
         subjectField.placeholderString = "Objet"
         subjectField.font = NSFont.systemFont(ofSize: 12.5)
         [toField, subjectField].forEach { addSubview($0) }
 
-        accountLabel = mkLabel("", NSRect(x: 2, y: 62, width: W - 4, height: 14), 10, .regular, alpha: 0.38)
+        accountLabel = mkLabel("", NSRect(x: 2, y: 412, width: W - 4, height: 14), 10, .regular, alpha: 0.38)
         addSubview(accountLabel)
 
-        let bodyScroll = NSScrollView(frame: NSRect(x: 0, y: 80, width: W, height: 70))
+        let bodyScroll = NSScrollView(frame: NSRect(x: 0, y: 68, width: W, height: 294))
+        bodyScrollView = bodyScroll
         bodyScroll.hasVerticalScroller = true
         bodyScroll.scrollerStyle = .overlay
         bodyScroll.drawsBackground = false
@@ -406,8 +418,8 @@ final class MailPanelView: NSView {
         bodyScroll.layer?.cornerRadius = 12
         bodyScroll.layer?.masksToBounds = true
         let big: CGFloat = 1_000_000
-        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 70))
-        tv.minSize = NSSize(width: 0, height: 70)
+        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 294))
+        tv.minSize = NSSize(width: 0, height: 294)
         tv.maxSize = NSSize(width: big, height: big)
         tv.isVerticallyResizable = true
         tv.autoresizingMask = [.width]
@@ -445,6 +457,22 @@ final class MailPanelView: NSView {
         }
         replyBtn = made[1]
         replyBtn.enabledFlag = false
+        setMode(0)
+    }
+
+    /// Bascule entre consulter et rédiger. Les deux jeux de vues occupent
+    /// la même bande d'écran, on les montre à tour de rôle.
+    private func setMode(_ i: Int) {
+        mode = i
+        modeSeg.selected = i
+        let box = (i == 0)
+        scroll.isHidden = !box
+        threatCard.isHidden = !box || selected == nil
+        toField.isHidden = box
+        subjectField.isHidden = box
+        bodyScrollView?.isHidden = box
+        accountLabel.isHidden = box
+        if !box { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
     }
 
     // ── Sélection d'un message ──
@@ -455,6 +483,7 @@ final class MailPanelView: NSView {
         isolateBtn.enabledFlag = !m.uid.isEmpty && MailRouter.gmailReady
         for r in rows { (r as? MailRow)?.selected = (r as? MailRow)?.message.uid == m.uid }
 
+        if mode == 0 { threatCard.isHidden = false }
         let lvl = m.threat.level
         threatTitle.stringValue = "\(lvl.label) · \(m.shortSender) · \(m.address)"
         threatTitle.textColor = lvl == .clean ? TH.dim(0.72) : lvl.color
@@ -503,6 +532,7 @@ final class MailPanelView: NSView {
         bodyView.string = "\n\nLe \(m.date), \(m.shortSender) a écrit :\n" + quoted
         bodyView.setSelectedRange(NSRange(location: 0, length: 0))
         replyRef = m.messageID
+        setMode(1)
         window?.makeFirstResponder(bodyView)
         statusLabel.stringValue = "Réponse préparée pour \(dest)."
     }
@@ -823,6 +853,7 @@ final class MailPanelView: NSView {
             threatTitle?.stringValue = "Sélectionnez un message pour voir son analyse."
             threatTitle?.textColor = TH.dim(0.72)
             threatBody?.stringValue = ""
+            threatCard?.isHidden = true
         }
     }
 
@@ -859,6 +890,7 @@ final class MailPanelView: NSView {
                     self?.subjectField.stringValue = ""
                     self?.bodyView.string = ""
                     self?.replyRef = ""
+                    self?.setMode(0)
                 }
             }
         }

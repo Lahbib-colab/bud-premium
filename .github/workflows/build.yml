@@ -10,6 +10,7 @@ jobs:
   compile:
     name: Compiler sur ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -25,23 +26,67 @@ jobs:
           xcrun --show-sdk-version
           xcrun swiftc --version
 
-      # BUD se compile sans Xcode projet ni Swift Package : un simple
-      # appel à swiftc sur Sources/. C'est ce que fait build.sh check.
+      # BUD se compile sans projet Xcode ni Swift Package : un simple appel
+      # à swiftc sur Sources/, ce que fait build.sh check.
+      #
       # On invoque par « bash » et non « ./ » : un fichier ajouté depuis
       # l'interface web de GitHub arrive en mode 644, et « ./build.sh »
-      # échouerait sur « permission denied ». Le dépôt ne dépend donc
-      # d'aucun bit d'exécution.
+      # échouerait sur « permission denied ».
+      #
+      # Chaque erreur du compilateur est réémise en ANNOTATION GitHub.
+      # Les journaux d'exécution exigent une connexion, les annotations non :
+      # c'est le seul canal par lequel un lecteur non connecté — ou un
+      # assistant sans compte — peut voir ce qui a cassé.
       - name: Compiler BUD
-        run: bash build.sh check
+        run: |
+          set +e
+          bash build.sh check 2>&1 | tee "$RUNNER_TEMP/build.log"
+          STATUS=${PIPESTATUS[0]}
+          set -e
 
-      # L'installeur d'un seul fichier est versionné dans dist/.
-      # On vérifie qu'il correspond bien aux sources du commit, sinon
-      # un utilisateur téléchargerait une version périmée.
+          WS="${GITHUB_WORKSPACE%/}/"
+          ERRS="$(grep -E '\.swift:[0-9]+:[0-9]+: error:' "$RUNNER_TEMP/build.log" || true)"
+
+          if [ -n "$ERRS" ]; then
+            printf '%s\n' "$ERRS" | head -40 | while IFS= read -r line; do
+              loc="${line%%: error:*}"
+              msg="${line#*: error: }"
+              file="${loc%%:*}"
+              rest="${loc#*:}"
+              lineno="${rest%%:*}"
+              rest="${rest#*:}"
+              col="${rest%%:*}"
+              file="${file#$WS}"
+              echo "::error file=${file},line=${lineno},col=${col}::${msg}"
+            done
+          elif [ "$STATUS" -ne 0 ]; then
+            # Échec sans erreur Swift : chaîne d'outils, SDK, ou script.
+            TAIL="$(tail -20 "$RUNNER_TEMP/build.log" | tr '\n' ' ' | tr -s ' ')"
+            echo "::error title=Échec sans erreur Swift::${TAIL}"
+          fi
+
+          {
+            echo "## ${{ matrix.os }}"
+            if [ "$STATUS" -eq 0 ]; then
+              echo "Compilation réussie."
+            else
+              echo '### Erreurs'
+              echo '```'
+              grep -E 'error:' "$RUNNER_TEMP/build.log" | head -60 || echo "(aucune ligne error:)"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$STATUS"
+
+      # L'installeur d'un seul fichier est versionné dans dist/. On vérifie
+      # qu'il correspond aux sources du commit, sinon un utilisateur
+      # téléchargerait une version périmée.
       - name: dist/ est-il synchronisé avec Sources/ ?
         run: |
           bash Tools/make-installer.sh "$RUNNER_TEMP/Installer.command"
           if ! diff -q "$RUNNER_TEMP/Installer.command" dist/Installer_BUD_Premium.command; then
-            echo "::error::dist/Installer_BUD_Premium.command est périmé. Lancez bash Tools/make-installer.sh et committez le résultat."
+            echo "::error title=dist périmé::dist/Installer_BUD_Premium.command ne correspond plus aux sources. Lancez « bash Tools/make-installer.sh » et committez le résultat."
             exit 1
           fi
           echo "Installeur à jour."

@@ -520,6 +520,10 @@ final class CompanionView: NSView {
 
     func react() { sprite.poke() }
     func wave() { sprite.wave() }
+    var musicPlaying: Bool {
+        get { sprite.equalizer }
+        set { sprite.equalizer = newValue }
+    }
 
     func step(follow: Bool) {
         if sprite.step(follow: follow, in: self, anchor: NSPoint(x: bounds.midX, y: bounds.midY)) {
@@ -580,9 +584,23 @@ final class NotchChrome: NSView {
     var onHover: ((Bool) -> Void)?
     var onClick: (() -> Void)?
 
+    /// Lecture en cours : le replié montre le titre au lieu de l'heure,
+    /// et BUD prend le rythme.
+    var nowPlaying = "" { didSet { if nowPlaying != oldValue { marquee = 0 } } }
+    var musicPlaying = false {
+        didSet {
+            sprite.equalizer = musicPlaying
+            if !musicPlaying { marquee = 0 }
+            needsDisplay = true
+        }
+    }
+
     let sprite = BudSprite()
     private var phase: CGFloat = 0, dash: CGFloat = 0
     private var frames = 0
+    private var marquee: CGFloat = 0
+    private var eqLevels: [CGFloat] = [0.35, 0.65, 0.45, 0.80]
+    private var eqClock: CGFloat = 0
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -607,15 +625,75 @@ final class NotchChrome: NSView {
         phase += alertCount > 0 ? 0.20 : 0.12
         dash += 0.6
         sprite.mood = alertCount > 0 ? .alert : .calm
+
+        if musicPlaying {
+            eqClock += 1.0 / 30.0
+            let f: [CGFloat] = [5.3, 7.1, 4.3, 8.7]
+            let ph: [CGFloat] = [0, 1.7, 0.9, 2.4]
+            for i in eqLevels.indices {
+                var v = 0.5 + 0.34 * sin(eqClock * f[i] + ph[i])
+                        + 0.16 * sin(eqClock * f[(i + 2) % 4] * 0.37)
+                v += CGFloat.random(in: -0.06...0.06)
+                eqLevels[i] = max(0.12, min(1, eqLevels[i] * 0.45 + v * 0.55))
+            }
+            marquee += 0.9
+        }
+
         let r = budRect()
         var dirty = sprite.step(follow: follow, in: self, anchor: NSPoint(x: r.midX, y: r.midY))
         if dropActive || state != .collapsed { dirty = true }
         if state == .collapsed && frames % 2 == 0 { dirty = true }
+        if musicPlaying { dirty = true }
         if dirty && state != .open { needsDisplay = true }
     }
 
     func wave() { sprite.wave() }
     func poke() { sprite.poke() }
+
+    /// Quatre barres, dessinées directement : imbriquer une vue dans le
+    /// notch replié pour 20 pt de large serait disproportionné.
+    private func drawEqBars(in r: NSRect) {
+        let n = eqLevels.count
+        let gap: CGFloat = 2.5
+        let w = (r.width - gap * CGFloat(n - 1)) / CGFloat(n)
+        guard w > 0 else { return }
+        for i in 0..<n {
+            let h = max(2.5, r.height * eqLevels[i])
+            let bar = NSRect(x: r.minX + CGFloat(i) * (w + gap), y: r.minY, width: w, height: h)
+            TH.accent.withAlphaComponent(0.55 + 0.40 * eqLevels[i]).setFill()
+            NSBezierPath(roundedRect: bar, xRadius: w / 2, yRadius: w / 2).fill()
+        }
+    }
+
+    /// Titre défilant. Un texte plus large que la place disponible est
+    /// dessiné deux fois, à une longueur d'écart, pour que la boucle ne
+    /// montre jamais de trou. En dessous, il reste simplement centré.
+    private func drawMarquee(_ s: String, in r: NSRect, size: CGFloat, color: NSColor) {
+        let tw = textWidth(s, size: size, weight: .semibold)
+        guard tw > r.width else {
+            drawString(s, in: r, size: size, weight: .semibold, color: color)
+            return
+        }
+        let gapWidth: CGFloat = 36
+        let span = tw + gapWidth
+        let off = marquee.truncatingRemainder(dividingBy: span)
+
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(rect: r).addClip()
+        for k in 0..<2 {
+            let x = r.minX - off + CGFloat(k) * span
+            drawString(s, in: NSRect(x: x, y: r.minY, width: tw + 4, height: r.height),
+                       size: size, weight: .semibold, color: color)
+        }
+        // Dégradés aux deux bords : le texte s'efface au lieu d'être coupé.
+        if let g = NSGradient(colors: [TH.base.withAlphaComponent(TH.baseAlpha),
+                                       TH.base.withAlphaComponent(0)],
+                              atLocations: [0, 1], colorSpace: .deviceRGB) {
+            g.draw(in: NSRect(x: r.minX, y: r.minY, width: 10, height: r.height), angle: 0)
+            g.draw(in: NSRect(x: r.maxX - 10, y: r.minY, width: 10, height: r.height), angle: 180)
+        }
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
 
     override func draw(_ dirty: NSRect) {
         let b = bounds
@@ -654,10 +732,22 @@ final class NotchChrome: NSView {
         if state == .collapsed {
             sprite.draw(in: budRect(), detail: false,
                         glowColor: alertCount > 0 ? warnColor : TH.accent)
-            let t = clockString()
-            let tw = textWidth(t, size: 12.5, weight: .semibold, mono: true)
-            drawString(t, in: NSRect(x: b.midX - tw / 2 + 6, y: b.midY - 8, width: tw + 2, height: 17),
-                       size: 12.5, weight: .semibold, color: TH.text, mono: true)
+            // Pendant la lecture, le titre prend la place de l'heure :
+            // 214 pt ne suffisent pas pour les deux, et savoir ce qui joue
+            // vaut mieux qu'une horloge présente partout ailleurs.
+            if musicPlaying && !nowPlaying.isEmpty && alertCount == 0 {
+                let reserved: CGFloat = badge != nil ? 34 : 14
+                drawEqBars(in: NSRect(x: 48, y: b.midY - 7, width: 20, height: 14))
+                drawMarquee(nowPlaying,
+                            in: NSRect(x: 74, y: b.midY - 8,
+                                       width: max(40, b.maxX - 74 - reserved), height: 16),
+                            size: 11.5, color: TH.text)
+            } else {
+                let t = clockString()
+                let tw = textWidth(t, size: 12.5, weight: .semibold, mono: true)
+                drawString(t, in: NSRect(x: b.midX - tw / 2 + 6, y: b.midY - 8, width: tw + 2, height: 17),
+                           size: 12.5, weight: .semibold, color: TH.text, mono: true)
+            }
             if alertCount > 0 {
                 let txt = alertCount > 9 ? "9+" : "\(alertCount)"
                 let w = max(17, textWidth(txt, size: 9.5, weight: .bold) + 11)

@@ -1,0 +1,31 @@
+# Artéfacts de compilation
+BUD
+budicon
+*.iconset/
+*.icns
+*.o
+*.swiftmodule
+*.dSYM/
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Éditeurs
+.vscode/
+.idea/
+*.xcuserstate
+xcuserdata/
+
+# Données locales de BUD : jamais dans le dépôt.
+# state.json contient vos réglages, snippets.json vos textes,
+# et le trousseau garde les jetons — rien de tout cela ne doit
+# partir sur GitHub.
+state.json
+state.backup-*.json
+snippets.json
+reminders.json
+quicknotes.md
+agents/

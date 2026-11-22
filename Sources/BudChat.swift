@@ -84,7 +84,7 @@ enum BudBrain {
             • « ouvre les téléchargements » (bureau, documents, rangement…)
             • « mes mails », « envoie un mail à paul@exemple.fr pour dire bonjour »
             • « rappelle-moi d'appeler Paul à 17h30 », « mes rappels »
-            • « musique », « morceau suivant », « monte le volume », « alexa »
+            • « musique », « morceau suivant », « monte le volume », « aléatoire »
             • « où en sont mes agents ? », « cpu », « l'heure », « une blague »
             """
         }
@@ -172,9 +172,9 @@ enum BudBrain {
         }
 
         // ── Musique ──
-        if has(t, ["musique", "chanson", "morceau", "spotify", "alexa", "joue", "pause", "volume",
-                   "suivant", "precedent", "lecture"]) {
-            if has(t, ["alexa"]) { return actions.music("alexa") }
+        if has(t, ["musique", "chanson", "morceau", "joue", "pause", "volume",
+                   "suivant", "precedent", "lecture", "aleatoire"]) {
+            if has(t, ["aleatoire", "shuffle"]) { return actions.music("shuffle") }
             if has(t, ["suivant", "next", "passe"]) { return actions.music("next") }
             if has(t, ["precedent", "retour", "avant"]) { return actions.music("prev") }
             if has(t, ["monte", "plus fort", "augmente"]) { return actions.music("up") }

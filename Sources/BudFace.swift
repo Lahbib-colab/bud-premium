@@ -104,6 +104,13 @@ final class BudSprite {
     /// Habillage commun à toutes les instances, piloté par les réglages.
     static var style: BudStyle = .flat
 
+    /// Pendant la lecture, BUD danse. Honnêteté : macOS n'expose aucun
+    /// niveau audio en sortie sans capturer le flux, ce que BUD ne fait
+    /// pas. Le rythme est donc régulier et synthétique — un signe de vie,
+    /// pas une mesure du morceau.
+    var equalizer = false { didSet { if !equalizer { beat = 0 } } }
+    private var beat: CGFloat = 0
+
     // Humeur
     var mood: BudMood = .calm
     private var happyUntil = Date.distantPast
@@ -221,6 +228,18 @@ final class BudSprite {
         } else {
             blink += (0 - blink) * 0.22
             if blinkTimer <= 0 { closing = true; blinkTimer = interval + CGFloat.random(in: 0...2.4) }
+        }
+
+        // Battement de lecture : une impulsion régulière dans les ressorts
+        // suffit à faire danser le personnage, sans animation séparée.
+        if equalizer {
+            beat += dt * 2.1
+            if beat >= 1 {
+                beat -= 1
+                velJump += 38
+                velScaleX += 0.030
+                velScaleY -= 0.034
+            }
         }
 
         // Balancement du salut, ou frisson d'alerte

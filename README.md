@@ -4,7 +4,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie, aucune donnée qui quitte votre Mac sauf celles que vous adressez explicitement à Google.
 
-**Version 22** · by Lahbib.AI
+**Version 23** · by Lahbib.AI
 
 [![build](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml/badge.svg)](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml)
 
@@ -20,12 +20,14 @@ cd bud-premium
 make
 ```
 
+Les scripts s'invoquent par `bash`, jamais par `./` : le dépôt reste utilisable même si le bit d'exécution a été perdu (c'est le cas de tout fichier ajouté depuis l'interface web de GitHub).
+
 `make` compile les sources et installe `BUD.app` dans `~/Applications`, puis le lance. Les autres cibles :
 
 | Commande | Effet |
 |---|---|
-| `make` · `./build.sh install` | compile et installe |
-| `make check` · `./build.sh check` | compile sans rien installer — ce que vérifie la CI |
+| `make` · `bash build.sh install` | compile et installe |
+| `make check` · `bash build.sh check` | compile sans rien installer — ce que vérifie la CI |
 | `make installer` | régénère `dist/Installer_BUD_Premium.command` |
 
 ### Depuis l'installeur en un fichier
@@ -64,7 +66,7 @@ sudo xcode-select --install
 
 ```
 bud-premium/
-├── Sources/                 les 18 fichiers Swift de l'application
+├── Sources/                 les 19 fichiers Swift de l'application
 ├── Tools/
 │   ├── MakeIcon.swift       générateur d'icône, compilé seul
 │   ├── bud-ask              passerelle agents en ligne de commande
@@ -188,6 +190,8 @@ L'agent dépose `agents/<id>.json`, BUD écrit `<id>.reply`. Surveillance par `D
 2. **Mot de passe d'application** — IMAP sur 993 et SMTP sur 465, clients écrits à la main sur Network.framework.
 3. **Mail.app** — par AppleScript, si aucun compte n'est relié.
 
+Le panneau a **deux modes**, *Boîte* et *Rédiger* : ils se partageaient la même hauteur et s'y retrouvaient tous deux à l'étroit. Chacun occupe maintenant tout l'espace — la liste passe de 174 à 274 pt, le corps du message de 70 à 294 pt. « Répondre » bascule en rédaction, l'envoi réussi ramène à la boîte.
+
 La boîte affiche les huit derniers messages, lus ou non, chacun sur une ligne cliquable : expéditeur, objet, date, pastille de non-lu, trombone s'il y a une pièce jointe, et un liseré de couleur donnant le verdict de l'analyse. Trois compteurs en tête : non lus, suspects, voie utilisée.
 
 **Répondre** — sélectionnez un message, BUD préfixe l'objet par `Re:`, cite le corps d'origine et vise la bonne adresse. Le `Message-ID` est repris en `In-Reply-To` et `References`, sans quoi votre réponse arriverait comme un message isolé au lieu de se ranger dans le fil. Si le `Reply-To` diverge du `From`, BUD garde le `From` : c'est exactement la manœuvre qu'un hameçonneur utilise pour détourner la réponse. Répondre à un message classé dangereux demande une confirmation — répondre prouve à l'expéditeur que votre adresse est vivante.
@@ -226,7 +230,13 @@ Le guetteur local reste armé pendant l'opération : si vous préférez cliquer 
 
 **Rappels** — écrivez la phrase entière, BUD en extrait l'heure : *« Sortir les poubelles à 19h30 »*, *« Appeler le garage dans 20 minutes »*, *« Facture demain »*. À l'échéance, le notch s'ouvre en alarme avec **Terminé** et **+10 min**, le son se répète toutes les cinq secondes pendant une minute. Répétition quotidienne ou hebdomadaire.
 
-**Musique** — Apple Music et Spotify pilotés en AppleScript, avec titre en cours affiché. Pour **Alexa**, Amazon n'expose aucune interface locale sur macOS : BUD ouvre le lecteur web Amazon Music et le commande par les **touches média du système**, émises en `CGEvent`. Cela réclame l'autorisation Accessibilité.
+**Musique** — Apple Music seule, pilotée en AppleScript. Titre, artiste, album, barre de progression avec position et durée, recul et avance de 15 s, curseur de volume, lecture aléatoire, répétition (aucune, tout, ce titre). Un seul aller-retour rapporte l'état complet, chaque propriété lue dans son propre `try` : si une version de Musique n'expose plus la répétition, on perd cette information, pas la totalité.
+
+Pendant la lecture, le notch replié montre le **titre défilant** à la place de l'heure — 214 pt ne suffisent pas pour les deux, et savoir ce qui joue vaut mieux qu'une horloge présente partout ailleurs — accompagné de quatre barres d'égaliseur, et **BUD prend le rythme** par impulsions dans ses ressorts.
+
+Le sondage ne coûte rien quand Musique est fermée : le test d'exécution passe par `NSWorkspace`, sans lancer de processus.
+
+Spotify et Alexa ont été retirés en version 23. Alexa surtout : Amazon n'expose aucune interface locale sur macOS, et le piloter par les touches média d'un lecteur web était un bricolage qui réclamait l'autorisation Accessibilité pour un résultat imprévisible.
 
 ### Travail
 
@@ -247,6 +257,10 @@ Le guetteur local reste armé pendant l'opération : si vous préférez cliquer 
 ### Système
 
 **Outils** — recherche web, veille écran, bascule clair/sombre du système, corbeille, IP locale et nom du Wi-Fi, lancement rapide de Finder, Safari, Mail et Terminal.
+
+**Capture d'écran** — tout l'écran, une fenêtre, ou une sélection au réticule, vers le **Bureau** ou le **presse-papiers**. BUD n'écrit pas son propre code de capture : il appelle `screencapture`, l'outil du système, qui sait déjà gérer les écrans multiples, les densités Retina et l'espace colorimétrique. Le notch se replie avant la prise, sinon il figurerait sur chaque capture plein écran. Un bouton **Révéler** ouvre la dernière image dans le Finder.
+
+Si l'image fait moins de 4 Ko, c'est que l'autorisation manque : BUD vous renvoie vers Réglages Système → Confidentialité et sécurité → **Enregistrement de l'écran**, au lieu de laisser un cadre noir sur votre Bureau.
 
 **Réglages** — apparence (auto, clair, sombre), matière du panneau (opaque, verre dépoli, cristal), six couleurs d'accent dont le blanc, et treize interrupteurs de comportement.
 
@@ -292,8 +306,9 @@ Le schéma JSON est tolérant : chaque clé inconnue est ignorée, chaque clé a
 
 | Demandée pour | Où l'accorder |
 |---|---|
-| Piloter Mail, Musique, Spotify, apparence système | Confidentialité → Automatisation |
-| Touches média (Alexa), collage automatique, dictée | Confidentialité → Accessibilité |
+| Piloter Mail, Musique, apparence système | Confidentialité → Automatisation |
+| Collage automatique, dictée | Confidentialité → Accessibilité |
+| Capture d'écran | Confidentialité → Enregistrement de l'écran |
 | Ranger et nettoyer des fichiers | Confidentialité → Fichiers et dossiers |
 
 Aucune n'est demandée au lancement : chacune arrive à la première utilisation réelle de la fonction concernée.
@@ -324,7 +339,7 @@ Le chat n'est pas un modèle de langage : c'est un moteur d'intentions à base d
 
 L'analyse de courrier n'est pas un antivirus. BUD ne télécharge pas les pièces jointes et n'inspecte pas leur contenu : il reconnaît les formes d'attaque, pas les signatures de logiciels malveillants. Pour les fichiers déjà téléchargés, c'est Gatekeeper — l'outil d'Apple — qui tranche, pas BUD. Un message classé sain peut être malveillant, et un message suspect peut être parfaitement légitime : le verdict vous informe, il ne décide pas à votre place.
 
-Alexa n'est pas contrôlée nativement — Amazon ne le permet pas sur macOS. BUD pilote son lecteur web par les touches média.
+L'égaliseur ne mesure rien. macOS n'expose aucun niveau audio en sortie sans capturer le flux, ce que BUD ne fait pas. Les barres et le rythme sont synthétiques, pilotés par des sinusoïdes de fréquences premières entre elles pour éviter tout motif qui se répète visiblement. C'est un signe de vie, pas un instrument de mesure.
 
 L'appairage par téléphone ne peut pas se passer entièrement de copier-coller en mode OAuth : Google interdit son *device flow* pour le courrier. La voie « mot de passe d'application » est, elle, complète — seize lettres à recopier.
 

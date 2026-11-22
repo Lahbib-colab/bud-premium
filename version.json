@@ -1,5 +1,5 @@
 {
-  "version": "22.0",
-  "notes": "Courrier refait : réponse avec en-têtes de fil, analyse de hameçonnage locale, quarantaine IMAP. Compilation réparée (xcrun) et diagnostic des outils de développement.",
+  "version": "23.0",
+  "notes": "Capture d'écran (écran, fenêtre, sélection) vers le Bureau ou le presse-papiers. Courrier en deux modes pour plus de place. Musique recentrée sur Apple Music, avec progression, volume, aléatoire et répétition — et BUD qui danse dans le notch.",
   "url": "https://raw.githubusercontent.com/Lahbib-colab/bud-premium/main/dist/Installer_BUD_Premium.command"
 }
