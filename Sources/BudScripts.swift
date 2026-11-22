@@ -139,23 +139,32 @@ final class ScriptAgents {
     // ── Vérifications avant exécution ──
 
     /// Tout ce qu'il faut vérifier avant d'exécuter quoi que ce soit.
-    private func prepare(_ name: String) -> Result<(URL, AgentManifest), String> {
+    /// Le verdict de la vérification. Un `Result` aurait demandé un type
+    /// d'erreur conforme à `Error` : ici la raison est une phrase destinée
+    /// à l'utilisateur, pas une erreur à propager, et une énumération le
+    /// dit plus franchement.
+    private enum Prepared {
+        case ready(URL, AgentManifest)
+        case refused(String)
+    }
+
+    private func prepare(_ name: String) -> Prepared {
         // Un nom d'agent ne sert qu'à nommer un dossier : tout ce qui
         // pourrait remonter l'arborescence est écarté avant toute chose.
         guard !name.isEmpty, !name.contains("/"), !name.contains(".."),
               name.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
                          options: .regularExpression) != nil else {
-            return .failure("Nom de sous-agent refusé : « \(name) ».")
+            return .refused("Nom de sous-agent refusé : « \(name) ».")
         }
         guard let m = discover().first(where: { $0.name == name }) else {
-            return .failure("Sous-agent « \(name) » introuvable.")
+            return .refused("Sous-agent « \(name) » introuvable.")
         }
         let folder = dir.appendingPathComponent(name)
         let exe = folder.appendingPathComponent("run")
 
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: exe.path) else {
-            return .failure("« \(name)/run » n'existe pas ou n'est pas exécutable.")
+            return .refused("« \(name)/run » n'existe pas ou n'est pas exécutable.")
         }
 
         // Le dossier ne doit être inscriptible que par son propriétaire.
@@ -165,11 +174,11 @@ final class ScriptAgents {
            let perm = attrs[.posixPermissions] as? NSNumber {
             let p = perm.uint16Value
             if p & 0o022 != 0 {
-                return .failure("« \(name) » est inscriptible par d'autres comptes : "
+                return .refused("« \(name) » est inscriptible par d'autres comptes : "
                     + "BUD ne l'exécutera pas. Corrigez avec chmod 755.")
             }
         }
-        return .success((exe, m))
+        return .ready(exe, m)
     }
 
     // ── Exécution ──
@@ -179,12 +188,15 @@ final class ScriptAgents {
     /// soit le temps que prend le script.
     func run(_ name: String, payload: [String: String] = [:],
              done: @escaping (AgentOutput) -> Void) {
-        let prepared = prepare(name)
-        guard case .success(let (exe, manifest)) = prepared else {
-            if case .failure(let why) = prepared {
-                DispatchQueue.main.async { done(.failure(why)) }
-            }
+        let exe: URL
+        let manifest: AgentManifest
+        switch prepare(name) {
+        case .refused(let why):
+            DispatchQueue.main.async { done(.failure(why)) }
             return
+        case .ready(let e, let m):
+            exe = e
+            manifest = m
         }
 
         var input = AgentInput()
