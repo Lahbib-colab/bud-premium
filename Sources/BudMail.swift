@@ -921,6 +921,8 @@ final class MailPanelView: NSView {
     private var accountLabel: NSTextField!
 
     var onStatus: ((String) -> Void)?
+    /// Un ou plusieurs messages dangereux viennent d'arriver.
+    var onDanger: ((Int) -> Void)?
     var fromAddress: () -> String = { "" }
     var onAccountChange: ((String) -> Void)?
 
@@ -1786,7 +1788,15 @@ final class MailPanelView: NSView {
         rows.forEach { $0.removeFromSuperview() }
         rows.removeAll()
         ThemeRegistry.shared.prune()
+
+        // Un message dangereux qui n'était pas là au relevé précédent :
+        // c'est un fait nouveau, et c'est ce qui fâche BUD. On compare aux
+        // UID connus plutôt qu'au nombre, sinon supprimer un message
+        // dangereux et en recevoir un autre passerait inaperçu.
+        let hadDanger = Set(lastMessages.filter { $0.threat.level == .dangerous }.map { $0.uid })
+        let newDanger = msgs.filter { $0.threat.level == .dangerous && !hadDanger.contains($0.uid) }
         lastMessages = msgs
+        if !newDanger.isEmpty { onDanger?(newDanger.count) }
 
         // Le filtre ne change que ce qu'on voit : `lastMessages` garde tout,
         // sans quoi passer sur « Promotions » puis « Tous » aurait perdu le

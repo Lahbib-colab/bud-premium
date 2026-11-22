@@ -2,6 +2,27 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.7 — le compagnon a des humeurs
+
+**Nouvelle illustration, et un découpage qui change tout.** Dans la précédente, le visage était fondu dans le dégradé du corps : impossible de le modifier sans repeindre votre dessin. Dans celle-ci, les yeux et la bouche sont des îlots clairs qui flottent dans l'ouverture du U, sans toucher l'anneau. Ils ont donc pu être retirés proprement et repeints en code — c'est la différence entre un compagnon qui bouge et un compagnon qui a des humeurs.
+
+**Les traits ne sont pas replacés au jugé.** Leur position est relevée sur votre illustration, en fractions de la boîte du visage : œil gauche à 23 % de sa largeur, œil droit à 76 %, bouche à 51 %. Toutes les humeurs se posent exactement là où le visage était dessiné.
+
+**Quatre humeurs, et chacune a son corps autant que son visage.** Une expression posée sur une posture qui la contredit ne se lit pas — on croit au dessin le moins ambigu des deux.
+
+- **Normal** — le visage d'origine : deux arches et la bouche ouverte. Respiration lente.
+- **Colère** — la colère est dans les sourcils, pas dans les yeux : deux barres qui plongent vers le nez, bouche renversée. Le corps se tasse et tremble ; la colère n'allonge pas, elle ramasse.
+- **Étourdi** — spirales et bouche ondulée. La tête tangue sur deux sinus de périodes différentes, qui ne repassent jamais par le même point.
+- **Réfléchi** — les deux pupilles partent du même côté, en haut : séparées, on lirait un strabisme et non une réflexion. Un sourcil levé fait basculer la lecture de « distrait » à « il réfléchit ». Tête penchée d'un seul côté, immobile.
+
+**En dessous d'une certaine taille, on enlève du détail plutôt que de le rétrécir.** Le compagnon vit dans un notch de vingt-huit points : une spirale y deviendrait une tache grise, alors que deux croix s'y lisent encore. Les quatre humeurs ont été vérifiées à la taille réelle du notch avant d'être retenues.
+
+**Une humeur qui ne dit rien de vrai est un gadget.** Chacune est attachée à un fait. BUD réfléchit quand il prépare vraiment une réponse dictée. Il se fâche quand un message dangereux **nouveau** arrive — comparé aux identifiants connus et non au nombre, sinon supprimer un message dangereux et en recevoir un autre passerait inaperçu. Il s'étourdit quand il ne trouve pas ce qu'on lui a demandé. La colère ne sert qu'à ça : si elle servait aussi pour un relevé qui échoue ou un disque plein, elle ne voudrait plus rien dire.
+
+**Les humeurs sont passagères par construction.** Une échéance les éteint ; il n'y a rien à remettre en place. Un état qu'il faut penser à annuler finit toujours par rester allumé.
+
+**Choisir l'habillage Logo joue les quatre à la suite.** Une démonstration qu'on ne demande pas deux fois vaut mieux qu'un écran de réglages de plus.
+
 ## 24.6 — votre logo prend vie
 
 **Trois images dans le paquet**, tirées de votre illustration : le mot entier, et le Ü coupé en deux calques — les deux billes d'un côté, le U avec son visage de l'autre, sur la même toile et aux mêmes dimensions, de sorte qu'ils se superposent sans calcul.

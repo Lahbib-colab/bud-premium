@@ -15,7 +15,7 @@ import Cocoa
 //  devient ici 200° → 340°.
 // ═══════════════════════════════════════════════════════════
 
-enum BudMood { case calm, happy, alert, sleepy, wink, dizzy }
+enum BudMood { case calm, happy, alert, sleepy, wink, dizzy, angry, thinking }
 
 /// Trois habillages : à plat, nacré-or, et métal.
 enum BudStyle { case flat, premium, metal, logo }
@@ -117,8 +117,24 @@ final class BudSprite {
     private var winkUntil = Date.distantPast
     private var dizzyUntil = Date.distantPast
 
+    /// Humeurs passagères, posées par `flash(_:for:)` : elles l'emportent
+    /// le temps qu'elles durent, puis l'humeur de fond revient.
+    private var flashMood: BudMood = .calm
+    private var flashUntil = Date.distantPast
+
+    /// Montre une humeur pendant quelques secondes. Rien à remettre en
+    /// place ensuite : l'échéance s'en charge.
+    func flash(_ m: BudMood, for seconds: TimeInterval) {
+        flashMood = m
+        flashUntil = Date().addingTimeInterval(seconds)
+    }
+
     private var effectiveMood: BudMood {
         let now = Date()
+        // Une alerte prime sur tout, sauf sur une humeur passagère plus
+        // précise : « en colère » dit déjà qu'il y a un problème, et le
+        // dit mieux.
+        if now < flashUntil { return flashMood }
         if mood == .alert { return .alert }
         if now < dizzyUntil { return .dizzy }
         if now < winkUntil { return .wink }
@@ -323,14 +339,44 @@ final class BudSprite {
             squash = 0.03 + breath * 0.01
         }
 
+        // Chaque humeur a son corps, et pas seulement son visage. Une
+        // expression posée sur une posture qui la contredit ne se lit
+        // pas : on croit au dessin le moins ambigu des deux.
+        switch effectiveMood {
+        case .angry:
+            // Tassé, bas sur ses appuis, et il tremble. La colère
+            // n'allonge pas, elle ramasse.
+            bounce = 0
+            tilt = sin(t * 23) * 2.6
+            squash = 0.075 + breath * 0.012
+        case .dizzy:
+            // La tête part d'un côté puis de l'autre, en retard sur
+            // elle-même : deux sinus de périodes différentes ne
+            // repassent pas par le même point, et c'est ce décalage qui
+            // fait le tangage.
+            bounce = 0.12 + (sin(t * 3.1) + 1) / 2 * 0.22
+            tilt = sin(t * 2.2) * 9 + sin(t * 3.7) * 4
+            squash = 0.02 + breath * 0.02
+        case .thinking:
+            // Penché d'un seul côté, immobile, très légèrement relevé.
+            // L'inclinaison est lente et asymétrique : on ne réfléchit
+            // pas en balançant la tête en cadence.
+            bounce = 0.05 + breath * 0.05
+            tilt = -6.5 + sin(t * 0.45) * 1.6
+            squash = breath * 0.01
+        default:
+            break
+        }
+
         let side = min(rect.width, rect.height)
         // L'illustration est plus haute que large : on l'inscrit sur la
         // hauteur, centrée, pour qu'elle ne se déforme jamais.
         let h = side * 0.96
-        let w = h * 0.757          // 218 / 288, le rapport des calques
+        let w = h * 0.878          // 253 / 288, le rapport des calques
         let box = NSRect(x: rect.midX - w / 2, y: rect.midY - h / 2,
                          width: w, height: h)
-        BudArt.drawCompanion(in: box, beat: bounce, tilt: tilt, squash: squash)
+        BudArt.drawCompanion(in: box, beat: bounce, tilt: tilt, squash: squash,
+                             mood: effectiveMood, clock: t)
     }
 
     func draw(in rect: NSRect, detail: Bool, glowColor: NSColor) {
@@ -507,7 +553,7 @@ final class BudSprite {
         let open = max(0.08, 1 - blink * 0.92)
 
         switch m {
-        case .calm, .sleepy:
+        case .calm, .sleepy, .thinking:
             let h = m == .sleepy ? eyeS * 0.18 : eyeS * open
             metalEye(NSPoint(x: -eyeX, y: eyeY), w: eyeS, h: h, r: corner, c: eye, detail: detail)
             metalEye(NSPoint(x: eyeX * 1.04, y: eyeY + r * 0.01),
@@ -543,7 +589,7 @@ final class BudSprite {
                        radius: r * 0.14, from: 207, to: 328,
                        width: max(2.5, r * 0.052), c: eye)
 
-        case .alert:
+        case .alert, .angry:
             // Yeux écrasés et inclinés, sourcils rouges
             for side in [CGFloat(-1), CGFloat(1)] {
                 let w = side < 0 ? eyeS : eyeS * 1.12
@@ -822,7 +868,7 @@ final class BudSprite {
         let eyeR = s * 0.044
 
         switch m {
-        case .calm:
+        case .calm, .thinking:
             drawRoundEye(at: NSPoint(x: -eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawRoundEye(at: NSPoint(x: eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawOMouth(size: s, y: -s * 0.125, w: s * 0.042, h: s * 0.056,
@@ -852,7 +898,7 @@ final class BudSprite {
             (premium ? BudSkin.smileGold : ink).setStroke()
             sm.stroke()
 
-        case .alert:
+        case .alert, .angry:
             drawAngryEyes(size: s, eyeX: eyeX, eyeY: eyeY, r: eyeR,
                           ink: ink, premium: premium)
             // Bouche en moue : arc qui bombe vers le haut

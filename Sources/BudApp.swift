@@ -462,6 +462,44 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  Les humeurs
+    //
+    //  Une humeur qui ne dit rien de vrai est un gadget. Chacune
+    //  est donc attachée à un fait : BUD réfléchit quand il
+    //  travaille vraiment, se fâche quand il a trouvé quelque
+    //  chose de dangereux, s'étourdit quand une opération a
+    //  échoué. Le reste du temps il est normal, et c'est bien.
+    //
+    //  Elles sont passagères par construction : rien à remettre
+    //  en place après coup, l'échéance s'en charge. Un état
+    //  d'humeur qu'il faut penser à annuler finit toujours par
+    //  rester allumé.
+    // ═══════════════════════════════════════════════════════════
+
+    func mood(_ m: BudMood, _ seconds: TimeInterval = 3) {
+        avatar?.sprite.flash(m, for: seconds)
+        chrome.sprite.flash(m, for: seconds)
+        avatar?.needsDisplay = true
+        chrome.needsDisplay = true
+    }
+
+    /// Les quatre humeurs à la suite, pour les voir. Joué une fois quand
+    /// vous choisissez l'habillage Logo : une démonstration qu'on ne
+    /// demande pas deux fois vaut mieux qu'un écran de réglages de plus.
+    private func demoMoods() {
+        let show: [(BudMood, String)] = [
+            (.calm, "Normal"), (.angry, "Colère"),
+            (.dizzy, "Étourdi"), (.thinking, "Réfléchi")
+        ]
+        for (i, s) in show.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.6) { [weak self] in
+                self?.mood(s.0, 1.7)
+                self?.setStatus("Humeur : \(s.1)")
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  « Hey Bud »
     //
     //  Le mot d'activation déverrouille, la phrase qui suit est
@@ -501,10 +539,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             openPanel()
             selectTab(tabMail)
             guard let m = mailPanel.findBySpokenName(who) else {
+                mood(.dizzy, 3)
                 coucou("Aucun message trouvé", "Rien de « \(who) » dans la boîte.", hold: 6)
                 setStatus("Aucun message de « \(who) » dans les messages relevés.")
                 return
             }
+            mood(.thinking, 4)
             mailPanel.composeReply(to: m) { [weak self] msg in self?.setStatus(msg) }
             coucou("Réponse préparée", m.shortSender, hold: 5)
             return
@@ -724,6 +764,14 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         cleanPanel.onCleaned = { [weak self] in self?.storagePanel.refresh(animated: true) }
         chatPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         mailPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
+        mailPanel.onDanger = { [weak self] n in
+            // La colère est réservée à ça : un message dangereux arrivé
+            // dans la boîte. Si elle servait aussi pour un relevé qui
+            // échoue ou un disque plein, elle ne voudrait plus rien dire.
+            self?.mood(.angry, 5)
+            self?.coucou(n == 1 ? "Message dangereux" : "\(n) messages dangereux",
+                         "Ouvrez Courrier pour voir lesquels.", hold: 8)
+        }
         // La boîte se tient à jour d'elle-même : sondage toutes les
         // quatre-vingt-dix secondes, relevé complet seulement si le serveur
         // dit que quelque chose a changé.
@@ -892,9 +940,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         BudStore.shared.save(state)
         applyBudStyle()
         avatar?.react()
-        setStatus(["Compagnon à plat", "Compagnon nacré", "Compagnon métal",
-                   BudArt.hasCompanion ? "Compagnon logo"
-                     : "Logo indisponible dans ce paquet : dessin conservé."][state.budSkin])
+        if state.budSkin == 3 && BudArt.hasCompanion {
+            demoMoods()
+        } else {
+            setStatus(["Compagnon à plat", "Compagnon nacré", "Compagnon métal",
+                       "Logo indisponible dans ce paquet : dessin conservé."][state.budSkin])
+        }
     }
 
     private func buildFocus(_ p: NSView) {
