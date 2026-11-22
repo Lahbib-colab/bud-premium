@@ -7,6 +7,43 @@ import Cocoa
 //  d'API, aucune connexion sortante de notre fait.
 // ═══════════════════════════════════════════════════════════
 
+/// Une partie d'un message, telle que `BODYSTRUCTURE` la décrit.
+struct MailPart: Codable {
+    /// Le numéro de section IMAP : « 2 », « 1.2 »… C'est ce qu'il faut
+    /// pour aller chercher cette partie précise, et rien d'autre.
+    var section = "1"
+    var type = ""          // TEXT, IMAGE, APPLICATION…
+    var subtype = ""       // PLAIN, PNG, PDF…
+    var name = ""          // nom de fichier, vide pour le corps
+    var encoding = ""      // BASE64, QUOTED-PRINTABLE…
+    var size = 0
+
+    /// Une pièce jointe est une partie qui porte un nom de fichier. Le
+    /// corps du message n'en a pas, et c'est exactement ce qui les sépare.
+    var isAttachment: Bool { !name.isEmpty }
+
+    /// Le symbole qui va avec le type de fichier.
+    var icon: String {
+        switch type.uppercased() {
+        case "IMAGE": return "photo"
+        case "AUDIO": return "waveform"
+        case "VIDEO": return "film"
+        case "TEXT":  return "doc.text"
+        default:
+            switch subtype.uppercased() {
+            case "PDF":  return "doc.richtext"
+            case "ZIP", "X-ZIP-COMPRESSED", "GZIP": return "doc.zipper"
+            default:     return "paperclip"
+            }
+        }
+    }
+
+    var readableSize: String {
+        guard size > 0 else { return "" }
+        return formatBytes(Int64(size))
+    }
+}
+
 struct MailMessage: Codable {
     let subject: String
     let sender: String
@@ -55,6 +92,10 @@ struct MailMessage: Codable {
     /// Les en-têtes d'envoi en masse réunis : List-Unsubscribe, List-Id,
     /// Precedence. Trois façons de dire la même chose.
     var bulkHeaders: String = ""
+    /// Les parties du message, telles que le serveur les décrit. Permet
+    /// d'afficher une pièce jointe avec son type et son poids, et d'aller
+    /// la chercher par son numéro de section.
+    var parts: [MailPart] = []
     /// Le type auquel BUD rattache ce message.
     var category: MailCategory = .principal
 
@@ -510,6 +551,12 @@ enum MailRouter {
         return GmailClient.status(user: user, auth: auth)
     }
 
+    /// Rapatrie une pièce jointe et la rend décodée.
+    static func attachment(uid: String, part: MailPart) -> Data? {
+        guard let (user, auth) = mode() else { return nil }
+        return GmailClient.fetchPart(user: user, auth: auth, uid: uid, part: part)
+    }
+
     /// Le corps d'un message que le relevé n'a pas chargé.
     static func body(uid: String) -> String? {
         guard let (user, auth) = mode() else { return nil }
@@ -837,15 +884,8 @@ final class MailPanelView: NSView {
     private var modeSeg: SegmentedBar!
     private var bodyScrollView: NSScrollView!
     private var mode = 0                  // 0 boîte · 1 lecture · 2 rédaction
-    // ── Lecture ──
-    private var readerCard: NSView!
-    private var readerDisc: InitialsDisc!
-    private var readerFrom: NSTextField!
-    private var readerAddress: NSTextField!
-    private var readerSubject: NSTextField!
-    private var readerMeta: NSTextField!
-    private var readerScroll: NSScrollView!
-    private var readerText: NSTextView!
+    /// Le lecteur, dans son propre panneau. Créé à la première ouverture.
+    private var reader: MailReaderWindow?
     private var deleteBtn: GlassButton!
     // ── Tri et sélection ──
     private var catSeg: SegmentedBar!
@@ -911,7 +951,6 @@ final class MailPanelView: NSView {
         // Chacun occupe maintenant toute la hauteur disponible.
         modeSeg = SegmentedBar(frame: NSRect(x: 0, y: 436, width: W, height: 36),
                                items: [SegmentedBar.Item(title: "Boîte", icon: "tray.full.fill"),
-                                       SegmentedBar.Item(title: "Lecture", icon: "doc.text"),
                                        SegmentedBar.Item(title: "Rédiger", icon: "square.and.pencil")],
                                selected: 0)
         modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
@@ -1016,52 +1055,6 @@ final class MailPanelView: NSView {
         bodyView = tv
         addSubview(bodyScroll)
 
-        // ── Mode Lecture ──
-        //
-        //  Le corps est déjà rapatrié et décodé lors du relevé de la boîte :
-        //  lire un message ne demande donc aucun aller-retour réseau de
-        //  plus, seulement de présenter proprement ce qu'on a.
-        readerCard = mkCard(self, NSRect(x: 0, y: 318, width: W, height: 106), radius: 14, alpha: 0.06)
-
-        readerDisc = InitialsDisc(frame: NSRect(x: 14, y: 48, width: 44, height: 44))
-        readerCard.addSubview(readerDisc)
-        readerFrom = mkLabel("", NSRect(x: 70, y: 72, width: W - 90, height: 20), 13.5, .bold)
-        readerAddress = mkLabel("", NSRect(x: 70, y: 52, width: W - 90, height: 15), 10.5, .regular, alpha: 0.42)
-        readerSubject = mkLabel("", NSRect(x: 14, y: 26, width: W - 28, height: 19), 12.5, .semibold, alpha: 0.82)
-        readerMeta = mkLabel("", NSRect(x: 14, y: 6, width: W - 28, height: 15), 10, .medium, alpha: 0.5)
-        readerCard.addSubview(readerFrom)
-        readerCard.addSubview(readerAddress)
-        readerCard.addSubview(readerSubject)
-        readerCard.addSubview(readerMeta)
-
-        readerScroll = NSScrollView(frame: NSRect(x: 0, y: 66, width: W, height: 240))
-        readerScroll.hasVerticalScroller = true
-        readerScroll.scrollerStyle = .overlay
-        readerScroll.drawsBackground = false
-        readerText = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 240))
-        readerText.isEditable = false
-        // Sélectionnable : on veut pouvoir copier un code, une adresse,
-        // un numéro de commande sans ouvrir Mail.
-        readerText.isSelectable = true
-        readerText.drawsBackground = false
-        readerText.isRichText = false
-        readerText.font = NSFont.systemFont(ofSize: 13)
-        readerText.textColor = TH.dim(0.88)
-        readerText.textContainerInset = NSSize(width: 14, height: 12)
-        readerText.isVerticallyResizable = true
-        readerText.isHorizontallyResizable = false
-        readerText.autoresizingMask = [.width]
-        readerText.minSize = NSSize(width: 0, height: 240)
-        readerText.maxSize = NSSize(width: 10_000, height: 10_000)
-        readerText.textContainer?.widthTracksTextView = true
-        // Interligne large : c'est ce qui sépare un courriel qu'on lit
-        // d'un bloc de texte qu'on déchiffre.
-        let para = NSMutableParagraphStyle()
-        para.lineHeightMultiple = 1.38
-        para.paragraphSpacing = 7
-        readerText.defaultParagraphStyle = para
-        readerScroll.documentView = readerText
-        addSubview(readerScroll)
 
         statusLabel = mkLabel("", NSRect(x: 0, y: 46, width: W, height: 16), 10.5, .regular, alpha: 0.45, .center)
         addSubview(statusLabel)
@@ -1097,95 +1090,83 @@ final class MailPanelView: NSView {
 
     /// Bascule entre consulter et rédiger. Les deux jeux de vues occupent
     /// la même bande d'écran, on les montre à tour de rôle.
+    /// Deux modes : la boîte, ou la rédaction. La lecture a quitté les
+    /// onglets pour son propre panneau.
+    ///
+    /// Les vues de chaque mode sont **listées**, et l'on montre les unes en
+    /// cachant les autres à partir de ces listes. L'ancienne version
+    /// masquait vue par vue, à la main — et en avait oublié deux, la barre
+    /// des types et le bouton de sélection, qui restaient affichés
+    /// par-dessus l'en-tête du lecteur. Un mode qui cache des vues une à
+    /// une est un mode qui en oubliera une.
     private func setMode(_ i: Int) {
         mode = i
         modeSeg.selected = i
-        let box = (i == 0), read = (i == 1), write = (i == 2)
-        scroll.isHidden = !box
-        // La carte d'analyse reste en place même sans sélection, avec sa
-        // phrase d'attente : la faire apparaître et disparaître faisait
-        // sursauter le bas du panneau à chaque clic.
-        threatCard.isHidden = !box
-        readerCard.isHidden = !read
-        readerScroll.isHidden = !read
-        toField.isHidden = !write
-        subjectField.isHidden = !write
-        bodyScrollView?.isHidden = !write
-        accountLabel.isHidden = !write
-        if write { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
-        if read { window?.makeFirstResponder(readerText) }
+        let box = (i == 0)
+
+        let boxViews: [NSView?] = [scroll, threatCard, catSeg, selectBtn]
+        let writeViews: [NSView?] = [toField, subjectField, bodyScrollView, accountLabel]
+        boxViews.forEach { $0?.isHidden = !box }
+        writeViews.forEach { $0?.isHidden = box }
+
+        if !box { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
     }
 
     /// Ouvre un message en lecture. Appelé au clic sur une ligne : lire
     /// est ce qu'on veut faire d'un courriel, et il serait étrange de
     /// devoir viser un onglet pour y arriver.
+    /// Ouvre un message dans son panneau. La liste reste derrière, et
+    /// l'on peut lire sans perdre sa place.
     private func open(_ m: MailMessage) {
         select(m)
-        fillReader(m)
-        setMode(1)
+        let r = readerWindow()
+        r.show(m)
 
-        // Les messages au-delà des premiers n'ont pas leur corps : le
-        // relevé ne le rapatrie que pour les premiers, sinon la boîte
-        // mettrait une minute à s'afficher. On le cherche maintenant,
-        // et on remplit le lecteur quand il arrive.
+        // Le corps des messages au-delà des premiers n'est pas encore là :
+        // on le demande maintenant et on remplit le panneau à l'arrivée.
         guard m.snippet.isEmpty, !m.uid.isEmpty, MailRouter.gmailReady else { return }
-        readerText.string = "Chargement du message…"
+        r.setBody("Chargement du message…")
         let uid = m.uid
         DispatchQueue.global(qos: .userInitiated).async {
-            let body = MailRouter.body(uid: uid)
+            let fetched = MailRouter.body(uid: uid)
             DispatchQueue.main.async { [weak self] in
-                guard let s = self, s.selected?.uid == uid else { return }
-                guard let body = body, !body.isEmpty else {
-                    s.readerText.string = "Le corps de ce message n'a pas pu être rapatrié. "
-                        + "Ouvrez-le dans Mail pour le lire en entier."
+                guard let s = self, let win = s.reader,
+                      win.message?.uid == uid else { return }
+                guard let fetched = fetched, !fetched.isEmpty else {
+                    win.setBody("Le corps de ce message n'a pas pu être rapatrié. "
+                        + "Ouvrez-le dans Mail pour le lire en entier.")
                     return
                 }
-                // On garde le corps : revenir sur ce message ne redemandera
-                // rien au serveur.
                 var filled = m
-                filled.snippet = body
+                filled.snippet = fetched
                 if let i = s.lastMessages.firstIndex(where: { $0.uid == uid }) {
-                    s.lastMessages[i].snippet = body
+                    s.lastMessages[i].snippet = fetched
                 }
                 s.selected = filled
-                s.fillReader(filled)
+                win.show(filled)
             }
         }
     }
 
-    private func fillReader(_ m: MailMessage) {
-        readerDisc.message = m
-        readerFrom.stringValue = m.shortSender.isEmpty ? "(expéditeur inconnu)" : m.shortSender
-        readerAddress.stringValue = m.address
-        readerSubject.stringValue = m.subject.isEmpty ? "(sans objet)" : m.subject
-
-        let lvl = m.threat.level
-        var meta = MailDate.parse(m.date).map { d -> String in
-            let f = DateFormatter()
-            f.setLocalizedDateFormatFromTemplate("EEEEdMMMMyHm")
-            return f.string(from: d)
-        } ?? m.date
-        if lvl != .clean { meta += "  ·  " + lvl.label }
-        if !m.attachments.isEmpty {
-            meta += "  ·  " + m.attachments.joined(separator: ", ")
+    /// Le panneau de lecture, créé à la première ouverture et réutilisé
+    /// ensuite : en ouvrir un par message laisserait l'écran couvert.
+    private func readerWindow() -> MailReaderWindow {
+        if let r = reader { return r }
+        let r = MailReaderWindow()
+        r.onReply = { [weak self] m in
+            self?.select(m)
+            self?.reply()
         }
-        readerMeta.stringValue = meta
-        readerMeta.textColor = lvl == .clean ? TH.dim(0.5) : lvl.color
-
-        let body = m.readableBody
-        readerText.string = body.isEmpty
-            ? "Le corps de ce message n'a pas pu être rapatrié. Ouvrez-le dans Mail pour le lire en entier."
-            : body
-        // Le style par défaut ne s'applique qu'à la saisie : un texte posé
-        // d'un bloc garde ses propres attributs, et l'interligne large
-        // serait perdu si on ne le réappliquait pas ici.
-        if let para = readerText.defaultParagraphStyle {
-            let all = NSRange(location: 0, length: readerText.string.utf16.count)
-            readerText.textStorage?.addAttributes([.paragraphStyle: para,
-                                                   .font: NSFont.systemFont(ofSize: 13),
-                                                   .foregroundColor: TH.dim(0.88)], range: all)
+        r.onDelete = { [weak self] m in
+            self?.select(m)
+            self?.confirmSwipeDelete(m)
         }
-        readerText.scroll(NSPoint(x: 0, y: 0))
+        r.onQuarantine = { [weak self] m in
+            self?.select(m)
+            self?.quarantineSelected()
+        }
+        reader = r
+        return r
     }
 
     /// Met le message sélectionné à la corbeille du compte. Rien n'est
@@ -1215,7 +1196,10 @@ final class MailPanelView: NSView {
                     s.selected = nil
                     s.replyBtn.enabledFlag = false
                     s.deleteBtn.enabledFlag = false
-                    if s.mode == 1 { s.setMode(0) }
+                    // Le message supprimé était peut-être celui qu'on
+                    // lisait : le panneau se referme plutôt que d'afficher
+                    // un message qui n'est plus là.
+                    s.reader?.window?.close()
                     s.refresh()
                 }
             }

@@ -331,7 +331,12 @@ enum GmailClient {
             m.authResults = authRes
             m.spf = spf
             m.unread = unseen.contains(uid)
-            m.attachments = attachmentNames(in: structure)
+            m.parts = parts(in: structure)
+            // Les noms restent renseignés : l'analyse de hameçonnage les
+            // lit encore, et une passerelle sans BODYSTRUCTURE n'aurait
+            // pas de parties.
+            m.attachments = m.parts.filter { $0.isAttachment }.map { $0.name }
+            if m.attachments.isEmpty { m.attachments = attachmentNames(in: structure) }
             m.bulkHeaders = bulk.trimmingCharacters(in: .whitespaces)
             // Le corps n'est rapatrié que pour les premiers messages : à
             // soixante, un aller-retour de 8 Ko chacun ferait attendre une
@@ -351,6 +356,171 @@ enum GmailClient {
     /// Noms de pièces jointes extraits de BODYSTRUCTURE. Le format est
     /// une liste Lisp imbriquée pénible à analyser ; les noms y figurent
     /// toujours après NAME ou FILENAME, ce qui suffit ici.
+    // ─────────────────────────────────────────────────────────
+    //  BODYSTRUCTURE
+    //
+    //  Une liste imbriquée à la Lisp, que le serveur rend sur une
+    //  ligne. On l'analyse pour de bon plutôt que d'y pêcher des noms
+    //  de fichiers à l'expression régulière : sans les **numéros de
+    //  section**, on sait qu'une pièce jointe existe mais pas où elle
+    //  est, donc on ne peut ni l'ouvrir ni dire son poids.
+    //
+    //  La numérotation suit la RFC 3501 : les enfants d'une partie
+    //  multiple portent son préfixe suivi de leur rang — 1, 2, puis
+    //  1.1, 1.2 pour un multiple imbriqué dans le premier.
+    // ─────────────────────────────────────────────────────────
+
+    /// Un nœud de la structure : une chaîne, ou une liste de nœuds.
+    private indirect enum SNode {
+        case atom(String)
+        case list([SNode])
+
+        var text: String { if case .atom(let s) = self { return s }; return "" }
+        var children: [SNode] { if case .list(let l) = self { return l }; return [] }
+        var isList: Bool { if case .list = self { return true }; return false }
+    }
+
+    private static func tokenize(_ s: String) -> SNode {
+        let chars = Array(s)
+        var i = 0
+
+        func parseList() -> SNode {
+            var out: [SNode] = []
+            i += 1                                  // la parenthèse ouvrante
+            while i < chars.count {
+                let c = chars[i]
+                if c == ")" { i += 1; return .list(out) }
+                if c == " " { i += 1; continue }
+                if c == "(" { out.append(parseList()); continue }
+                if c == "\"" {
+                    var buf = ""
+                    i += 1
+                    while i < chars.count && chars[i] != "\"" {
+                        if chars[i] == "\\" && i + 1 < chars.count {
+                            buf.append(chars[i + 1]); i += 2; continue
+                        }
+                        buf.append(chars[i]); i += 1
+                    }
+                    i += 1
+                    out.append(.atom(buf)); continue
+                }
+                var j = i
+                while j < chars.count && chars[j] != " " && chars[j] != "(" && chars[j] != ")" {
+                    j += 1
+                }
+                out.append(.atom(String(chars[i..<j])))
+                i = j
+            }
+            return .list(out)
+        }
+
+        while i < chars.count && chars[i] != "(" { i += 1 }
+        return i < chars.count ? parseList() : .list([])
+    }
+
+    /// Les parties d'un message, numérotées.
+    static func parts(in structure: String) -> [MailPart] {
+        guard !structure.isEmpty else { return [] }
+        var out: [MailPart] = []
+        walk(tokenize(structure), prefix: "", into: &out)
+        return out
+    }
+
+    private static func walk(_ node: SNode, prefix: String, into out: inout [MailPart]) {
+        let kids = node.children
+        // Une partie multiple commence par ses enfants, qui sont des listes.
+        if let first = kids.first, first.isList {
+            var rank = 0
+            for child in kids {
+                guard child.isList else { break }
+                rank += 1
+                let p = prefix.isEmpty ? "\(rank)" : "\(prefix).\(rank)"
+                walk(child, prefix: p, into: &out)
+            }
+            return
+        }
+
+        var part = MailPart()
+        part.section = prefix.isEmpty ? "1" : prefix
+        part.type = kids.count > 0 ? kids[0].text.uppercased() : ""
+        part.subtype = kids.count > 1 ? kids[1].text.uppercased() : ""
+        part.encoding = kids.count > 5 ? kids[5].text.uppercased() : ""
+        part.size = kids.count > 6 ? (Int(kids[6].text) ?? 0) : 0
+
+        // Le nom se trouve dans les paramètres, ou dans la disposition.
+        // Les deux existent, et l'un sans l'autre est courant.
+        if kids.count > 2, case .list(let params) = kids[2] {
+            part.name = value(of: "NAME", in: params)
+        }
+        for el in kids where el.isList {
+            let l = el.children
+            guard let head = l.first, case .atom(let word) = head,
+                  ["ATTACHMENT", "INLINE"].contains(word.uppercased()),
+                  l.count > 1, case .list(let d) = l[1] else { continue }
+            let f = value(of: "FILENAME", in: d)
+            if !f.isEmpty { part.name = f }
+        }
+        part.name = decodeMimeHeader(part.name)
+        out.append(part)
+    }
+
+    private static func value(of key: String, in pairs: [SNode]) -> String {
+        var i = 0
+        while i + 1 < pairs.count {
+            if pairs[i].text.uppercased() == key { return pairs[i + 1].text }
+            i += 2
+        }
+        return ""
+    }
+
+    /// Rapatrie une partie précise et la décode.
+    static func fetchPart(user: String, auth: GmailAuthMode,
+                          uid: String, part: MailPart) -> Data? {
+        guard !uid.isEmpty, !part.section.isEmpty,
+              part.section.range(of: "^[0-9]+(\\.[0-9]+)*$",
+                                 options: .regularExpression) != nil,
+              let s = TLSLineSocket(host: imapHost, port: 993) else { return nil }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("p1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("p1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("p1 OK") { logged = true; break }
+            if l.hasPrefix("p1 NO") || l.hasPrefix("p1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return nil }
+        // EXAMINE : ouvrir une pièce jointe ne doit pas marquer le message
+        // comme lu dans votre boîte.
+        s.write("p2 EXAMINE INBOX")
+        while let l = s.readLine() { if l.hasPrefix("p2 ") { break } }
+
+        s.write("p3 UID FETCH \(uid) (BODY.PEEK[\(part.section)])")
+        var lines: [String] = []
+        var first = true
+        while let l = s.readLine() {
+            if l.hasPrefix("p3 ") { break }
+            if first {
+                first = false
+                if l.hasPrefix("*") && l.uppercased().contains("FETCH") { continue }
+            }
+            if l.trimmingCharacters(in: .whitespaces) == ")" { continue }
+            lines.append(l)
+        }
+        s.write("p9 LOGOUT")
+
+        let raw = lines.joined(separator: "\n")
+        guard !raw.isEmpty else { return nil }
+        if part.encoding == "BASE64" {
+            let compact = raw.filter { !" \n\r\t".contains($0) }
+            return Data(base64Encoded: compact, options: .ignoreUnknownCharacters)
+        }
+        return raw.data(using: .utf8)
+    }
+
     static func attachmentNames(in structure: String) -> [String] {
         guard !structure.isEmpty,
               let re = try? NSRegularExpression(

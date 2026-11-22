@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 24.2 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 24.3 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -5033,7 +5033,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.2"
+let budVersion = "24.3"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -6872,7 +6872,12 @@ enum GmailClient {
             m.authResults = authRes
             m.spf = spf
             m.unread = unseen.contains(uid)
-            m.attachments = attachmentNames(in: structure)
+            m.parts = parts(in: structure)
+            // Les noms restent renseignés : l'analyse de hameçonnage les
+            // lit encore, et une passerelle sans BODYSTRUCTURE n'aurait
+            // pas de parties.
+            m.attachments = m.parts.filter { $0.isAttachment }.map { $0.name }
+            if m.attachments.isEmpty { m.attachments = attachmentNames(in: structure) }
             m.bulkHeaders = bulk.trimmingCharacters(in: .whitespaces)
             // Le corps n'est rapatrié que pour les premiers messages : à
             // soixante, un aller-retour de 8 Ko chacun ferait attendre une
@@ -6892,6 +6897,171 @@ enum GmailClient {
     /// Noms de pièces jointes extraits de BODYSTRUCTURE. Le format est
     /// une liste Lisp imbriquée pénible à analyser ; les noms y figurent
     /// toujours après NAME ou FILENAME, ce qui suffit ici.
+    // ─────────────────────────────────────────────────────────
+    //  BODYSTRUCTURE
+    //
+    //  Une liste imbriquée à la Lisp, que le serveur rend sur une
+    //  ligne. On l'analyse pour de bon plutôt que d'y pêcher des noms
+    //  de fichiers à l'expression régulière : sans les **numéros de
+    //  section**, on sait qu'une pièce jointe existe mais pas où elle
+    //  est, donc on ne peut ni l'ouvrir ni dire son poids.
+    //
+    //  La numérotation suit la RFC 3501 : les enfants d'une partie
+    //  multiple portent son préfixe suivi de leur rang — 1, 2, puis
+    //  1.1, 1.2 pour un multiple imbriqué dans le premier.
+    // ─────────────────────────────────────────────────────────
+
+    /// Un nœud de la structure : une chaîne, ou une liste de nœuds.
+    private indirect enum SNode {
+        case atom(String)
+        case list([SNode])
+
+        var text: String { if case .atom(let s) = self { return s }; return "" }
+        var children: [SNode] { if case .list(let l) = self { return l }; return [] }
+        var isList: Bool { if case .list = self { return true }; return false }
+    }
+
+    private static func tokenize(_ s: String) -> SNode {
+        let chars = Array(s)
+        var i = 0
+
+        func parseList() -> SNode {
+            var out: [SNode] = []
+            i += 1                                  // la parenthèse ouvrante
+            while i < chars.count {
+                let c = chars[i]
+                if c == ")" { i += 1; return .list(out) }
+                if c == " " { i += 1; continue }
+                if c == "(" { out.append(parseList()); continue }
+                if c == "\"" {
+                    var buf = ""
+                    i += 1
+                    while i < chars.count && chars[i] != "\"" {
+                        if chars[i] == "\\" && i + 1 < chars.count {
+                            buf.append(chars[i + 1]); i += 2; continue
+                        }
+                        buf.append(chars[i]); i += 1
+                    }
+                    i += 1
+                    out.append(.atom(buf)); continue
+                }
+                var j = i
+                while j < chars.count && chars[j] != " " && chars[j] != "(" && chars[j] != ")" {
+                    j += 1
+                }
+                out.append(.atom(String(chars[i..<j])))
+                i = j
+            }
+            return .list(out)
+        }
+
+        while i < chars.count && chars[i] != "(" { i += 1 }
+        return i < chars.count ? parseList() : .list([])
+    }
+
+    /// Les parties d'un message, numérotées.
+    static func parts(in structure: String) -> [MailPart] {
+        guard !structure.isEmpty else { return [] }
+        var out: [MailPart] = []
+        walk(tokenize(structure), prefix: "", into: &out)
+        return out
+    }
+
+    private static func walk(_ node: SNode, prefix: String, into out: inout [MailPart]) {
+        let kids = node.children
+        // Une partie multiple commence par ses enfants, qui sont des listes.
+        if let first = kids.first, first.isList {
+            var rank = 0
+            for child in kids {
+                guard child.isList else { break }
+                rank += 1
+                let p = prefix.isEmpty ? "\(rank)" : "\(prefix).\(rank)"
+                walk(child, prefix: p, into: &out)
+            }
+            return
+        }
+
+        var part = MailPart()
+        part.section = prefix.isEmpty ? "1" : prefix
+        part.type = kids.count > 0 ? kids[0].text.uppercased() : ""
+        part.subtype = kids.count > 1 ? kids[1].text.uppercased() : ""
+        part.encoding = kids.count > 5 ? kids[5].text.uppercased() : ""
+        part.size = kids.count > 6 ? (Int(kids[6].text) ?? 0) : 0
+
+        // Le nom se trouve dans les paramètres, ou dans la disposition.
+        // Les deux existent, et l'un sans l'autre est courant.
+        if kids.count > 2, case .list(let params) = kids[2] {
+            part.name = value(of: "NAME", in: params)
+        }
+        for el in kids where el.isList {
+            let l = el.children
+            guard let head = l.first, case .atom(let word) = head,
+                  ["ATTACHMENT", "INLINE"].contains(word.uppercased()),
+                  l.count > 1, case .list(let d) = l[1] else { continue }
+            let f = value(of: "FILENAME", in: d)
+            if !f.isEmpty { part.name = f }
+        }
+        part.name = decodeMimeHeader(part.name)
+        out.append(part)
+    }
+
+    private static func value(of key: String, in pairs: [SNode]) -> String {
+        var i = 0
+        while i + 1 < pairs.count {
+            if pairs[i].text.uppercased() == key { return pairs[i + 1].text }
+            i += 2
+        }
+        return ""
+    }
+
+    /// Rapatrie une partie précise et la décode.
+    static func fetchPart(user: String, auth: GmailAuthMode,
+                          uid: String, part: MailPart) -> Data? {
+        guard !uid.isEmpty, !part.section.isEmpty,
+              part.section.range(of: "^[0-9]+(\\.[0-9]+)*$",
+                                 options: .regularExpression) != nil,
+              let s = TLSLineSocket(host: imapHost, port: 993) else { return nil }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("p1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("p1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("p1 OK") { logged = true; break }
+            if l.hasPrefix("p1 NO") || l.hasPrefix("p1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return nil }
+        // EXAMINE : ouvrir une pièce jointe ne doit pas marquer le message
+        // comme lu dans votre boîte.
+        s.write("p2 EXAMINE INBOX")
+        while let l = s.readLine() { if l.hasPrefix("p2 ") { break } }
+
+        s.write("p3 UID FETCH \(uid) (BODY.PEEK[\(part.section)])")
+        var lines: [String] = []
+        var first = true
+        while let l = s.readLine() {
+            if l.hasPrefix("p3 ") { break }
+            if first {
+                first = false
+                if l.hasPrefix("*") && l.uppercased().contains("FETCH") { continue }
+            }
+            if l.trimmingCharacters(in: .whitespaces) == ")" { continue }
+            lines.append(l)
+        }
+        s.write("p9 LOGOUT")
+
+        let raw = lines.joined(separator: "\n")
+        guard !raw.isEmpty else { return nil }
+        if part.encoding == "BASE64" {
+            let compact = raw.filter { !" \n\r\t".contains($0) }
+            return Data(base64Encoded: compact, options: .ignoreUnknownCharacters)
+        }
+        return raw.data(using: .utf8)
+    }
+
     static func attachmentNames(in structure: String) -> [String] {
         guard !structure.isEmpty,
               let re = try? NSRegularExpression(
@@ -7680,6 +7850,43 @@ import Cocoa
 //  d'API, aucune connexion sortante de notre fait.
 // ═══════════════════════════════════════════════════════════
 
+/// Une partie d'un message, telle que `BODYSTRUCTURE` la décrit.
+struct MailPart: Codable {
+    /// Le numéro de section IMAP : « 2 », « 1.2 »… C'est ce qu'il faut
+    /// pour aller chercher cette partie précise, et rien d'autre.
+    var section = "1"
+    var type = ""          // TEXT, IMAGE, APPLICATION…
+    var subtype = ""       // PLAIN, PNG, PDF…
+    var name = ""          // nom de fichier, vide pour le corps
+    var encoding = ""      // BASE64, QUOTED-PRINTABLE…
+    var size = 0
+
+    /// Une pièce jointe est une partie qui porte un nom de fichier. Le
+    /// corps du message n'en a pas, et c'est exactement ce qui les sépare.
+    var isAttachment: Bool { !name.isEmpty }
+
+    /// Le symbole qui va avec le type de fichier.
+    var icon: String {
+        switch type.uppercased() {
+        case "IMAGE": return "photo"
+        case "AUDIO": return "waveform"
+        case "VIDEO": return "film"
+        case "TEXT":  return "doc.text"
+        default:
+            switch subtype.uppercased() {
+            case "PDF":  return "doc.richtext"
+            case "ZIP", "X-ZIP-COMPRESSED", "GZIP": return "doc.zipper"
+            default:     return "paperclip"
+            }
+        }
+    }
+
+    var readableSize: String {
+        guard size > 0 else { return "" }
+        return formatBytes(Int64(size))
+    }
+}
+
 struct MailMessage: Codable {
     let subject: String
     let sender: String
@@ -7728,6 +7935,10 @@ struct MailMessage: Codable {
     /// Les en-têtes d'envoi en masse réunis : List-Unsubscribe, List-Id,
     /// Precedence. Trois façons de dire la même chose.
     var bulkHeaders: String = ""
+    /// Les parties du message, telles que le serveur les décrit. Permet
+    /// d'afficher une pièce jointe avec son type et son poids, et d'aller
+    /// la chercher par son numéro de section.
+    var parts: [MailPart] = []
     /// Le type auquel BUD rattache ce message.
     var category: MailCategory = .principal
 
@@ -8183,6 +8394,12 @@ enum MailRouter {
         return GmailClient.status(user: user, auth: auth)
     }
 
+    /// Rapatrie une pièce jointe et la rend décodée.
+    static func attachment(uid: String, part: MailPart) -> Data? {
+        guard let (user, auth) = mode() else { return nil }
+        return GmailClient.fetchPart(user: user, auth: auth, uid: uid, part: part)
+    }
+
     /// Le corps d'un message que le relevé n'a pas chargé.
     static func body(uid: String) -> String? {
         guard let (user, auth) = mode() else { return nil }
@@ -8510,15 +8727,8 @@ final class MailPanelView: NSView {
     private var modeSeg: SegmentedBar!
     private var bodyScrollView: NSScrollView!
     private var mode = 0                  // 0 boîte · 1 lecture · 2 rédaction
-    // ── Lecture ──
-    private var readerCard: NSView!
-    private var readerDisc: InitialsDisc!
-    private var readerFrom: NSTextField!
-    private var readerAddress: NSTextField!
-    private var readerSubject: NSTextField!
-    private var readerMeta: NSTextField!
-    private var readerScroll: NSScrollView!
-    private var readerText: NSTextView!
+    /// Le lecteur, dans son propre panneau. Créé à la première ouverture.
+    private var reader: MailReaderWindow?
     private var deleteBtn: GlassButton!
     // ── Tri et sélection ──
     private var catSeg: SegmentedBar!
@@ -8584,7 +8794,6 @@ final class MailPanelView: NSView {
         // Chacun occupe maintenant toute la hauteur disponible.
         modeSeg = SegmentedBar(frame: NSRect(x: 0, y: 436, width: W, height: 36),
                                items: [SegmentedBar.Item(title: "Boîte", icon: "tray.full.fill"),
-                                       SegmentedBar.Item(title: "Lecture", icon: "doc.text"),
                                        SegmentedBar.Item(title: "Rédiger", icon: "square.and.pencil")],
                                selected: 0)
         modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
@@ -8689,52 +8898,6 @@ final class MailPanelView: NSView {
         bodyView = tv
         addSubview(bodyScroll)
 
-        // ── Mode Lecture ──
-        //
-        //  Le corps est déjà rapatrié et décodé lors du relevé de la boîte :
-        //  lire un message ne demande donc aucun aller-retour réseau de
-        //  plus, seulement de présenter proprement ce qu'on a.
-        readerCard = mkCard(self, NSRect(x: 0, y: 318, width: W, height: 106), radius: 14, alpha: 0.06)
-
-        readerDisc = InitialsDisc(frame: NSRect(x: 14, y: 48, width: 44, height: 44))
-        readerCard.addSubview(readerDisc)
-        readerFrom = mkLabel("", NSRect(x: 70, y: 72, width: W - 90, height: 20), 13.5, .bold)
-        readerAddress = mkLabel("", NSRect(x: 70, y: 52, width: W - 90, height: 15), 10.5, .regular, alpha: 0.42)
-        readerSubject = mkLabel("", NSRect(x: 14, y: 26, width: W - 28, height: 19), 12.5, .semibold, alpha: 0.82)
-        readerMeta = mkLabel("", NSRect(x: 14, y: 6, width: W - 28, height: 15), 10, .medium, alpha: 0.5)
-        readerCard.addSubview(readerFrom)
-        readerCard.addSubview(readerAddress)
-        readerCard.addSubview(readerSubject)
-        readerCard.addSubview(readerMeta)
-
-        readerScroll = NSScrollView(frame: NSRect(x: 0, y: 66, width: W, height: 240))
-        readerScroll.hasVerticalScroller = true
-        readerScroll.scrollerStyle = .overlay
-        readerScroll.drawsBackground = false
-        readerText = NSTextView(frame: NSRect(x: 0, y: 0, width: W, height: 240))
-        readerText.isEditable = false
-        // Sélectionnable : on veut pouvoir copier un code, une adresse,
-        // un numéro de commande sans ouvrir Mail.
-        readerText.isSelectable = true
-        readerText.drawsBackground = false
-        readerText.isRichText = false
-        readerText.font = NSFont.systemFont(ofSize: 13)
-        readerText.textColor = TH.dim(0.88)
-        readerText.textContainerInset = NSSize(width: 14, height: 12)
-        readerText.isVerticallyResizable = true
-        readerText.isHorizontallyResizable = false
-        readerText.autoresizingMask = [.width]
-        readerText.minSize = NSSize(width: 0, height: 240)
-        readerText.maxSize = NSSize(width: 10_000, height: 10_000)
-        readerText.textContainer?.widthTracksTextView = true
-        // Interligne large : c'est ce qui sépare un courriel qu'on lit
-        // d'un bloc de texte qu'on déchiffre.
-        let para = NSMutableParagraphStyle()
-        para.lineHeightMultiple = 1.38
-        para.paragraphSpacing = 7
-        readerText.defaultParagraphStyle = para
-        readerScroll.documentView = readerText
-        addSubview(readerScroll)
 
         statusLabel = mkLabel("", NSRect(x: 0, y: 46, width: W, height: 16), 10.5, .regular, alpha: 0.45, .center)
         addSubview(statusLabel)
@@ -8770,95 +8933,83 @@ final class MailPanelView: NSView {
 
     /// Bascule entre consulter et rédiger. Les deux jeux de vues occupent
     /// la même bande d'écran, on les montre à tour de rôle.
+    /// Deux modes : la boîte, ou la rédaction. La lecture a quitté les
+    /// onglets pour son propre panneau.
+    ///
+    /// Les vues de chaque mode sont **listées**, et l'on montre les unes en
+    /// cachant les autres à partir de ces listes. L'ancienne version
+    /// masquait vue par vue, à la main — et en avait oublié deux, la barre
+    /// des types et le bouton de sélection, qui restaient affichés
+    /// par-dessus l'en-tête du lecteur. Un mode qui cache des vues une à
+    /// une est un mode qui en oubliera une.
     private func setMode(_ i: Int) {
         mode = i
         modeSeg.selected = i
-        let box = (i == 0), read = (i == 1), write = (i == 2)
-        scroll.isHidden = !box
-        // La carte d'analyse reste en place même sans sélection, avec sa
-        // phrase d'attente : la faire apparaître et disparaître faisait
-        // sursauter le bas du panneau à chaque clic.
-        threatCard.isHidden = !box
-        readerCard.isHidden = !read
-        readerScroll.isHidden = !read
-        toField.isHidden = !write
-        subjectField.isHidden = !write
-        bodyScrollView?.isHidden = !write
-        accountLabel.isHidden = !write
-        if write { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
-        if read { window?.makeFirstResponder(readerText) }
+        let box = (i == 0)
+
+        let boxViews: [NSView?] = [scroll, threatCard, catSeg, selectBtn]
+        let writeViews: [NSView?] = [toField, subjectField, bodyScrollView, accountLabel]
+        boxViews.forEach { $0?.isHidden = !box }
+        writeViews.forEach { $0?.isHidden = box }
+
+        if !box { window?.makeFirstResponder(toField.stringValue.isEmpty ? toField : bodyView) }
     }
 
     /// Ouvre un message en lecture. Appelé au clic sur une ligne : lire
     /// est ce qu'on veut faire d'un courriel, et il serait étrange de
     /// devoir viser un onglet pour y arriver.
+    /// Ouvre un message dans son panneau. La liste reste derrière, et
+    /// l'on peut lire sans perdre sa place.
     private func open(_ m: MailMessage) {
         select(m)
-        fillReader(m)
-        setMode(1)
+        let r = readerWindow()
+        r.show(m)
 
-        // Les messages au-delà des premiers n'ont pas leur corps : le
-        // relevé ne le rapatrie que pour les premiers, sinon la boîte
-        // mettrait une minute à s'afficher. On le cherche maintenant,
-        // et on remplit le lecteur quand il arrive.
+        // Le corps des messages au-delà des premiers n'est pas encore là :
+        // on le demande maintenant et on remplit le panneau à l'arrivée.
         guard m.snippet.isEmpty, !m.uid.isEmpty, MailRouter.gmailReady else { return }
-        readerText.string = "Chargement du message…"
+        r.setBody("Chargement du message…")
         let uid = m.uid
         DispatchQueue.global(qos: .userInitiated).async {
-            let body = MailRouter.body(uid: uid)
+            let fetched = MailRouter.body(uid: uid)
             DispatchQueue.main.async { [weak self] in
-                guard let s = self, s.selected?.uid == uid else { return }
-                guard let body = body, !body.isEmpty else {
-                    s.readerText.string = "Le corps de ce message n'a pas pu être rapatrié. "
-                        + "Ouvrez-le dans Mail pour le lire en entier."
+                guard let s = self, let win = s.reader,
+                      win.message?.uid == uid else { return }
+                guard let fetched = fetched, !fetched.isEmpty else {
+                    win.setBody("Le corps de ce message n'a pas pu être rapatrié. "
+                        + "Ouvrez-le dans Mail pour le lire en entier.")
                     return
                 }
-                // On garde le corps : revenir sur ce message ne redemandera
-                // rien au serveur.
                 var filled = m
-                filled.snippet = body
+                filled.snippet = fetched
                 if let i = s.lastMessages.firstIndex(where: { $0.uid == uid }) {
-                    s.lastMessages[i].snippet = body
+                    s.lastMessages[i].snippet = fetched
                 }
                 s.selected = filled
-                s.fillReader(filled)
+                win.show(filled)
             }
         }
     }
 
-    private func fillReader(_ m: MailMessage) {
-        readerDisc.message = m
-        readerFrom.stringValue = m.shortSender.isEmpty ? "(expéditeur inconnu)" : m.shortSender
-        readerAddress.stringValue = m.address
-        readerSubject.stringValue = m.subject.isEmpty ? "(sans objet)" : m.subject
-
-        let lvl = m.threat.level
-        var meta = MailDate.parse(m.date).map { d -> String in
-            let f = DateFormatter()
-            f.setLocalizedDateFormatFromTemplate("EEEEdMMMMyHm")
-            return f.string(from: d)
-        } ?? m.date
-        if lvl != .clean { meta += "  ·  " + lvl.label }
-        if !m.attachments.isEmpty {
-            meta += "  ·  " + m.attachments.joined(separator: ", ")
+    /// Le panneau de lecture, créé à la première ouverture et réutilisé
+    /// ensuite : en ouvrir un par message laisserait l'écran couvert.
+    private func readerWindow() -> MailReaderWindow {
+        if let r = reader { return r }
+        let r = MailReaderWindow()
+        r.onReply = { [weak self] m in
+            self?.select(m)
+            self?.reply()
         }
-        readerMeta.stringValue = meta
-        readerMeta.textColor = lvl == .clean ? TH.dim(0.5) : lvl.color
-
-        let body = m.readableBody
-        readerText.string = body.isEmpty
-            ? "Le corps de ce message n'a pas pu être rapatrié. Ouvrez-le dans Mail pour le lire en entier."
-            : body
-        // Le style par défaut ne s'applique qu'à la saisie : un texte posé
-        // d'un bloc garde ses propres attributs, et l'interligne large
-        // serait perdu si on ne le réappliquait pas ici.
-        if let para = readerText.defaultParagraphStyle {
-            let all = NSRange(location: 0, length: readerText.string.utf16.count)
-            readerText.textStorage?.addAttributes([.paragraphStyle: para,
-                                                   .font: NSFont.systemFont(ofSize: 13),
-                                                   .foregroundColor: TH.dim(0.88)], range: all)
+        r.onDelete = { [weak self] m in
+            self?.select(m)
+            self?.confirmSwipeDelete(m)
         }
-        readerText.scroll(NSPoint(x: 0, y: 0))
+        r.onQuarantine = { [weak self] m in
+            self?.select(m)
+            self?.quarantineSelected()
+        }
+        reader = r
+        return r
     }
 
     /// Met le message sélectionné à la corbeille du compte. Rien n'est
@@ -8888,7 +9039,10 @@ final class MailPanelView: NSView {
                     s.selected = nil
                     s.replyBtn.enabledFlag = false
                     s.deleteBtn.enabledFlag = false
-                    if s.mode == 1 { s.setMode(0) }
+                    // Le message supprimé était peut-être celui qu'on
+                    // lisait : le panneau se referme plutôt que d'afficher
+                    // un message qui n'est plus là.
+                    s.reader?.window?.close()
                     s.refresh()
                 }
             }
@@ -9473,6 +9627,353 @@ final class MailPanelView: NSView {
     }
 }
 EOF_BUDMAIL_SWIFT
+
+cat << 'EOF_BUDMAILREADER_SWIFT' > "$SRC_DIR/BudMailReader.swift"
+import Cocoa
+
+// ═══════════════════════════════════════════════════════════
+//  Le lecteur de courrier, en panneau
+//
+//  Il était un troisième onglet, « Lecture », et c'était une
+//  mauvaise idée pour deux raisons.
+//
+//  La première est visible : trois jeux de vues se partageaient
+//  la même bande d'écran, montrés à tour de rôle. Il suffisait
+//  d'en oublier un à la bascule pour que la barre des types se
+//  retrouve par-dessus l'en-tête du message — ce qui est
+//  arrivé. Un mode qui cache des vues est un mode qui en
+//  oubliera une.
+//
+//  La seconde est d'usage : lire un message et garder la liste
+//  sous les yeux sont deux choses qu'on veut faire ensemble, et
+//  un onglet force à choisir.
+//
+//  Le panneau règle les deux. Il vit au-dessus du panneau de
+//  BUD, se rétracte sur son en-tête d'un clic, et se referme
+//  sur Échap. La liste reste derrière, intacte.
+// ═══════════════════════════════════════════════════════════
+
+final class MailReaderWindow: NSWindowController {
+
+    /// Hauteurs des deux états. Rétracté, il ne reste que l'en-tête :
+    /// de quoi savoir quel message est ouvert sans qu'il occupe l'écran.
+    private static let fullHeight: CGFloat = 560
+    private static let retractedHeight: CGFloat = 132
+    private static let width: CGFloat = 620
+
+    private var body: NSTextView!
+    private var bodyScroll: NSScrollView!
+    private var disc: InitialsDisc!
+    private var fromLabel: NSTextField!
+    private var addressLabel: NSTextField!
+    private var subjectLabel: NSTextField!
+    private var metaLabel: NSTextField!
+    private var attachHost: NSView!
+    private var retractBtn: GlassButton!
+    private var actionRow: NSView!
+    private var statusLabel: NSTextField!
+
+    private var retracted = false
+    private(set) var message: MailMessage?
+
+    var onReply: ((MailMessage) -> Void)?
+    var onDelete: ((MailMessage) -> Void)?
+    var onQuarantine: ((MailMessage) -> Void)?
+
+    init() {
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0,
+                                            width: MailReaderWindow.width,
+                                            height: MailReaderWindow.fullHeight),
+                        styleMask: [.titled, .closable, .utilityWindow, .resizable],
+                        backing: .buffered, defer: false)
+        w.title = "Message"
+        w.isReleasedWhenClosed = false
+        w.isFloatingPanel = true
+        w.hidesOnDeactivate = false
+        w.becomesKeyOnlyIfNeeded = false
+        // Au-dessus du panneau de BUD, qui vit au niveau `.statusBar` :
+        // sans cela le lecteur passerait dessous dès qu'on rouvre BUD.
+        w.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+        w.minSize = NSSize(width: 460, height: MailReaderWindow.retractedHeight)
+        super.init(window: w)
+        build()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    // ─────────────────────────────────────────────────────────
+    //  Construction
+    // ─────────────────────────────────────────────────────────
+
+    private func build() {
+        guard let content = window?.contentView else { return }
+        let W = MailReaderWindow.width, H = MailReaderWindow.fullHeight
+        content.autoresizesSubviews = true
+
+        disc = InitialsDisc(frame: NSRect(x: 18, y: H - 66, width: 46, height: 46))
+        disc.autoresizingMask = [.minYMargin]
+        content.addSubview(disc)
+
+        fromLabel = mkLabel("", NSRect(x: 76, y: H - 44, width: W - 200, height: 22),
+                            Typo.heading.size, Typo.heading.weight)
+        addressLabel = mkLabel("", NSRect(x: 76, y: H - 64, width: W - 200, height: 16),
+                               Typo.caption.size, .regular, alpha: Typo.Ink.faint)
+        subjectLabel = mkLabel("", NSRect(x: 18, y: H - 92, width: W - 36, height: 20),
+                               Typo.body.size, .semibold, alpha: Typo.Ink.normal)
+        metaLabel = mkLabel("", NSRect(x: 18, y: H - 112, width: W - 36, height: 16),
+                            10.5, .medium, alpha: Typo.Ink.muted)
+        for l in [fromLabel, addressLabel, subjectLabel, metaLabel] {
+            l?.autoresizingMask = [.minYMargin, .width]
+            content.addSubview(l!)
+        }
+
+        retractBtn = GlassButton(frame: NSRect(x: W - 118, y: H - 50, width: 100, height: 30),
+                                 title: "Rétracter", icon: "chevron.up", compact: true)
+        retractBtn.autoresizingMask = [.minXMargin, .minYMargin]
+        retractBtn.onClick = { [weak self] _ in self?.toggleRetract() }
+        content.addSubview(retractBtn)
+
+        // Les pièces jointes vivent dans leur propre vue : elle se vide et
+        // se remplit à chaque message, sans toucher au reste.
+        attachHost = NSView(frame: NSRect(x: 18, y: H - 152, width: W - 36, height: 34))
+        attachHost.autoresizingMask = [.minYMargin, .width]
+        content.addSubview(attachHost)
+
+        bodyScroll = NSScrollView(frame: NSRect(x: 12, y: 58, width: W - 24, height: H - 220))
+        bodyScroll.autoresizingMask = [.width, .height]
+        bodyScroll.hasVerticalScroller = true
+        bodyScroll.scrollerStyle = .overlay
+        bodyScroll.drawsBackground = false
+        body = NSTextView(frame: NSRect(x: 0, y: 0, width: W - 24, height: H - 220))
+        body.isEditable = false
+        body.isSelectable = true
+        body.drawsBackground = false
+        body.isRichText = false
+        body.textContainerInset = NSSize(width: 16, height: 14)
+        body.isVerticallyResizable = true
+        body.isHorizontallyResizable = false
+        body.autoresizingMask = [.width]
+        body.textContainer?.widthTracksTextView = true
+        let para = NSMutableParagraphStyle()
+        para.lineHeightMultiple = 1.40
+        para.paragraphSpacing = 8
+        body.defaultParagraphStyle = para
+        bodyScroll.documentView = body
+        content.addSubview(bodyScroll)
+
+        statusLabel = mkLabel("", NSRect(x: 18, y: 40, width: W - 36, height: 15),
+                              10.5, .regular, alpha: Typo.Ink.muted)
+        statusLabel.autoresizingMask = [.width, .maxYMargin]
+        statusLabel.isSelectable = false
+        content.addSubview(statusLabel)
+
+        actionRow = NSView(frame: NSRect(x: 12, y: 8, width: W - 24, height: 30))
+        actionRow.autoresizingMask = [.width, .maxYMargin]
+        content.addSubview(actionRow)
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Afficher un message
+    // ─────────────────────────────────────────────────────────
+
+    func show(_ m: MailMessage) {
+        message = m
+        disc.message = m
+        fromLabel.stringValue = m.shortSender.isEmpty ? "(expéditeur inconnu)" : m.shortSender
+        addressLabel.stringValue = m.address
+        subjectLabel.stringValue = m.subject.isEmpty ? "(sans objet)" : m.subject
+        window?.title = m.subject.isEmpty ? "Message" : String(m.subject.prefix(60))
+
+        var meta = MailDate.parse(m.date).map { d -> String in
+            let f = DateFormatter()
+            f.setLocalizedDateFormatFromTemplate("EEEEdMMMMyHm")
+            return f.string(from: d)
+        } ?? m.date
+        meta += "  ·  " + m.category.label
+        let lvl = m.threat.level
+        if lvl != .clean { meta += "  ·  " + lvl.label }
+        metaLabel.stringValue = meta
+        metaLabel.textColor = lvl == .clean ? TH.dim(Typo.Ink.muted) : lvl.color
+
+        buildAttachments(m)
+        buildActions(m)
+        setBody(m.readableBody.isEmpty
+                ? "Le corps de ce message n'a pas encore été rapatrié."
+                : m.readableBody)
+
+        if retracted { toggleRetract() }
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func setBody(_ text: String) {
+        body.string = text
+        if let para = body.defaultParagraphStyle {
+            let all = NSRange(location: 0, length: body.string.utf16.count)
+            body.textStorage?.addAttributes([.paragraphStyle: para,
+                                             .font: NSFont.systemFont(ofSize: 13),
+                                             .foregroundColor: TH.dim(0.88)], range: all)
+        }
+        body.scroll(NSPoint(x: 0, y: 0))
+    }
+
+    func setStatus(_ s: String) { statusLabel.stringValue = s }
+
+    // ─────────────────────────────────────────────────────────
+    //  Pièces jointes
+    // ─────────────────────────────────────────────────────────
+
+    private func buildAttachments(_ m: MailMessage) {
+        attachHost.subviews.forEach { $0.removeFromSuperview() }
+        let joined = m.parts.filter { $0.isAttachment }
+        guard !joined.isEmpty else {
+            attachHost.isHidden = true
+            return
+        }
+        attachHost.isHidden = false
+
+        var x: CGFloat = 0
+        for p in joined.prefix(6) {
+            let label = p.readableSize.isEmpty ? p.name : "\(p.name)  ·  \(p.readableSize)"
+            let w = min(240, textWidth(label, size: 11, weight: .medium) + 46)
+            guard x + w < attachHost.bounds.width else { break }
+            let b = GlassButton(frame: NSRect(x: x, y: 0, width: w, height: 30),
+                                title: label, icon: p.icon, compact: true)
+            let part = p
+            let uid = m.uid
+            b.onClick = { [weak self] _ in self?.open(part, uid: uid) }
+            attachHost.addSubview(b)
+            x += w + 8
+        }
+    }
+
+    /// Rapatrie la pièce jointe et l'ouvre avec l'application du système.
+    ///
+    /// Elle est écrite dans un dossier temporaire à nous, et non dans les
+    /// Téléchargements : une pièce jointe ouverte n'est pas un fichier
+    /// qu'on a choisi de garder.
+    private func open(_ part: MailPart, uid: String) {
+        guard MailRouter.gmailReady else {
+            setStatus("L'ouverture des pièces jointes demande un compte relié.")
+            return
+        }
+        setStatus("Téléchargement de « \(part.name) »…")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let data = MailRouter.attachment(uid: uid, part: part)
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self else { return }
+                guard let d = data, !d.isEmpty else {
+                    s.setStatus("« \(part.name) » n'a pas pu être rapatriée.")
+                    return
+                }
+                let dir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("BUD-pieces-jointes", isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                // Le nom vient du message : on n'en garde que le dernier
+                // composant, pour qu'il ne puisse pas désigner un chemin.
+                let safe = (part.name as NSString).lastPathComponent
+                let url = dir.appendingPathComponent(safe.isEmpty ? "piece-jointe" : safe)
+                do {
+                    try d.write(to: url, options: .atomic)
+                    s.setStatus("\(formatBytes(Int64(d.count))) · ouverte dans l'application du système.")
+                    NSWorkspace.shared.open(url)
+                } catch {
+                    s.setStatus("Écriture impossible : \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Actions
+    // ─────────────────────────────────────────────────────────
+
+    private func buildActions(_ m: MailMessage) {
+        actionRow.subviews.forEach { $0.removeFromSuperview() }
+        var specs: [(String, String, Bool, () -> Void)] = [
+            ("Répondre", "arrowshape.turn.up.left.fill", false, { [weak self] in
+                guard let s = self, let msg = s.message else { return }
+                s.onReply?(msg)
+            }),
+            ("Supprimer", "trash.fill", true, { [weak self] in
+                guard let s = self, let msg = s.message else { return }
+                s.onDelete?(msg)
+            }),
+            ("Isoler", "shield.lefthalf.filled", false, { [weak self] in
+                guard let s = self, let msg = s.message else { return }
+                s.onQuarantine?(msg)
+            })
+        ]
+
+        // Le désabonnement n'apparaît que si l'expéditeur l'a déclaré, et
+        // jamais pour un message signalé : cliquer un lien de
+        // désabonnement dans un courriel dangereux confirme à l'expéditeur
+        // que l'adresse est lue. C'est le contraire du service rendu.
+        if let link = unsubscribeLink(m), m.threat.level == .clean {
+            specs.append(("Se désabonner", "bell.slash", false, { [weak self] in
+                NSWorkspace.shared.open(link)
+                self?.setStatus("Page de désabonnement ouverte dans le navigateur.")
+            }))
+        }
+
+        let w = (actionRow.bounds.width - CGFloat(specs.count - 1) * 8) / CGFloat(specs.count)
+        for (i, sp) in specs.enumerated() {
+            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (w + 8), y: 0, width: w, height: 30),
+                                title: sp.0, icon: sp.1, compact: true)
+            b.destructive = sp.2
+            b.onClick = { _ in sp.3() }
+            actionRow.addSubview(b)
+        }
+    }
+
+    /// L'adresse de désabonnement, si l'expéditeur en a déclaré une.
+    /// On ne retient que `https` : un `mailto:` ferait écrire au nom de
+    /// l'utilisateur, ce qui ne se fait pas sans le lui demander.
+    private func unsubscribeLink(_ m: MailMessage) -> URL? {
+        guard !m.bulkHeaders.isEmpty else { return nil }
+        guard let re = try? NSRegularExpression(pattern: "<(https://[^>]+)>") else { return nil }
+        let r = NSRange(m.bulkHeaders.startIndex..., in: m.bulkHeaders)
+        guard let match = re.firstMatch(in: m.bulkHeaders, range: r),
+              let rr = Range(match.range(at: 1), in: m.bulkHeaders) else { return nil }
+        return URL(string: String(m.bulkHeaders[rr]))
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Rétraction
+    // ─────────────────────────────────────────────────────────
+
+    /// Replie le panneau sur son en-tête, ou le rouvre. Le bord **haut**
+    /// reste en place : c'est ce qui donne l'impression d'un store qu'on
+    /// baisse, et non d'une fenêtre qui saute.
+    private func toggleRetract() {
+        guard let w = window else { return }
+        retracted.toggle()
+        let target = retracted ? MailReaderWindow.retractedHeight : MailReaderWindow.fullHeight
+        var f = w.frame
+        let top = f.maxY
+        f.size.height = target
+        f.origin.y = top - target
+
+        bodyScroll.isHidden = retracted
+        statusLabel.isHidden = retracted
+        actionRow.isHidden = retracted
+        attachHost.isHidden = retracted || attachHost.subviews.isEmpty
+        retractBtn.title = retracted ? "Déplier" : "Rétracter"
+        retractBtn.iconName = retracted ? "chevron.down" : "chevron.up"
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = Motion.base
+            ctx.timingFunction = Motion.enter
+            w.animator().setFrame(f, display: true)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { window?.close(); return }   // Échap
+        super.keyDown(with: event)
+    }
+}
+EOF_BUDMAILREADER_SWIFT
 
 cat << 'EOF_BUDMAILSYNC_SWIFT' > "$SRC_DIR/BudMailSync.swift"
 import Cocoa
