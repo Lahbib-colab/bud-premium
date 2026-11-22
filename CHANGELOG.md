@@ -2,6 +2,33 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.2 — un système de sous-agents
+
+**[`AGENTS.md`](AGENTS.md)** décrit le contrat ; `Sources/BudScripts.swift` l'exécute.
+
+Un sous-agent est un exécutable qui reçoit du JSON sur son entrée standard et en rend sur sa sortie standard. Rien d'autre.
+
+**Pourquoi des processus et non des greffons chargés dans BUD.** Un greffon partage la mémoire de l'application : un script qui boucle, épuise la mémoire ou plante emporte BUD avec lui — un processus, on le tue. Un greffon impose un langage et une interface binaire ; un processus accepte shell, Python, Swift compilé. Et surtout, un sous-agent se teste seul, sans lancer BUD : `echo '{}' | ./run`. C'est ce qui rend le système réellement extensible, bien plus que son API.
+
+**Quatre règles de sûreté, dont aucune n'est décorative :**
+
+- **Les entrées passent par l'entrée standard, jamais par la ligne de commande.** Un argument se retrouve dans la table des processus, visible de tout le système, et finit tôt ou tard interpolé dans un shell. BUD ne passe aucun argument.
+- **Le dossier d'un agent ne doit être inscriptible que par son propriétaire.** BUD refuse d'exécuter un dossier ouvert en écriture au groupe ou à tous, et dit pourquoi : un tel dossier est une élévation de privilège, puisque quiconque peut y écrire fait exécuter son code sous votre compte, par BUD.
+- **Délai maximal, puis mise à mort.** SIGTERM s'ignore, SIGKILL non : il suit deux secondes plus tard.
+- **Sortie plafonnée à 256 Ko**, et environnement réduit à quatre variables.
+
+Tout s'exécute hors du fil principal ; le résultat revient sur le fil principal.
+
+**Trois sous-agents d'exemple**, posés au premier lancement et jamais réécrits ensuite — vos modifications survivent aux mises à jour.
+
+- **`mail-actions`** relit le cache que BUD écrit déjà et en extrait paiements, échéances, confirmations et réponses attendues. Aucun accès au réseau, aucun identifiant : le travail coûteux est fait une fois par BUD, les sous-agents le relisent. **Un message signalé ne devient jamais une tâche** : « Confirmez votre compte sous 24 h » dans un courriel dangereux n'est pas une action à faire, c'est le piège — il remonte en avertissement.
+- **`tidy-downloads`** classe les téléchargements par type, et **par défaut ne déplace rien** : il dit ce qu'il ferait. Un agent qui range des fichiers dès son installation est un agent qu'on désinstalle. Jamais d'écrasement, et les téléchargements en cours sont laissés tranquilles.
+- **`watch-local`** regarde le disque, la corbeille, les caches et la dernière sauvegarde Time Machine. Chaque contrôle est indépendant et protégé, et le calcul de taille d'un dossier est borné en temps — parcourir une corbeille de cent mille fichiers ne doit pas occuper l'agent.
+
+Les trois ont été exécutés contre un cache réaliste avant d'être embarqués : le courriel de hameçonnage est bien classé en avertissement et non en tâche, l'extension en majuscules est reconnue, le fichier en cours de téléchargement est ignoré, et l'homonyme est numéroté au lieu d'être écrasé.
+
+**Depuis le chat** : « mes actions », « range mes téléchargements », « applique le rangement », « veille », « mes sous-agents ».
+
 ## 24.1 — Musique qui parle, volume sans latence
 
 **Pourquoi la pochette et les métadonnées ne s'affichaient pas**

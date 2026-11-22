@@ -617,6 +617,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         // La boîte se tient à jour d'elle-même : sondage toutes les
         // quatre-vingt-dix secondes, relevé complet seulement si le serveur
         // dit que quelque chose a changé.
+        // Les sous-agents d'exemple sont posés une fois, et jamais
+        // réécrits : vos modifications survivent aux mises à jour.
+        ScriptAgents.shared.installExamples()
+
         mailPanel.followBackgroundSync()
         MailSync.shared.warmUp()
         if MailRouter.gmailReady { MailSync.shared.startPolling() }
@@ -1315,6 +1319,29 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             }
             NSWorkspace.shared.open(url)
             return "J'ouvre une recherche sur « \(q) »."
+        }
+        a.runAgent = { name, payload, reply in
+            ScriptAgents.shared.run(name, payload: payload) { out in
+                guard out.ok else { reply(out.error ?? "Le sous-agent a échoué."); return }
+                var lines = [out.summary]
+                for i in out.items.prefix(12) {
+                    let mark = i.level == "warning" ? "⚠︎" : (i.level == "action" ? "▸" : "·")
+                    lines.append("\(mark) \(i.title)" + (i.detail.isEmpty ? "" : " — \(i.detail)"))
+                }
+                if out.items.count > 12 {
+                    lines.append("… et \(out.items.count - 12) de plus.")
+                }
+                reply(lines.joined(separator: "\n"))
+            }
+        }
+        a.listAgents = {
+            let all = ScriptAgents.shared.discover()
+            guard !all.isEmpty else {
+                return "Aucun sous-agent installé. Ils vivent dans "
+                    + "\(ScriptAgents.shared.dir.path)."
+            }
+            return "Sous-agents installés :\n"
+                + all.map { "• \($0.title) — \($0.detail)" }.joined(separator: "\n")
         }
         chatPanel.actions = a
     }

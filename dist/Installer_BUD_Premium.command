@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 24.1 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 24.2 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -892,6 +892,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         // La boîte se tient à jour d'elle-même : sondage toutes les
         // quatre-vingt-dix secondes, relevé complet seulement si le serveur
         // dit que quelque chose a changé.
+        // Les sous-agents d'exemple sont posés une fois, et jamais
+        // réécrits : vos modifications survivent aux mises à jour.
+        ScriptAgents.shared.installExamples()
+
         mailPanel.followBackgroundSync()
         MailSync.shared.warmUp()
         if MailRouter.gmailReady { MailSync.shared.startPolling() }
@@ -1590,6 +1594,29 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             }
             NSWorkspace.shared.open(url)
             return "J'ouvre une recherche sur « \(q) »."
+        }
+        a.runAgent = { name, payload, reply in
+            ScriptAgents.shared.run(name, payload: payload) { out in
+                guard out.ok else { reply(out.error ?? "Le sous-agent a échoué."); return }
+                var lines = [out.summary]
+                for i in out.items.prefix(12) {
+                    let mark = i.level == "warning" ? "⚠︎" : (i.level == "action" ? "▸" : "·")
+                    lines.append("\(mark) \(i.title)" + (i.detail.isEmpty ? "" : " — \(i.detail)"))
+                }
+                if out.items.count > 12 {
+                    lines.append("… et \(out.items.count - 12) de plus.")
+                }
+                reply(lines.joined(separator: "\n"))
+            }
+        }
+        a.listAgents = {
+            let all = ScriptAgents.shared.discover()
+            guard !all.isEmpty else {
+                return "Aucun sous-agent installé. Ils vivent dans "
+                    + "\(ScriptAgents.shared.dir.path)."
+            }
+            return "Sous-agents installés :\n"
+                + all.map { "• \($0.title) — \($0.detail)" }.joined(separator: "\n")
         }
         chatPanel.actions = a
     }
@@ -3135,6 +3162,10 @@ struct ChatActions {
     /// Durée en minutes, et la phrase d'origine pour l'intitulé.
     var startTimer: (Int, String) -> String = { _, _ in "" }
     var webSearch: (String) -> String = { _ in "" }
+    // ── Sous-agents ──
+    /// Lance un sous-agent. Le résultat arrive plus tard, par `late`.
+    var runAgent: (String, [String: String], @escaping (String) -> Void) -> Void = { _, _, _ in }
+    var listAgents: () -> String = { "" }
 }
 
 enum BudBrain {
@@ -3366,6 +3397,29 @@ enum BudBrain {
 
         if has(t, ["comment vas tu", "ca va", "tu vas bien"]) {
             return "Je tourne à \(clockString()) sans un accroc. " + actions.vitalsReport()
+        }
+
+        // ── Sous-agents ──
+        //
+        //  Le chat est la surface de commande de BUD : tout sous-agent
+        //  installé s'y lance par son nom, sans qu'il faille ajouter un
+        //  bouton ni un panneau. C'est ce qui rend le système extensible
+        //  côté utilisateur, et pas seulement côté code.
+        if has(t, ["mes actions", "a faire", "ce qui m attend", "actions en attente"]) {
+            actions.runAgent("mail-actions", [:]) { late($0) }
+            return "Je regarde ce qui attend une réponse…"
+        }
+        if has(t, ["range", "trie"]) && has(t, ["telechargement", "download"]) {
+            let apply = has(t, ["applique", "vraiment", "fais le", "confirme"])
+            actions.runAgent("tidy-downloads", apply ? ["apply": "yes"] : [:]) { late($0) }
+            return apply ? "Je range…" : "Je regarde ce qu'il y aurait à ranger…"
+        }
+        if has(t, ["veille", "verifie mon mac", "etat du mac"]) {
+            actions.runAgent("watch-local", [:]) { late($0) }
+            return "Je fais le tour…"
+        }
+        if has(t, ["mes scripts", "mes sous agents", "quels agents", "liste des agents"]) {
+            return actions.listAgents()
         }
 
         // ── Calcul ──
@@ -4979,7 +5033,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.1"
+let budVersion = "24.2"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -11949,6 +12003,686 @@ final class RemindersPanelView: NSView {
     }
 }
 EOF_BUDREMINDERS_SWIFT
+
+cat << 'EOF_BUDSCRIPTEXAMPLES_SWIFT' > "$SRC_DIR/BudScriptExamples.swift"
+import Foundation
+
+// ═══════════════════════════════════════════════════════════
+//  Trois sous-agents d'exemple
+//
+//  Posés dans ~/Library/Application Support/BUD-Assistant/
+//  scripts/ au premier lancement, jamais écrasés ensuite : vos
+//  modifications survivent aux mises à jour de BUD.
+//
+//  Ils sont écrits en Python 3, présent dès que les outils en
+//  ligne de commande le sont — ce que BUD exige déjà pour
+//  compiler. Ils servent autant d'exemples que d'outils : les
+//  copier est la façon la plus courte d'en écrire un quatrième.
+//
+//  Chacun se teste seul, sans lancer BUD :
+//      echo '{"contract":1,"agent":"tidy-downloads"}' | ./run
+// ═══════════════════════════════════════════════════════════
+
+extension ScriptAgents {
+
+    /// (dossier, manifeste, exécutable)
+    static let examples: [(String, String, String)] = [
+
+        // ─────────────────────────────────────────────────────
+        //  1. Les actions en attente, extraites du courrier
+        //
+        //  Il lit le cache que BUD écrit déjà. Aucun accès au
+        //  réseau, aucun identifiant : le travail coûteux est
+        //  fait une fois par BUD, les sous-agents le relisent.
+        // ─────────────────────────────────────────────────────
+        ("mail-actions",
+         """
+         {
+           "title": "Actions en attente",
+           "detail": "Relit la boîte déjà relevée et en extrait ce qui demande une réponse, un paiement ou une échéance.",
+           "timeout": 15,
+           "every": 30,
+           "contract": 1
+         }
+         """,
+         #"""
+         #!/usr/bin/env python3
+         # -*- coding: utf-8 -*-
+         """Extrait les actions en attente du cache de courrier de BUD.
+
+         Entrée : le contrat AgentInput sur stdin.
+         Sortie : le contrat AgentOutput sur stdout.
+
+         Ne touche ni au réseau ni aux identifiants : BUD a déjà relevé la
+         boîte, ce script ne fait que relire ce qu'il a écrit.
+         """
+         import json, os, re, sys, unicodedata
+
+         def fold(s):
+             s = (s or "").lower()
+             return "".join(c for c in unicodedata.normalize("NFD", s)
+                            if unicodedata.category(c) != "Mn")
+
+         # Chaque règle : (genre, niveau, expressions). L'ordre compte — la
+         # première qui correspond l'emporte, et les plus engageantes
+         # viennent en premier.
+         RULES = [
+             ("Paiement",     "action",  [r"\ba regler\b", r"\bmontant du\b", r"\bimpaye\b",
+                                          r"\bechec de (?:paiement|prelevement)\b",
+                                          r"\bfacture (?:a|en attente)", r"\bpayer avant\b"]),
+             ("Échéance",     "action",  [r"\bavant le \d", r"\bd ?ici le \d", r"\bexpire le \d",
+                                          r"\bau plus tard\b", r"\bsous \d+ ?(?:h|heures|jours)\b",
+                                          r"\bdate limite\b", r"\bderniers? jours?\b"]),
+             ("Confirmation", "action",  [r"\bconfirmez\b", r"\bveuillez confirmer\b",
+                                          r"\bvalidez votre\b", r"\bconfirmation requise\b"]),
+             ("Réponse",      "action",  [r"\bdans l attente de (?:votre|ta) reponse\b",
+                                          r"\bpeux-?tu\b", r"\bpourriez-?vous\b",
+                                          r"\bmerci de (?:me )?(?:confirmer|repondre|revenir)\b",
+                                          r"\brsvp\b", r"\bqu en penses?-?(?:tu|vous)\b"]),
+         ]
+
+         def classify(text):
+             t = fold(text)
+             for kind, level, pats in RULES:
+                 for p in pats:
+                     if re.search(p, t):
+                         return kind, level
+             return None, None
+
+         def main():
+             try:
+                 json.load(sys.stdin)          # on valide l'entrée même sans s'en servir
+             except Exception:
+                 pass
+             support = os.environ.get("BUD_SUPPORT", "")
+             cache = os.path.join(support, "inbox-cache.json")
+             if not os.path.exists(cache):
+                 print(json.dumps({"contract": 1, "ok": True,
+                                   "summary": "Aucune boîte relevée pour l'instant.",
+                                   "items": []}, ensure_ascii=False))
+                 return
+             with open(cache, encoding="utf-8") as f:
+                 box = json.load(f)
+
+             items = []
+             for m in box.get("messages", []):
+                 subject = m.get("subject", "")
+                 snippet = (m.get("snippet", "") or "")[:600]
+                 kind, level = classify(subject + " " + snippet)
+                 if not kind:
+                     continue
+                 sender = m.get("sender", "") or "(inconnu)"
+                 score = (m.get("threat") or {}).get("score", 0)
+
+                 # Un message signalé ne devient jamais une tâche. « Confirmez
+                 # votre compte » dans un courriel dangereux n'est pas une
+                 # action à faire : c'est exactement le piège. On le remonte
+                 # en avertissement, pas en liste de choses à faire.
+                 if score >= 25:
+                     items.append({
+                         "title": "Demande suspecte : %s" % subject[:70],
+                         "detail": "%s — BUD a relevé un risque (score %d). "
+                                   "Ne répondez pas sans vérifier." % (sender[:60], score),
+                         "level": "warning", "open": ""})
+                 else:
+                     items.append({
+                         "title": "%s — %s" % (kind, subject[:70]),
+                         "detail": sender[:80],
+                         "level": level, "open": ""})
+
+             todo = sum(1 for i in items if i["level"] == "action")
+             warn = len(items) - todo
+             summary = "%d action(s) en attente" % todo
+             if warn:
+                 summary += ", %d demande(s) suspecte(s)" % warn
+             print(json.dumps({"contract": 1, "ok": True, "summary": summary,
+                               "items": items[:40]}, ensure_ascii=False))
+
+         if __name__ == "__main__":
+             main()
+         """#),
+
+        // ─────────────────────────────────────────────────────
+        //  2. Le rangement des téléchargements
+        //
+        //  Par défaut il ne déplace rien : il dit ce qu'il
+        //  ferait. Un agent qui range des fichiers tout seul au
+        //  premier lancement est un agent qu'on désinstalle.
+        // ─────────────────────────────────────────────────────
+        ("tidy-downloads",
+         """
+         {
+           "title": "Ranger les téléchargements",
+           "detail": "Propose un classement par type des fichiers de Téléchargements. Ne déplace rien sans y être invité.",
+           "timeout": 20,
+           "every": 0,
+           "contract": 1
+         }
+         """,
+         #"""
+         #!/usr/bin/env python3
+         # -*- coding: utf-8 -*-
+         """Classe les téléchargements par type.
+
+         Par défaut, simulation : le script dit ce qu'il ferait. Pour
+         exécuter réellement, BUD passe {"payload": {"apply": "yes"}}.
+
+         Un agent qui déplace des fichiers dès son installation est un
+         agent qu'on désinstalle : le défaut est donc l'inaction.
+         """
+         import json, os, shutil, sys
+
+         GROUPS = {
+             "Images":    {".png", ".jpg", ".jpeg", ".gif", ".heic", ".webp", ".tiff"},
+             "Documents": {".pdf", ".docx", ".pages", ".txt", ".md", ".rtf", ".odt"},
+             "Tableurs":  {".xlsx", ".numbers", ".csv", ".tsv"},
+             "Archives":  {".zip", ".dmg", ".pkg", ".tar", ".gz", ".7z"},
+             "Audio":     {".mp3", ".m4a", ".wav", ".aiff", ".flac"},
+             "Vidéo":     {".mp4", ".mov", ".m4v", ".avi", ".mkv"},
+         }
+
+         def group_of(name):
+             ext = os.path.splitext(name)[1].lower()
+             for g, exts in GROUPS.items():
+                 if ext in exts:
+                     return g
+             return None
+
+         def main():
+             try:
+                 data = json.load(sys.stdin)
+             except Exception:
+                 data = {}
+             apply = (data.get("payload") or {}).get("apply") == "yes"
+             dl = os.path.expanduser("~/Downloads")
+             if not os.path.isdir(dl):
+                 print(json.dumps({"contract": 1, "ok": False,
+                                   "error": "Dossier Téléchargements introuvable."}))
+                 return
+
+             items, moved = [], 0
+             for name in sorted(os.listdir(dl)):
+                 if name.startswith("."):
+                     continue
+                 src = os.path.join(dl, name)
+                 if not os.path.isfile(src):
+                     continue
+                 # Un téléchargement en cours ne se range pas.
+                 if name.endswith((".download", ".crdownload", ".part")):
+                     continue
+                 g = group_of(name)
+                 if not g:
+                     continue
+                 dst_dir = os.path.join(dl, g)
+                 dst = os.path.join(dst_dir, name)
+                 if apply:
+                     os.makedirs(dst_dir, exist_ok=True)
+                     # Jamais d'écrasement : on numérote.
+                     base, ext = os.path.splitext(name)
+                     n = 1
+                     while os.path.exists(dst):
+                         dst = os.path.join(dst_dir, "%s-%d%s" % (base, n, ext))
+                         n += 1
+                     shutil.move(src, dst)
+                     moved += 1
+                     items.append({"title": "Rangé : %s" % name[:60],
+                                   "detail": "→ Téléchargements/%s" % g,
+                                   "level": "info", "open": dst_dir})
+                 else:
+                     items.append({"title": name[:60],
+                                   "detail": "irait dans Téléchargements/%s" % g,
+                                   "level": "info", "open": src})
+
+             if apply:
+                 summary = "%d fichier(s) rangé(s)." % moved
+             elif items:
+                 summary = "%d fichier(s) à ranger. Relancez avec « appliquer »." % len(items)
+             else:
+                 summary = "Rien à ranger."
+             print(json.dumps({"contract": 1, "ok": True, "summary": summary,
+                               "items": items[:40]}, ensure_ascii=False))
+
+         if __name__ == "__main__":
+             main()
+         """#),
+
+        // ─────────────────────────────────────────────────────
+        //  3. La veille locale
+        //
+        //  Ce qu'on vérifierait soi-même de temps en temps et
+        //  qu'on oublie toujours.
+        // ─────────────────────────────────────────────────────
+        ("watch-local",
+         """
+         {
+           "title": "Veille locale",
+           "detail": "Disque, corbeille, caches, sauvegardes : ce qu'on vérifierait de temps en temps et qu'on oublie.",
+           "timeout": 25,
+           "every": 180,
+           "contract": 1
+         }
+         """,
+         #"""
+         #!/usr/bin/env python3
+         # -*- coding: utf-8 -*-
+         """Quelques vérifications locales, sans réseau ni privilèges.
+
+         Chaque contrôle est indépendant et protégé : un disque absent ou
+         une commande indisponible ne doit pas faire échouer le reste.
+         """
+         import json, os, shutil, subprocess, sys, time
+
+         def human(n):
+             for u in ("o", "Ko", "Mo", "Go", "To"):
+                 if n < 1024:
+                     return "%.0f %s" % (n, u)
+                 n /= 1024.0
+             return "%.0f To" % n
+
+         def dir_size(path, cap_seconds=4):
+             """Taille d'un dossier, avec une limite de temps : parcourir une
+             corbeille de cent mille fichiers ne doit pas tenir l'agent."""
+             total, stop = 0, time.time() + cap_seconds
+             for root, dirs, files in os.walk(path, onerror=lambda e: None):
+                 for f in files:
+                     try:
+                         total += os.lstat(os.path.join(root, f)).st_size
+                     except OSError:
+                         pass
+                 if time.time() > stop:
+                     return total, True
+             return total, False
+
+         def main():
+             try:
+                 json.load(sys.stdin)
+             except Exception:
+                 pass
+             items = []
+
+             # Espace du disque de démarrage
+             try:
+                 u = shutil.disk_usage("/")
+                 pct = u.free * 100 // u.total
+                 items.append({
+                     "title": "Disque : %s libres (%d %%)" % (human(u.free), pct),
+                     "detail": "sur %s" % human(u.total),
+                     "level": "warning" if pct <= 10 else "info", "open": ""})
+             except Exception:
+                 pass
+
+             # Corbeille
+             try:
+                 trash = os.path.expanduser("~/.Trash")
+                 if os.path.isdir(trash):
+                     size, partial = dir_size(trash)
+                     if size > 512 * 1024 * 1024:
+                         items.append({
+                             "title": "Corbeille : %s%s" % (human(size), " ou plus" if partial else ""),
+                             "detail": "Vider la corbeille libérerait cette place.",
+                             "level": "action", "open": trash})
+             except Exception:
+                 pass
+
+             # Caches utilisateur
+             try:
+                 caches = os.path.expanduser("~/Library/Caches")
+                 if os.path.isdir(caches):
+                     size, partial = dir_size(caches)
+                     if size > 2 * 1024 ** 3:
+                         items.append({
+                             "title": "Caches : %s%s" % (human(size), " ou plus" if partial else ""),
+                             "detail": "Les applications les reconstruiront au besoin.",
+                             "level": "info", "open": caches})
+             except Exception:
+                 pass
+
+             # Dernière sauvegarde Time Machine
+             try:
+                 out = subprocess.run(["/usr/bin/tmutil", "latestbackup"],
+                                      capture_output=True, text=True, timeout=6)
+                 if out.returncode == 0 and out.stdout.strip():
+                     items.append({"title": "Dernière sauvegarde Time Machine",
+                                   "detail": os.path.basename(out.stdout.strip()),
+                                   "level": "info", "open": ""})
+                 else:
+                     items.append({"title": "Aucune sauvegarde Time Machine",
+                                   "detail": "Aucun instantané trouvé sur ce Mac.",
+                                   "level": "warning", "open": ""})
+             except Exception:
+                 pass
+
+             warn = sum(1 for i in items if i["level"] in ("warning", "action"))
+             summary = "%d point(s) d'attention" % warn if warn else "Rien à signaler."
+             print(json.dumps({"contract": 1, "ok": True, "summary": summary,
+                               "items": items}, ensure_ascii=False))
+
+         if __name__ == "__main__":
+             main()
+         """#),
+    ]
+}
+EOF_BUDSCRIPTEXAMPLES_SWIFT
+
+cat << 'EOF_BUDSCRIPTS_SWIFT' > "$SRC_DIR/BudScripts.swift"
+import Cocoa
+
+// ═══════════════════════════════════════════════════════════
+//  Sous-agents — le socle
+//
+//  Un sous-agent est un exécutable posé dans un dossier, qui
+//  reçoit du JSON sur son entrée standard et en rend sur sa
+//  sortie standard. Rien d'autre.
+//
+//  Pourquoi des processus et non des greffons chargés dans BUD :
+//
+//  — Un greffon partage la mémoire de l'application. Un script
+//    qui boucle, qui épuise la mémoire ou qui plante emporte
+//    BUD avec lui. Un processus séparé, on le tue.
+//  — Un greffon impose un langage et une interface binaire. Un
+//    processus accepte du shell, du Python, du Swift compilé,
+//    n'importe quoi d'exécutable.
+//  — Un sous-agent se teste depuis le Terminal, seul, sans
+//    lancer BUD : `echo '{}' | ./run`. C'est ce qui rend le
+//    système réellement extensible, bien plus que son API.
+//
+//  Le contrat tient en deux structures, `AgentInput` et
+//  `AgentOutput`, et il est versionné.
+//
+//  ── Sécurité ──
+//
+//  Exécuter ce qu'on trouve dans un dossier est un pouvoir
+//  dangereux. Quatre règles l'encadrent, et aucune n'est
+//  décorative :
+//
+//  1. Les entrées passent par l'entrée standard, jamais par la
+//     ligne de commande. Un argument se retrouve dans la table
+//     des processus, visible de tout le système, et finit tôt
+//     ou tard interpolé dans un shell.
+//  2. Le dossier des scripts ne doit être inscriptible que par
+//     son propriétaire. Un dossier ouvert en écriture à tous
+//     est une élévation de privilège : quiconque peut y écrire
+//     fait exécuter son code sous votre compte, par BUD.
+//  3. Délai maximal, puis mise à mort. Un script qui ne rend
+//     pas la main ne doit pas occuper une ressource
+//     indéfiniment.
+//  4. Sortie plafonnée. Un script qui écrit sans fin ne doit
+//     pas faire gonfler la mémoire de BUD.
+// ═══════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────
+//  Le contrat
+// ───────────────────────────────────────────────────────────
+
+/// Le manifeste, lu dans `manifest.json` à côté de l'exécutable.
+struct AgentManifest: Codable {
+    /// Identifiant : le nom du dossier. Sert de clé partout.
+    var name: String = ""
+    var title: String = ""
+    var detail: String = ""
+    /// Délai maximal d'exécution, en secondes.
+    var timeout: Double = 20
+    /// Période d'exécution automatique, en minutes. 0 = sur demande.
+    var every: Int = 0
+    /// Version du contrat attendue. BUD refuse ce qu'il ne sait pas lire.
+    var contract: Int = 1
+}
+
+/// Ce que BUD écrit sur l'entrée standard du sous-agent.
+struct AgentInput: Codable {
+    var contract = 1
+    var agent = ""
+    var invokedAt = ""
+    /// Le dossier de BUD, pour qu'un script y dépose ses propres fichiers.
+    var support = ""
+    /// Données libres fournies par l'appelant.
+    var payload: [String: String] = [:]
+}
+
+/// Une ligne de résultat. C'est l'unité que BUD sait afficher.
+struct AgentItem: Codable {
+    var title = ""
+    var detail = ""
+    /// « info », « action » ou « warning ». Tout autre valeur vaut « info ».
+    var level = "info"
+    /// Chemin de fichier ou adresse à ouvrir au clic. Facultatif.
+    var open = ""
+}
+
+/// Ce que le sous-agent doit écrire sur sa sortie standard.
+struct AgentOutput: Codable {
+    var contract = 1
+    var ok = true
+    var summary = ""
+    var items: [AgentItem] = []
+    var error: String?
+
+    static func failure(_ why: String) -> AgentOutput {
+        AgentOutput(ok: false, summary: "", items: [], error: why)
+    }
+}
+
+// ───────────────────────────────────────────────────────────
+//  Le moteur
+// ───────────────────────────────────────────────────────────
+
+final class ScriptAgents {
+
+    static let shared = ScriptAgents()
+    private init() {}
+
+    /// 256 Ko de sortie : largement de quoi rendre quelques centaines de
+    /// lignes, et pas de quoi faire gonfler BUD si un script s'emballe.
+    private let maxOutput = 256 * 1024
+
+    var dir: URL { budSupportDir.appendingPathComponent("scripts") }
+
+    // ── Découverte ──
+
+    /// Les sous-agents installés, triés par titre.
+    func discover() -> [AgentManifest] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: dir,
+                                                        includingPropertiesForKeys: nil) else {
+            return []
+        }
+        var out: [AgentManifest] = []
+        for folder in entries {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            let mf = folder.appendingPathComponent("manifest.json")
+            guard let d = try? Data(contentsOf: mf),
+                  var m = try? JSONDecoder().decode(AgentManifest.self, from: d) else { continue }
+            // Le nom du dossier fait foi : un manifeste qui s'en écarte
+            // pourrait désigner l'exécutable d'un autre agent.
+            m.name = folder.lastPathComponent
+            guard m.contract == 1 else { continue }
+            if m.title.isEmpty { m.title = m.name }
+            out.append(m)
+        }
+        return out.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    // ── Vérifications avant exécution ──
+
+    /// Tout ce qu'il faut vérifier avant d'exécuter quoi que ce soit.
+    private func prepare(_ name: String) -> Result<(URL, AgentManifest), String> {
+        // Un nom d'agent ne sert qu'à nommer un dossier : tout ce qui
+        // pourrait remonter l'arborescence est écarté avant toute chose.
+        guard !name.isEmpty, !name.contains("/"), !name.contains(".."),
+              name.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+                         options: .regularExpression) != nil else {
+            return .failure("Nom de sous-agent refusé : « \(name) ».")
+        }
+        guard let m = discover().first(where: { $0.name == name }) else {
+            return .failure("Sous-agent « \(name) » introuvable.")
+        }
+        let folder = dir.appendingPathComponent(name)
+        let exe = folder.appendingPathComponent("run")
+
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: exe.path) else {
+            return .failure("« \(name)/run » n'existe pas ou n'est pas exécutable.")
+        }
+
+        // Le dossier ne doit être inscriptible que par son propriétaire.
+        // Sinon n'importe quel processus y déposerait un script que BUD
+        // exécuterait sous votre compte.
+        if let attrs = try? fm.attributesOfItem(atPath: folder.path),
+           let perm = attrs[.posixPermissions] as? NSNumber {
+            let p = perm.uint16Value
+            if p & 0o022 != 0 {
+                return .failure("« \(name) » est inscriptible par d'autres comptes : "
+                    + "BUD ne l'exécutera pas. Corrigez avec chmod 755.")
+            }
+        }
+        return .success((exe, m))
+    }
+
+    // ── Exécution ──
+
+    /// Exécute un sous-agent hors du fil principal et rend son résultat
+    /// sur le fil principal. L'interface n'est jamais bloquée, quel que
+    /// soit le temps que prend le script.
+    func run(_ name: String, payload: [String: String] = [:],
+             done: @escaping (AgentOutput) -> Void) {
+        let prepared = prepare(name)
+        guard case .success(let (exe, manifest)) = prepared else {
+            if case .failure(let why) = prepared {
+                DispatchQueue.main.async { done(.failure(why)) }
+            }
+            return
+        }
+
+        var input = AgentInput()
+        input.agent = name
+        input.support = budSupportDir.path
+        input.payload = payload
+        let f = ISO8601DateFormatter()
+        input.invokedAt = f.string(from: Date())
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let s = self else { return }
+            let result = s.execute(exe, manifest: manifest, input: input)
+            DispatchQueue.main.async { done(result) }
+        }
+    }
+
+    private func execute(_ exe: URL, manifest: AgentManifest, input: AgentInput) -> AgentOutput {
+        guard let payload = try? JSONEncoder().encode(input) else {
+            return .failure("Entrée non encodable.")
+        }
+
+        let p = Process()
+        p.executableURL = exe
+        // Aucun argument. Les données passent par l'entrée standard : un
+        // argument serait lisible par tout le système dans la table des
+        // processus, et finirait interpolé dans un shell.
+        p.arguments = []
+        p.currentDirectoryURL = exe.deletingLastPathComponent()
+        // Un environnement réduit : le script hérite de quoi tourner, pas
+        // de l'ensemble des variables de l'application.
+        p.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                         "HOME": NSHomeDirectory(),
+                         "BUD_SUPPORT": budSupportDir.path,
+                         "LANG": "fr_FR.UTF-8"]
+
+        let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
+        p.standardInput = inPipe
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+
+        do { try p.run() } catch {
+            return .failure("Lancement impossible : \(error.localizedDescription)")
+        }
+
+        // Les trois tuyaux vivent en parallèle. Écrire l'entrée en entier
+        // avant de lire la sortie bloquerait dès que le script répond plus
+        // vite qu'il ne consomme.
+        let g = DispatchGroup()
+        let q = DispatchQueue(label: "fr.lahbib.bud.agent", attributes: .concurrent)
+        var outData = Data(), errData = Data()
+        g.enter(); q.async {
+            outData = outPipe.fileHandleForReading.readDataToEndOfFile(); g.leave()
+        }
+        g.enter(); q.async {
+            errData = errPipe.fileHandleForReading.readDataToEndOfFile(); g.leave()
+        }
+        q.async {
+            inPipe.fileHandleForWriting.write(payload)
+            try? inPipe.fileHandleForWriting.close()
+        }
+
+        // Délai maximal, puis mise à mort. `terminate` envoie SIGTERM, que
+        // certains scripts ignorent ; SIGKILL suit, et lui ne s'ignore pas.
+        let deadline = DispatchTime.now() + manifest.timeout
+        let waiter = DispatchQueue(label: "fr.lahbib.bud.agent.wait")
+        var timedOut = false
+        let sem = DispatchSemaphore(value: 0)
+        waiter.async { p.waitUntilExit(); sem.signal() }
+        if sem.wait(timeout: deadline) == .timedOut {
+            timedOut = true
+            p.terminate()
+            if sem.wait(timeout: .now() + 2) == .timedOut {
+                kill(p.processIdentifier, SIGKILL)
+            }
+        }
+        g.wait()
+
+        if timedOut {
+            return .failure("« \(manifest.name) » n'a pas répondu en "
+                + "\(Int(manifest.timeout)) s et a été arrêté.")
+        }
+
+        if outData.count > maxOutput {
+            return .failure("« \(manifest.name) » a produit plus de 256 Ko : sortie ignorée.")
+        }
+
+        guard p.terminationStatus == 0 else {
+            let e = String(data: errData.prefix(600), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .failure("« \(manifest.name) » a échoué (code \(p.terminationStatus))"
+                + (e.isEmpty ? "." : " : \(e)"))
+        }
+
+        guard !outData.isEmpty else {
+            return .failure("« \(manifest.name) » n'a rien écrit sur sa sortie standard.")
+        }
+        guard var parsed = try? JSONDecoder().decode(AgentOutput.self, from: outData) else {
+            let raw = String(data: outData.prefix(200), encoding: .utf8) ?? ""
+            return .failure("« \(manifest.name) » n'a pas rendu de JSON valide : \(raw)")
+        }
+        // Un script peut dire qu'il a échoué tout en rendant du JSON ; on
+        // ne réécrit pas son verdict, on s'assure juste qu'il est lisible.
+        if parsed.summary.isEmpty && parsed.ok {
+            parsed.summary = "\(parsed.items.count) élément(s)."
+        }
+        return parsed
+    }
+
+    // ── Installation des exemples ──
+
+    /// Pose les sous-agents d'exemple au premier lancement. N'écrase
+    /// jamais un fichier existant : vos modifications survivent aux mises
+    /// à jour de BUD.
+    func installExamples() {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o755])
+        for (name, manifest, body) in ScriptAgents.examples {
+            let folder = dir.appendingPathComponent(name)
+            let exe = folder.appendingPathComponent("run")
+            guard !fm.fileExists(atPath: exe.path) else { continue }
+            try? fm.createDirectory(at: folder, withIntermediateDirectories: true,
+                                    attributes: [.posixPermissions: 0o755])
+            try? manifest.write(to: folder.appendingPathComponent("manifest.json"),
+                                atomically: true, encoding: .utf8)
+            try? body.write(to: exe, atomically: true, encoding: .utf8)
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
+        }
+    }
+}
+EOF_BUDSCRIPTS_SWIFT
 
 cat << 'EOF_BUDSNIPPETS_SWIFT' > "$SRC_DIR/BudSnippets.swift"
 import Cocoa

@@ -47,6 +47,10 @@ struct ChatActions {
     /// Durée en minutes, et la phrase d'origine pour l'intitulé.
     var startTimer: (Int, String) -> String = { _, _ in "" }
     var webSearch: (String) -> String = { _ in "" }
+    // ── Sous-agents ──
+    /// Lance un sous-agent. Le résultat arrive plus tard, par `late`.
+    var runAgent: (String, [String: String], @escaping (String) -> Void) -> Void = { _, _, _ in }
+    var listAgents: () -> String = { "" }
 }
 
 enum BudBrain {
@@ -278,6 +282,29 @@ enum BudBrain {
 
         if has(t, ["comment vas tu", "ca va", "tu vas bien"]) {
             return "Je tourne à \(clockString()) sans un accroc. " + actions.vitalsReport()
+        }
+
+        // ── Sous-agents ──
+        //
+        //  Le chat est la surface de commande de BUD : tout sous-agent
+        //  installé s'y lance par son nom, sans qu'il faille ajouter un
+        //  bouton ni un panneau. C'est ce qui rend le système extensible
+        //  côté utilisateur, et pas seulement côté code.
+        if has(t, ["mes actions", "a faire", "ce qui m attend", "actions en attente"]) {
+            actions.runAgent("mail-actions", [:]) { late($0) }
+            return "Je regarde ce qui attend une réponse…"
+        }
+        if has(t, ["range", "trie"]) && has(t, ["telechargement", "download"]) {
+            let apply = has(t, ["applique", "vraiment", "fais le", "confirme"])
+            actions.runAgent("tidy-downloads", apply ? ["apply": "yes"] : [:]) { late($0) }
+            return apply ? "Je range…" : "Je regarde ce qu'il y aurait à ranger…"
+        }
+        if has(t, ["veille", "verifie mon mac", "etat du mac"]) {
+            actions.runAgent("watch-local", [:]) { late($0) }
+            return "Je fais le tour…"
+        }
+        if has(t, ["mes scripts", "mes sous agents", "quels agents", "liste des agents"]) {
+            return actions.listAgents()
         }
 
         // ── Calcul ──

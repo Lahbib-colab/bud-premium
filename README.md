@@ -335,6 +335,24 @@ L'habillage emprunte ses principes au verre d'iOS 26 sans prétendre l'imiter : 
 
 ---
 
+## Sous-agents
+
+BUD exécute des scripts locaux selon un contrat simple : du JSON sur
+l'entrée standard, du JSON sur la sortie standard. Le contrat, les règles
+de sûreté et trois exemples commentés sont dans **[AGENTS.md](AGENTS.md)**.
+
+Des processus, et non des greffons : un greffon qui plante emporte
+l'application, un processus se tue ; et un sous-agent se teste seul,
+depuis le Terminal, sans lancer BUD — c'est ce qui rend le système
+extensible pour de bon.
+
+Trois exemples sont posés au premier lancement et jamais réécrits
+ensuite : `mail-actions` (ce qui attend une réponse, un paiement, une
+échéance), `tidy-downloads` (ranger les téléchargements, en simulation par
+défaut) et `watch-local` (disque, corbeille, caches, sauvegarde).
+
+---
+
 ## Raccourcis
 
 Ce sont les raccourcis d'usine. **Tous se changent** : onglet Outils → *Raccourcis clavier…*, puis cliquez celui à remplacer et tapez la combinaison. Échap annule.
