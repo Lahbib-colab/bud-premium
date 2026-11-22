@@ -4,7 +4,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie, aucune donnée qui quitte votre Mac sauf celles que vous adressez explicitement à Google.
 
-**Version 23.2** · by Lahbib.AI
+**Version 23.3** · by Lahbib.AI
 
 [![build](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml/badge.svg)](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml)
 
@@ -84,7 +84,18 @@ bud-premium/
 
 BUD interroge l'API des releases de ce dépôt, une fois par jour et à la demande depuis la carte « À propos ». La release est la source de vérité : elle porte à la fois le numéro de version et les installeurs, donc rien à tenir en parallèle.
 
-Le bouton **télécharge et installe**. Il n'ouvre plus de page web : BUD récupère l'archive, vérifie qu'elle contient bien son architecture, remplace le paquet et redémarre. Une confirmation précède toujours le remplacement, et un bouton « Voir les notes » permet de lire d'abord.
+Le bouton **télécharge et installe**, sans passer par le Finder ni le Terminal. Une confirmation précède toujours le remplacement, et un bouton « Voir les notes » permet de lire d'abord. Ensuite BUD enchaîne quatre contrôles, avec une barre de progression dans la carte :
+
+| Étape | Contrôle |
+|---|---|
+| Téléchargement | barre qui se remplit, pourcentage réel |
+| Empreinte | SHA-256 recalculé et comparé au `SHA256.txt` publié |
+| Architecture | `lipo -archs` doit contenir celle de cette machine |
+| Version | l'`Info.plist` de l'archive doit annoncer la version attendue |
+
+Une empreinte qui diffère interrompt tout : un téléchargement abîmé ne s'installe pas. Si la release ne publie aucune empreinte, l'installation continue mais l'annonce. Pour les étapes dont la durée est inconnue — empreinte, décompression — la barre passe en navette va-et-vient plutôt que d'inventer un pourcentage.
+
+Rien ne bloque l'interface : tout se déroule en arrière-plan et BUD reste utilisable.
 
 Une application ne peut pas se réécrire pendant qu'elle tourne. Le remplacement est donc confié à un petit script qui attend la fin de BUD, échange les paquets, puis **restaure l'ancien si le nouveau ne démarre pas**. Vos réglages, notes et rappels vivent ailleurs et ne sont pas touchés.
 

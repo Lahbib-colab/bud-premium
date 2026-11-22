@@ -1,4 +1,5 @@
 import Cocoa
+import CryptoKit
 
 // ═══════════════════════════════════════════════════════════
 //  Mise à jour
@@ -20,6 +21,8 @@ struct UpdateInfo {
     let notes: String
     let url: String            // l'archive que BUD télécharge
     var pageURL: String = ""   // la page de la release, pour la lire
+    var assetName: String = "" // son nom, pour retrouver sa ligne d'empreinte
+    var sha256URL: String = "" // SHA256.txt publié avec la release
 
     /// Une archive s'installe sans intervention ; tout autre format
     /// (.dmg, .command) demande l'utilisateur, donc on l'ouvre.
@@ -85,19 +88,24 @@ enum BudUpdater {
                 // Forme 1 : une release GitHub.
                 if let tag = j["tag_name"] as? String {
                     let v = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-                    var zip = "", other = ""
+                    var zip = "", zipName = "", other = "", sums = ""
                     if let assets = j["assets"] as? [[String: Any]] {
                         for a in assets {
-                            guard let name = (a["name"] as? String)?.lowercased(),
+                            guard let raw = a["name"] as? String,
                                   let u = a["browser_download_url"] as? String else { continue }
-                            if name.hasSuffix(".zip") { zip = u }
+                            let name = raw.lowercased()
+                            if name.hasSuffix(".zip") { zip = u; zipName = raw }
                             else if name.hasSuffix(".dmg") && other.isEmpty { other = u }
+                            else if name == "sha256.txt" { sums = u }
                         }
                     }
-                    done(UpdateInfo(version: v,
-                                    notes: j["body"] as? String ?? "",
-                                    url: zip.isEmpty ? other : zip,
-                                    pageURL: j["html_url"] as? String ?? ""), nil)
+                    var info = UpdateInfo(version: v,
+                                          notes: j["body"] as? String ?? "",
+                                          url: zip.isEmpty ? other : zip,
+                                          pageURL: j["html_url"] as? String ?? "")
+                    info.assetName = zipName
+                    info.sha256URL = sums
+                    done(info, nil)
                     return
                 }
 
@@ -122,8 +130,10 @@ enum BudUpdater {
     /// peut pas se réécrire proprement pendant qu'elle tourne. Le script
     /// attend la fin de BUD, échange les paquets, et restaure l'ancien si
     /// le nouveau ne démarre pas.
+    /// `stage` rapporte l'étape en cours et son avancement. Une fraction
+    /// négative signifie « durée inconnue » : la barre passe en navette.
     static func install(_ info: UpdateInfo,
-                        progress: @escaping (Double) -> Void,
+                        stage: @escaping (String, Double) -> Void,
                         done: @escaping (String?) -> Void) {
         guard let url = URL(string: info.url), info.installable else {
             done("Cette version ne fournit pas d'archive installable.")
@@ -141,22 +151,109 @@ enum BudUpdater {
                 DispatchQueue.main.async { done("archive introuvable") }
                 return
             }
-            let err2 = unpackAndSwap(tmp)
-            DispatchQueue.main.async { done(err2) }
+
+            // Le fichier temporaire d'URLSession disparaît dès le retour de
+            // ce bloc : on le met de côté avant toute autre opération.
+            let fm = FileManager.default
+            let keep = fm.temporaryDirectory
+                .appendingPathComponent("bud-dl-\(UUID().uuidString).zip")
+            do { try fm.moveItem(at: tmp, to: keep) }
+            catch {
+                DispatchQueue.main.async { done("archive non conservée") }
+                return
+            }
+
+            // ── Intégrité ──
+            DispatchQueue.main.async { stage("Vérification de l'empreinte…", -1) }
+            var integrity = "non vérifiée"
+            if !info.sha256URL.isEmpty, let expected = publishedHash(info) {
+                guard let got = sha256(ofFile: keep) else {
+                    try? fm.removeItem(at: keep)
+                    DispatchQueue.main.async { done("empreinte incalculable") }
+                    return
+                }
+                if got.lowercased() != expected.lowercased() {
+                    try? fm.removeItem(at: keep)
+                    DispatchQueue.main.async {
+                        done("empreinte incorrecte — téléchargement abîmé, réessayez")
+                    }
+                    return
+                }
+                integrity = "empreinte conforme"
+            }
+
+            DispatchQueue.main.async { stage("Installation…", -1) }
+            let err2 = unpackAndSwap(keep, expecting: info.version)
+            try? fm.removeItem(at: keep)
+            DispatchQueue.main.async {
+                if err2 == nil { stage("Installée · \(integrity)", 1) }
+                done(err2)
+            }
         }
 
-        // Progression du téléchargement, relayée telle quelle.
+        // La progression KVO se déclenche très souvent : on ne remonte que
+        // les changements de pourcentage entier, sinon l'interface redessine
+        // des centaines de fois pour rien.
+        var lastPercent = -1
         let obs = task.progress.observe(\.fractionCompleted) { p, _ in
-            DispatchQueue.main.async { progress(p.fractionCompleted) }
+            let pc = Int((p.fractionCompleted * 100).rounded())
+            guard pc != lastPercent else { return }
+            lastPercent = pc
+            DispatchQueue.main.async {
+                stage("Téléchargement \(pc) %", p.fractionCompleted)
+            }
         }
         progressTokens.append(obs)
+        stage("Téléchargement…", 0)
         task.resume()
+    }
+
+    /// Récupère la ligne du fichier d'empreintes correspondant à l'archive.
+    /// Appelée depuis un fil de fond : l'attente synchrone est voulue.
+    private static func publishedHash(_ info: UpdateInfo) -> String? {
+        guard let u = URL(string: info.sha256URL), !info.assetName.isEmpty else { return nil }
+        var req = URLRequest(url: u)
+        req.timeoutInterval = 20
+        req.setValue("BUD-Premium/\(budVersion)", forHTTPHeaderField: "User-Agent")
+
+        let sem = DispatchSemaphore(value: 0)
+        var text: String?
+        URLSession.shared.dataTask(with: req) { d, _, _ in
+            if let d = d { text = String(data: d, encoding: .utf8) }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 25)
+
+        guard let body = text else { return nil }
+        // Format de shasum : « <64 hex>  <nom de fichier> »
+        for line in body.split(separator: "\n") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 2 else { continue }
+            let hash = String(parts[0])
+            let name = String(parts[parts.count - 1])
+            if name == info.assetName && hash.count == 64 { return hash }
+        }
+        return nil
+    }
+
+    /// SHA-256 lu par tranches : inutile de charger l'archive entière en
+    /// mémoire, et le fil de fond reste disponible.
+    static func sha256(ofFile url: URL) -> String? {
+        guard let h = FileHandle(forReadingAtPath: url.path) else { return nil }
+        defer { try? h.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = h.readData(ofLength: 1 << 20)
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static var progressTokens: [NSKeyValueObservation] = []
 
     /// Renvoie nil si tout s'est bien passé, sinon le motif de l'échec.
-    private static func unpackAndSwap(_ archive: URL) -> String? {
+    private static func unpackAndSwap(_ archive: URL, expecting version: String = "") -> String? {
         let fm = FileManager.default
         let work = fm.temporaryDirectory.appendingPathComponent("bud-update-\(UUID().uuidString)")
         do { try fm.createDirectory(at: work, withIntermediateDirectories: true) }
@@ -175,6 +272,15 @@ enum BudUpdater {
         let newBin = newApp.appendingPathComponent("Contents/MacOS/BUD")
         guard fm.isExecutableFile(atPath: newBin.path) else {
             return "l'archive ne contient pas d'exécutable BUD"
+        }
+
+        // La version du paquet doit être celle annoncée : une release mal
+        // assemblée réinstallerait sinon l'ancienne, en boucle.
+        if !version.isEmpty,
+           let plist = NSDictionary(contentsOf: newApp.appendingPathComponent("Contents/Info.plist")),
+           let got = plist["CFBundleShortVersionString"] as? String,
+           got != version {
+            return "l'archive contient la version \(got), pas \(version)"
         }
 
         // Garde-fou décisif : une version compilée pour la seule autre
@@ -237,9 +343,14 @@ enum BudUpdater {
 /// Carte « À propos » : version, signature, et vérification animée.
 final class UpdateCardView: NSView {
 
-    enum Phase { case idle, checking, upToDate, available, failed }
+    enum Phase { case idle, checking, working, upToDate, available, failed }
+
+    /// Vrai pendant toute opération longue : l'arc tourne et le minuteur
+    /// d'animation reste en vie.
+    private var busy: Bool { phase == .checking || phase == .working }
 
     private var phase: Phase = .idle
+    private var fraction: CGFloat = -1   // négatif = durée inconnue
     private var spin: CGFloat = 0
     private var pop: CGFloat = 0           // rebond du résultat
     private var pulse: CGFloat = 0
@@ -275,10 +386,10 @@ final class UpdateCardView: NSView {
         guard timer == nil else { return }
         let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] tm in
             guard let s = self else { tm.invalidate(); return }
-            s.spin += s.phase == .checking ? 0.22 : 0
+            s.spin += s.busy ? 0.22 : 0
             s.pulse += 0.06
             if s.pop > 0 { s.pop = max(0, s.pop - 0.035) }
-            if s.phase != .checking && s.pop == 0 {
+            if !s.busy && s.pop == 0 {
                 tm.invalidate()
                 s.timer = nil
             }
@@ -323,24 +434,29 @@ final class UpdateCardView: NSView {
 
         // La phase « checking » fait tourner l'indicateur : inutile d'en
         // ajouter une, le message porte la progression.
-        phase = .checking
+        phase = .working
         pop = 0
+        fraction = 0
         message = "Téléchargement…"
         actionBtn.enabledFlag = false
         actionBtn.title = "En cours"
+        channelBtn.enabledFlag = false
         startTicking()
         needsDisplay = true
         onStatus?("Téléchargement de la version \(f.version)")
 
-        BudUpdater.install(f, progress: { [weak self] p in
+        BudUpdater.install(f, stage: { [weak self] label, frac in
             guard let s = self else { return }
-            s.message = "Téléchargement… \(Int((p * 100).rounded())) %"
+            s.message = label
+            s.fraction = CGFloat(frac)
             s.needsDisplay = true
         }, done: { [weak self] err in
             guard let s = self else { return }
+            s.channelBtn.enabledFlag = true
             if let e = err {
                 s.phase = .failed
                 s.pop = 1
+                s.fraction = -1
                 s.message = "Installation impossible : \(e)"
                 s.actionBtn.title = "Réessayer"
                 s.actionBtn.enabledFlag = true
@@ -348,6 +464,7 @@ final class UpdateCardView: NSView {
                 s.needsDisplay = true
                 return
             }
+            s.fraction = 1
             s.message = "Redémarrage de BUD…"
             s.needsDisplay = true
             s.onStatus?("BUD redémarre sur la version \(f.version)")
@@ -410,7 +527,7 @@ final class UpdateCardView: NSView {
 
         // Pastille animée à gauche
         let c = NSPoint(x: r.minX + 40, y: r.midY)
-        let radius: CGFloat = 19 + (phase == .checking ? CGFloat(sin(pulse * 2)) * 1.2 : 0)
+        let radius: CGFloat = 19 + (busy ? CGFloat(sin(pulse * 2)) * 1.2 : 0)
         let tint: NSColor = phase == .available ? warnColor
                           : (phase == .failed ? dangerColor : TH.accent)
 
@@ -418,7 +535,7 @@ final class UpdateCardView: NSView {
         NSBezierPath(ovalIn: NSRect(x: c.x - radius, y: c.y - radius,
                                     width: radius * 2, height: radius * 2)).fill()
 
-        if phase == .checking {
+        if busy {
             // Arc qui tourne
             let arc = NSBezierPath()
             let start = spin * 57.3
@@ -443,5 +560,31 @@ final class UpdateCardView: NSView {
                    size: 13.5, weight: .bold, color: TH.text)
         drawString(message, in: NSRect(x: r.minX + 72, y: r.midY - 17, width: textW, height: 18),
                    size: 11, weight: .medium, color: TH.dim(0.5))
+
+        // ── Barre de progression ──
+        //
+        //  Elle n'apparaît que pendant une installation. Quand la durée est
+        //  connue (téléchargement), elle se remplit ; quand elle ne l'est
+        //  pas (empreinte, décompression), une navette fait l'aller-retour
+        //  plutôt que de mentir avec un pourcentage inventé.
+        if phase == .working {
+            let barX = r.minX + 72
+            let barW = max(40, textW)
+            let track = NSRect(x: barX, y: r.minY + 11, width: barW, height: 5)
+            TH.fill(0.12).setFill()
+            capsule(track).fill()
+
+            if fraction >= 0 {
+                let w = max(5, barW * min(1, fraction))
+                tint.setFill()
+                capsule(NSRect(x: barX, y: track.minY, width: w, height: 5)).fill()
+            } else {
+                let sw = barW * 0.3
+                let t = (sin(pulse * 1.6) + 1) / 2
+                tint.withAlphaComponent(0.85).setFill()
+                capsule(NSRect(x: barX + (barW - sw) * t, y: track.minY,
+                               width: sw, height: 5)).fill()
+            }
+        }
     }
 }

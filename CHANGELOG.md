@@ -2,6 +2,15 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.3 — mise à jour intégrée
+
+- **Empreinte vérifiée.** BUD télécharge le `SHA256.txt` publié avec la release, retrouve la ligne de son archive et recalcule le SHA-256 du fichier reçu, par tranches de 1 Mo. Une empreinte qui diffère interrompt tout : un téléchargement abîmé ne s'installe pas. Si la release ne publie aucune empreinte, l'installation continue mais le dit — « intégrité non vérifiée ».
+- **Version du paquet contrôlée** : l'`Info.plist` de l'archive doit annoncer la version attendue. Sans ce contrôle, une release mal assemblée réinstallerait l'ancienne version en boucle.
+- **Barre de progression réelle** dans la carte « À propos ». Elle se remplit pendant le téléchargement, et passe en navette va-et-vient pour les étapes de durée inconnue — vérification de l'empreinte, décompression — plutôt que d'inventer un pourcentage.
+- La progression n'est remontée qu'au changement de pourcentage entier : la notification KVO se déclenche des centaines de fois par seconde, et l'interface redessinait pour rien.
+- L'archive est mise à l'abri dès réception : le fichier temporaire d'URLSession est supprimé dès le retour du bloc de complétion, ce qui faisait disparaître le téléchargement avant même sa vérification.
+- Rien ne bloque le fil principal : téléchargement, empreinte, décompression et échange de paquets se déroulent en arrière-plan. BUD reste utilisable pendant l'opération.
+
 ## 23.2
 
 - Corrige `SHA256.txt`, qui ne contenait que des noms de fichiers. Le `sed 's|.*/||'` destiné à retirer le chemin était glouton et avalait l'empreinte avec lui. Les empreintes sont maintenant calculées depuis le dossier, sans chemin à nettoyer, et la publication échoue si le fichier ne contient pas de ligne d'empreinte valide — un fichier qui a l'air de garantir quelque chose sans rien garantir est pire qu'absent.
