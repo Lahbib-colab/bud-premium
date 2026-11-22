@@ -2,6 +2,16 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.4 — la pochette
+
+- **La pochette de l'album s'affiche** : en grand dans le panneau Musique, et en vignette de 18 pt dans le notch replié, à côté des barres de l'égaliseur et du titre défilant. En pause, elle reste mais s'assombrit — l'album ne change pas parce que la lecture s'arrête.
+- Un morceau sans pochette, une radio, un flux : une note de musique tient la place, et BUD ne redemande pas l'export à chaque sondage.
+- L'export passe par le `raw data` de l'illustration, écrit dans un fichier puis relu : l'image ne traverse jamais la sortie standard d'`osascript`. L'écriture a lieu **hors** du bloc `tell application "Music"`, car `open for access` appartient aux Standard Additions et Music publie son propre verbe `open` — à l'intérieur, c'est le sien qui gagnait.
+- Le fichier est écrit dans `Application Support`, pas sur le Bureau : un dossier protégé aurait fait surgir une demande d'autorisation pour `osascript`.
+- Le script renvoie la piste qu'il a réellement lue, et non celle qu'on croyait lui demander : si le morceau change pendant l'export, la pochette est rangée sous la bonne clé au lieu de rester collée au suivant.
+- Un seul export par morceau, partagé par le notch et le panneau : les appelants simultanés sont servis par le même aller-retour.
+- `persistent ID` identifie le morceau ; à défaut — radio, flux — le couple titre/artiste/album en tient lieu. Le champ est lu à part, pour qu'un identifiant absent ne fasse pas perdre les huit autres propriétés.
+
 ## 23.3 — mise à jour intégrée
 
 - **Empreinte vérifiée.** BUD télécharge le `SHA256.txt` publié avec la release, retrouve la ligne de son archive et recalcule le SHA-256 du fichier reçu, par tranches de 1 Mo. Une empreinte qui diffère interrompt tout : un téléchargement abîmé ne s'installe pas. Si la release ne publie aucune empreinte, l'installation continue mais le dit — « intégrité non vérifiée ».

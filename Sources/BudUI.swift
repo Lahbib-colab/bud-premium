@@ -587,6 +587,8 @@ final class NotchChrome: NSView {
     /// Lecture en cours : le replié montre le titre au lieu de l'heure,
     /// et BUD prend le rythme.
     var nowPlaying = "" { didSet { if nowPlaying != oldValue { marquee = 0 } } }
+    /// La pochette du morceau, vignette dans le replié.
+    var nowPlayingArt: NSImage? { didSet { needsDisplay = true } }
     var musicPlaying = false {
         didSet {
             sprite.equalizer = musicPlaying
@@ -737,10 +739,30 @@ final class NotchChrome: NSView {
             // vaut mieux qu'une horloge présente partout ailleurs.
             if musicPlaying && !nowPlaying.isEmpty && alertCount == 0 {
                 let reserved: CGFloat = badge != nil ? 34 : 14
-                drawEqBars(in: NSRect(x: 48, y: b.midY - 7, width: 20, height: 14))
+                var x: CGFloat = 48
+                if let art = nowPlayingArt {
+                    let ar = NSRect(x: x, y: b.midY - 9, width: 18, height: 18)
+                    let cp = NSBezierPath(roundedRect: ar, xRadius: 5, yRadius: 5)
+                    NSGraphicsContext.current?.saveGraphicsState()
+                    cp.addClip()
+                    let s = art.size
+                    if s.width > 0 && s.height > 0 {
+                        let k = max(ar.width / s.width, ar.height / s.height)
+                        let w = s.width * k, h = s.height * k
+                        art.draw(in: NSRect(x: ar.midX - w / 2, y: ar.midY - h / 2,
+                                            width: w, height: h))
+                    }
+                    NSGraphicsContext.current?.restoreGraphicsState()
+                    TH.fill(0.10).setStroke()
+                    cp.lineWidth = 1
+                    cp.stroke()
+                    x = ar.maxX + 7
+                }
+                drawEqBars(in: NSRect(x: x, y: b.midY - 7, width: 20, height: 14))
+                let mx = x + 26
                 drawMarquee(nowPlaying,
-                            in: NSRect(x: 74, y: b.midY - 8,
-                                       width: max(40, b.maxX - 74 - reserved), height: 16),
+                            in: NSRect(x: mx, y: b.midY - 8,
+                                       width: max(40, b.maxX - mx - reserved), height: 16),
                             size: 11.5, color: TH.text)
             } else {
                 let t = clockString()

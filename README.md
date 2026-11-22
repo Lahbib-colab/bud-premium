@@ -228,6 +228,10 @@ Le guetteur local reste armé pendant l'opération : si vous préférez cliquer 
 
 Pendant la lecture, le notch replié montre le **titre défilant** à la place de l'heure — 214 pt ne suffisent pas pour les deux, et savoir ce qui joue vaut mieux qu'une horloge présente partout ailleurs — accompagné de quatre barres d'égaliseur, et **BUD prend le rythme** par impulsions dans ses ressorts.
 
+La **pochette** s'affiche en 68 pt dans le panneau et en vignette de 18 pt dans le notch, à gauche de l'égaliseur. En pause elle s'assombrit sans disparaître : l'album ne change pas parce que la lecture s'arrête. Sans pochette — une radio, un flux — une note de musique tient la place.
+
+L'illustration est exportée par son `raw data`, écrit dans un fichier de `Application Support` puis relu : l'image ne traverse jamais la sortie standard d'`osascript`, et le dossier n'est pas protégé, donc aucune autorisation supplémentaire n'est demandée. L'écriture a lieu **hors** du bloc `tell application "Music"`, car `open for access` appartient aux Standard Additions tandis que Musique publie son propre verbe `open`. Un seul export par morceau, partagé par le notch et le panneau, et le script renvoie la piste qu'il a réellement lue : si le morceau change pendant l'export, la pochette est rangée sous la bonne clé au lieu de rester collée au suivant.
+
 Le sondage ne coûte rien quand Musique est fermée : le test d'exécution passe par `NSWorkspace`, sans lancer de processus.
 
 Spotify et Alexa ont été retirés en version 23. Alexa surtout : Amazon n'expose aucune interface locale sur macOS, et le piloter par les touches média d'un lecteur web était un bricolage qui réclamait l'autorisation Accessibilité pour un résultat imprévisible.

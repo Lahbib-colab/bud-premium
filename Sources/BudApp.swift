@@ -452,6 +452,17 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             avatar?.musicPlaying = n.playing
             chrome.needsDisplay = true
         }
+
+        // La pochette : le replié ne montre le morceau que pendant la
+        // lecture, donc la vignette suit la même règle. Le cache fait
+        // le reste — un seul export par morceau, partagé avec le panneau.
+        if n.playing && n.hasTrack {
+            chrome.nowPlayingArt = ArtworkStore.request(n.trackKey) { [weak self] img in
+                self?.chrome.nowPlayingArt = img
+            }
+        } else if chrome.nowPlayingArt != nil {
+            chrome.nowPlayingArt = nil
+        }
     }
 
     // ── Capture d'écran ──

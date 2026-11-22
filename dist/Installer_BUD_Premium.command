@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 23.3 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 23.4 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -726,6 +726,17 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             chrome.musicPlaying = n.playing
             avatar?.musicPlaying = n.playing
             chrome.needsDisplay = true
+        }
+
+        // La pochette : le replié ne montre le morceau que pendant la
+        // lecture, donc la vignette suit la même règle. Le cache fait
+        // le reste — un seul export par morceau, partagé avec le panneau.
+        if n.playing && n.hasTrack {
+            chrome.nowPlayingArt = ArtworkStore.request(n.trackKey) { [weak self] img in
+                self?.chrome.nowPlayingArt = img
+            }
+        } else if chrome.nowPlayingArt != nil {
+            chrome.nowPlayingArt = nil
         }
     }
 
@@ -3944,7 +3955,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.3"
+let budVersion = "23.4"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -7062,6 +7073,11 @@ struct NowPlaying {
     var shuffle = false
     var repeatMode = "off"         // off · one · all
 
+    /// Identité du morceau, pour savoir quand la pochette a changé.
+    /// L'identifiant persistant de Music quand il existe ; sinon le
+    /// couple titre/artiste, qui suffit pour une radio ou un flux.
+    var trackKey = ""
+
     var hasTrack: Bool { !title.isEmpty }
 
     /// « 1:42 / 3:58 »
@@ -7125,6 +7141,7 @@ enum MusicBridge {
             set vol to 50
             set sh to "false"
             set rp to "off"
+            set pid to ""
             try
                 set st to (player state as string)
             end try
@@ -7144,10 +7161,14 @@ enum MusicBridge {
                 set al to (album of t)
                 set du to (duration of t)
                 set pp to (player position)
+                try
+                    set pid to (persistent ID of t as string)
+                end try
             end try
             set out to st & "|~|" & nm & "|~|" & ar & "|~|" & al
             set out to out & "|~|" & (pp as string) & "|~|" & (du as string)
             set out to out & "|~|" & (vol as string) & "|~|" & sh & "|~|" & rp
+            set out to out & "|~|" & pid
             return out
         end tell
         """)
@@ -7163,7 +7184,73 @@ enum MusicBridge {
         n.volume = Int(num(p[6]))
         n.shuffle = p[7].lowercased().contains("true")
         n.repeatMode = p[8].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        // L'identifiant persistant est lu à part : un champ manquant ne doit
+        // pas faire perdre les huit autres, d'où le test plutôt qu'un index.
+        let pid = p.count >= 10 ? p[9].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        n.trackKey = pid.isEmpty ? (n.title.isEmpty ? "" : "\(n.title)|\(n.artist)|\(n.album)")
+                                 : pid
         return n
+    }
+
+    /// Exporte la pochette du morceau courant et la rend décodée, avec la
+    /// clé du morceau qu'elle représente vraiment.
+    ///
+    /// Deux précautions. L'écriture du fichier se fait **hors** du bloc
+    /// `tell application "Music"` : `open for access` appartient aux
+    /// Standard Additions, et Music publie son propre verbe `open` — à
+    /// l'intérieur du bloc, c'est le sien qui gagnerait.
+    ///
+    /// Et le script renvoie la piste qu'il a lue, pas celle qu'on croyait
+    /// lire : si le morceau change pendant l'export, la pochette doit être
+    /// rangée sous la bonne clé, sinon elle resterait collée au suivant.
+    static func exportArtwork() -> (key: String, image: NSImage?)? {
+        guard running() else { return nil }
+        let path = budSupportDir.appendingPathComponent("cover.dat").path
+
+        let out = osa("""
+        set k to ""
+        set st to "none"
+        set d to missing value
+        tell application "Music"
+            try
+                set t to current track
+                try
+                    set k to (persistent ID of t as string)
+                end try
+                if k is "" then set k to ((name of t) & "|" & (artist of t) & "|" & (album of t))
+                if (count of artworks of t) > 0 then set d to (raw data of artwork 1 of t)
+            end try
+        end tell
+        if d is not missing value then
+            try
+                set f to open for access (POSIX file "\(path)") with write permission
+                set eof f to 0
+                write d to f
+                close access f
+                set st to "ok"
+            on error
+                try
+                    close access (POSIX file "\(path)")
+                end try
+                set st to "err"
+            end try
+        end if
+        k & "|~|" & st
+        """)
+
+        let p = out.components(separatedBy: "|~|")
+        guard p.count >= 2 else { return nil }
+        let key = p[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = p[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard status == "ok" else { return (key, nil) }
+
+        // On relit les octets plutôt que de passer le chemin à NSImage :
+        // le fichier porte toujours le même nom, et une image construite
+        // depuis un chemin peut rendre la précédente.
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              !data.isEmpty, let img = NSImage(data: data) else { return (key, nil) }
+        return (key, img)
     }
 
     static func launch() {
@@ -7242,6 +7329,98 @@ enum MusicBridge {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  La pochette
+//
+//  Un export coûte un aller-retour AppleScript et quelques
+//  centaines de kilo-octets : on ne la redemande donc qu'au
+//  changement de morceau. Les deux endroits qui l'affichent —
+//  le notch et le panneau — passent par ce cache commun, et
+//  tous les appelants en attente sont servis par le même
+//  export plutôt que d'en déclencher un chacun.
+//
+//  État mutable partagé, donc : tout s'y fait sur le fil
+//  principal, l'export seul part en arrière-plan.
+// ═══════════════════════════════════════════════════════════
+
+enum ArtworkStore {
+    private static var key = ""
+    private static var image: NSImage?
+    private static var loading = false
+    private static var waiting: [(NSImage?) -> Void] = []
+
+    static func clear() { key = ""; image = nil }
+
+    /// Rend la pochette si elle est déjà là. Sinon lance l'export et
+    /// appelle `onLoad` dès qu'elle arrive — y compris pour un morceau
+    /// sans pochette, où elle vaut `nil` et où la clé est tout de même
+    /// retenue, afin de ne pas réessayer à chaque sondage.
+    @discardableResult
+    static func request(_ k: String, onLoad: @escaping (NSImage?) -> Void) -> NSImage? {
+        guard !k.isEmpty else { clear(); return nil }
+        if k == key { return image }
+
+        waiting.append(onLoad)
+        guard !loading else { return nil }
+        loading = true
+
+        DispatchQueue.global(qos: .utility).async {
+            let r = MusicBridge.exportArtwork()
+            DispatchQueue.main.async {
+                loading = false
+                // La clé rendue par le script prime : c'est le morceau
+                // réellement exporté, qui n'est pas forcément celui demandé.
+                if let got = r, !got.key.isEmpty { key = got.key } else { key = k }
+                image = r?.image
+                let served = waiting
+                waiting = []
+                served.forEach { $0(image) }
+            }
+        }
+        return nil
+    }
+}
+
+/// La pochette, coins arrondis, recadrée sans déformation. Sans image,
+/// une note de musique tient la place au lieu d'un carré vide.
+final class CoverPlate: NSView {
+    var image: NSImage? { didSet { needsDisplay = true } }
+    var dim = false { didSet { needsDisplay = true } }
+    var radius: CGFloat = 12
+
+    override init(frame: NSRect) { super.init(frame: frame) }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirty: NSRect) {
+        let b = bounds
+        let p = NSBezierPath(roundedRect: b, xRadius: radius, yRadius: radius)
+        TH.fill(0.10).setFill()
+        p.fill()
+
+        if let img = image, img.size.width > 0, img.size.height > 0 {
+            NSGraphicsContext.current?.saveGraphicsState()
+            p.addClip()
+            let s = img.size
+            let k = max(b.width / s.width, b.height / s.height)
+            let w = s.width * k, h = s.height * k
+            img.draw(in: NSRect(x: b.midX - w / 2, y: b.midY - h / 2, width: w, height: h))
+            NSGraphicsContext.current?.restoreGraphicsState()
+            if dim {
+                NSColor.black.withAlphaComponent(0.34).setFill()
+                p.fill()
+            }
+        } else {
+            drawSymbol("music.note", center: NSPoint(x: b.midX, y: b.midY),
+                       size: max(10, b.width * 0.40), weight: .semibold,
+                       color: TH.dim(dim ? 0.30 : 0.46))
+        }
+
+        TH.fill(0.08).setStroke()
+        p.lineWidth = 1
+        p.stroke()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
 //  Le panneau
 // ═══════════════════════════════════════════════════════════
 
@@ -7259,7 +7438,7 @@ final class MusicPanelView: NSView {
     private var volSlider: NSSlider!
     private var eq: EqualizerView!
     private var hint: NSTextField!
-    private var noteIcon: NSImageView!
+    private var cover: CoverPlate!
     private var last = NowPlaying()
     private var volumeHeld = false
 
@@ -7284,10 +7463,16 @@ final class MusicPanelView: NSView {
 
         // ── Carte « en lecture » avec l'égaliseur ──
         let card = mkCard(self, NSRect(x: 0, y: H - 258, width: W, height: 152), radius: 18, alpha: 0.07)
-        noteIcon = mkIcon(card, "music.note", x: 24, y: 118, size: 20, alpha: 0.5)
-        titleLabel = mkLabel("—", NSRect(x: 58, y: 110, width: W - 190, height: 26), 17, .bold)
-        artistLabel = mkLabel("", NSRect(x: 58, y: 88, width: W - 190, height: 18), 12.5, .medium, alpha: 0.6)
-        albumLabel = mkLabel("", NSRect(x: 58, y: 68, width: W - 190, height: 16), 11, .regular, alpha: 0.4)
+        // La pochette prend la place de l'ancienne note : 68 pt, assez
+        // grands pour reconnaître un album d'un coup d'œil.
+        cover = CoverPlate(frame: NSRect(x: 24, y: 66, width: 68, height: 68))
+        card.addSubview(cover)
+
+        let tx: CGFloat = 108
+        let tw2 = W - tx - 132          // 132 : la largeur réservée à l'égaliseur
+        titleLabel = mkLabel("—", NSRect(x: tx, y: 110, width: tw2, height: 26), 17, .bold)
+        artistLabel = mkLabel("", NSRect(x: tx, y: 88, width: tw2, height: 18), 12.5, .medium, alpha: 0.6)
+        albumLabel = mkLabel("", NSRect(x: tx, y: 68, width: tw2, height: 16), 11, .regular, alpha: 0.4)
         [titleLabel, artistLabel, albumLabel].forEach { card.addSubview($0) }
 
         eq = EqualizerView(frame: NSRect(x: W - 118, y: 74, width: 94, height: 58))
@@ -7418,11 +7603,18 @@ final class MusicPanelView: NSView {
             eq.playing = false
             hint.stringValue = "Ouvrez Musique pour que BUD prenne la main. "
                 + "Le pilotage demande l'autorisation Automatisation au premier usage."
-            noteIcon.alphaValue = 0.3
+            cover.image = nil
+            cover.dim = true
+            ArtworkStore.clear()
             return
         }
 
-        noteIcon.alphaValue = n.playing ? 0.85 : 0.5
+        // En pause, la pochette reste affichée mais s'assombrit : l'album
+        // ne change pas parce que la lecture s'arrête.
+        cover.dim = !n.playing
+        cover.image = ArtworkStore.request(n.trackKey) { [weak self] img in
+            self?.cover.image = img
+        }
         titleLabel.stringValue = n.hasTrack ? n.title : "Rien en lecture"
         artistLabel.stringValue = n.artist
         albumLabel.stringValue = n.album
@@ -10236,6 +10428,8 @@ final class NotchChrome: NSView {
     /// Lecture en cours : le replié montre le titre au lieu de l'heure,
     /// et BUD prend le rythme.
     var nowPlaying = "" { didSet { if nowPlaying != oldValue { marquee = 0 } } }
+    /// La pochette du morceau, vignette dans le replié.
+    var nowPlayingArt: NSImage? { didSet { needsDisplay = true } }
     var musicPlaying = false {
         didSet {
             sprite.equalizer = musicPlaying
@@ -10386,10 +10580,30 @@ final class NotchChrome: NSView {
             // vaut mieux qu'une horloge présente partout ailleurs.
             if musicPlaying && !nowPlaying.isEmpty && alertCount == 0 {
                 let reserved: CGFloat = badge != nil ? 34 : 14
-                drawEqBars(in: NSRect(x: 48, y: b.midY - 7, width: 20, height: 14))
+                var x: CGFloat = 48
+                if let art = nowPlayingArt {
+                    let ar = NSRect(x: x, y: b.midY - 9, width: 18, height: 18)
+                    let cp = NSBezierPath(roundedRect: ar, xRadius: 5, yRadius: 5)
+                    NSGraphicsContext.current?.saveGraphicsState()
+                    cp.addClip()
+                    let s = art.size
+                    if s.width > 0 && s.height > 0 {
+                        let k = max(ar.width / s.width, ar.height / s.height)
+                        let w = s.width * k, h = s.height * k
+                        art.draw(in: NSRect(x: ar.midX - w / 2, y: ar.midY - h / 2,
+                                            width: w, height: h))
+                    }
+                    NSGraphicsContext.current?.restoreGraphicsState()
+                    TH.fill(0.10).setStroke()
+                    cp.lineWidth = 1
+                    cp.stroke()
+                    x = ar.maxX + 7
+                }
+                drawEqBars(in: NSRect(x: x, y: b.midY - 7, width: 20, height: 14))
+                let mx = x + 26
                 drawMarquee(nowPlaying,
-                            in: NSRect(x: 74, y: b.midY - 8,
-                                       width: max(40, b.maxX - 74 - reserved), height: 16),
+                            in: NSRect(x: mx, y: b.midY - 8,
+                                       width: max(40, b.maxX - mx - reserved), height: 16),
                             size: 11.5, color: TH.text)
             } else {
                 let t = clockString()
