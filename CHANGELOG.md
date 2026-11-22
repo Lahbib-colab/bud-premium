@@ -2,6 +2,38 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.8 — matière, lisibilité, et BUD qui danse
+
+**Lisibilité selon le thème** — un vrai défaut corrigé
+
+- Le texte posé **sur la couleur d'accent** était du quasi-noir, quelle que soit la teinte. Les six accents d'usine sont clairs, donc cela passait — sauf que « Blanc pur » devient graphite en thème clair, et le noir sur graphite ne se lit plus. La couleur du texte se décide maintenant d'après la **luminance réelle** de l'accent, ce qui tiendra aussi pour toute teinte ajoutée plus tard.
+
+**Affichage du stockage quand le disque est plein** — le bug que vous aviez signalé
+
+- « 100 % » est plus large que « 7 % ». Sur un disque presque plein, la colonne de droite s'élargissait, et la barre de progression recevait alors une **largeur négative** pendant que le nom du volume passait sous le pourcentage. Trois planchers de mise en page corrigent cela, et l'étiquette de type s'efface avant le nom quand la place manque : mieux vaut savoir *quel* volume c'est que de quel *genre* il est.
+- L'alerte ressemble enfin à une alerte : la capsule de l'entête et l'anneau prennent l'ambre puis le rouge, et le pourcentage de chaque volume se colore.
+- Le seuil est celui que **vous** avez réglé, plus un 10 écrit en dur : annoncer « disque saturé » à 10 % quand vous avez demandé 25 revenait à ignorer le réglage.
+- Le seuil n'est plus relu depuis le fichier d'état à chaque rafraîchissement et pour chaque volume : un accès disque pour un entier.
+
+**L'heure de l'aperçu** — l'entête affichait 15:23 pendant que la pastille affichait 15:24. L'heure du titre était posée une seule fois, à l'ouverture de l'aperçu, tandis que la pastille se rafraîchissait chaque seconde. Les deux s'écrivent maintenant au même instant.
+
+**Matière des boutons**
+
+- Le verre d'iOS 26 n'a pas d'API en AppKit sur macOS 12, et BUD vise Monterey : on en reprend les principes à la main, sans prétendre à autre chose. Un dégradé court plutôt qu'un aplat, un **reflet spéculaire** sur la moitié haute, et un **liseré qui s'éteint vers le bas**.
+- C'est le liseré qui fait le plus : un contour d'intensité constante se lit comme un trait dessiné, un contour qui s'éteint se lit comme une épaisseur. Comme AppKit ne sait pas dégrader le long d'un tracé, il est peint en quatre bandes horizontales — à cette échelle, les marches ne se voient pas.
+- Les deux primitives sont **partagées**, écrites une fois : vingt reflets réglés séparément finissent par diverger, et c'est ce qui défait l'harmonie d'une interface.
+
+**BUD danse**
+
+- Pendant la lecture, un pas de côté et une inclinaison s'ajoutent au rebond, **du même côté et sur le même temps** : c'est leur accord qui fait la danse. Le côté alterne à chaque temps — sans cela BUD tremblerait sur place.
+- Le ressort du balancement est plus mou que celui du saut, pour qu'il traîne un peu derrière le temps, comme un corps qui suit la musique.
+- L'amplitude est proportionnelle à la taille : BUD danse pareil dans le notch à 34 pt et dans le panneau à 200.
+
+**Raccourcis**
+
+- **Plus de doublon possible** : une combinaison déjà prise est refusée à la saisie, en nommant l'action qui l'utilise. Deux actions sur la même touche, et l'une ne part jamais — laquelle dépendrait de l'ordre du tableau, ce qui est indéfendable.
+- Le réglage est maintenant accessible **depuis les Réglages** et plus seulement depuis Outils. Les interrupteurs passent de trois à quatre colonnes, ce qui libère la rangée nécessaire.
+
 ## 23.7 — la boîte au complet, le volume du Mac, les pastilles au choix
 
 **La boîte**

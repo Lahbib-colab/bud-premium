@@ -160,6 +160,16 @@ final class BudStore {
 //  Thème global
 // ═══════════════════════════════════════════════════════════
 
+extension NSColor {
+    /// Luminance perçue, 0 à 1. La conversion en sRGB est obligatoire :
+    /// lire `redComponent` sur une couleur d'un autre espace lève une
+    /// exception Objective-C, et un gris de catalogue n'est pas en RVB.
+    var luminance: CGFloat {
+        guard let c = usingColorSpace(.sRGB) else { return 0.5 }
+        return 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+    }
+}
+
 let accentPalette: [(String, NSColor)] = [
     ("Vert menthe",    NSColor(calibratedRed: 0.22, green: 0.85, blue: 0.62, alpha: 1)),
     ("Bleu océan",     NSColor(calibratedRed: 0.29, green: 0.62, blue: 0.99, alpha: 1)),
@@ -187,7 +197,19 @@ struct Theme {
         dark ? NSColor(calibratedWhite: 1, alpha: a) : NSColor(calibratedWhite: 0.15, alpha: a * 0.85)
     }
     func dim(_ a: CGFloat) -> NSColor { text.withAlphaComponent(a) }
-    var onAccent: NSColor { NSColor(calibratedWhite: 0.06, alpha: 0.92) }
+
+    /// Ce qu'on écrit **sur** la couleur d'accent.
+    ///
+    /// C'était du quasi-noir, quelle que soit la teinte. Les six accents
+    /// d'usine sont clairs, donc cela passait — mais « Blanc pur » devient
+    /// graphite en thème clair, et le noir sur graphite ne se lit plus.
+    /// On choisit maintenant d'après la luminance réelle de la couleur,
+    /// ce qui tient aussi pour toute teinte ajoutée plus tard.
+    var onAccent: NSColor {
+        accent.luminance > 0.55
+            ? NSColor(calibratedWhite: 0.06, alpha: 0.95)
+            : NSColor(calibratedWhite: 1.00, alpha: 0.97)
+    }
 }
 
 var TH = Theme()
@@ -591,7 +613,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.7"
+let budVersion = "23.8"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult

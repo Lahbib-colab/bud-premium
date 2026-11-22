@@ -135,17 +135,38 @@ final class StoragePanelView: NSView {
 
     func stepRing() { ring.step() }
 
+    /// Le seuil d'alerte, en pourcentage de place libre. Posé par
+    /// l'application : relire le fichier d'état à chaque rafraîchissement,
+    /// et pour chaque volume, serait payer un accès disque pour un entier.
+    var lowThreshold: Int = 10
+
     func refresh(animated: Bool = false) {
         let vols = scanVolumes()
 
         if let boot = vols.first(where: { $0.isBoot }) ?? vols.first {
             let pct = Int((boot.usedRatio * 100).rounded())
+            // L'anneau prend la couleur de l'alerte : un disque plein doit
+            // se voir sans avoir à lire le chiffre.
+            let low = lowThreshold
+            ring.tint = boot.freePercent <= max(5, low / 2) ? dangerColor
+                      : (boot.freePercent <= low ? warnColor : nil)
             ring.set(pct, caption: "occupé", animated: animated)
             tileFree.set(formatBytes(boot.free), hint: "\(boot.freePercent) % encore libres")
             tileUsed.set(formatBytes(boot.used), hint: "\(pct) % du disque")
             tileTotal.set(formatBytes(boot.total), hint: "disque de démarrage")
-            hero.set(subtitle: "\(boot.name) · \(formatBytes(boot.free)) encore disponibles",
-                     trailing: boot.freePercent <= 10 ? "Disque saturé" : "")
+            // Le seuil d'alerte est celui réglé par l'utilisateur, pas un 10
+            // en dur : afficher « disque saturé » à 10 % alors qu'on a
+            // demandé d'être prévenu à 25 serait ignorer le réglage.
+            let seuil = lowThreshold
+            if boot.freePercent <= seuil {
+                hero.trailingTint = boot.freePercent <= max(5, seuil / 2) ? dangerColor : warnColor
+                hero.set(subtitle: "\(boot.name) · \(formatBytes(boot.free)) encore disponibles",
+                         trailing: "\(boot.freePercent) % libres")
+            } else {
+                hero.trailingTint = nil
+                hero.set(subtitle: "\(boot.name) · \(formatBytes(boot.free)) encore disponibles",
+                         trailing: "")
+            }
         }
         let ext = vols.filter { !$0.isBoot }.count
         tileCount.set("\(vols.count)", hint: ext == 0 ? "aucun volume externe" : "\(ext) en plus du démarrage")
@@ -171,14 +192,22 @@ final class StoragePanelView: NSView {
             let ejectable = v.isRemovable || (!v.isInternal && !v.isBoot)
             let btnTitle = ejectable ? "Éjecter" : "Ouvrir"
             let btnW = max(74, textWidth(btnTitle, size: 11.5, weight: .semibold) + 26)
-            let rightEdge = W - 12 - btnW - 10 - pctW
+            // Garde-fou de mise en page. « 100 % » est plus large que « 7 % » :
+            // sur un disque presque plein, la colonne de droite grossit, et
+            // sans ce plancher la barre de progression recevait une largeur
+            // négative et le nom passait sous le pourcentage. C'est le défaut
+            // d'affichage qu'on voyait précisément quand le stockage était bas.
+            let rightEdge = max(150, W - 12 - btnW - 10 - pctW)
 
             // Ligne 1 : icône, nom, étiquette de type
             let iv = mkIcon(row, v.icon, x: 13, y: rh - 22, size: 15, alpha: 0.6)
             if v.isRemovable { iv.contentTintColor = TH.accent }
 
             let tagW = textWidth(v.tag, size: 9.5, weight: .semibold) + 16
-            let nameMax = rightEdge - 38 - tagW - 14
+            // L'étiquette de type cède la place avant le nom : mieux vaut
+            // savoir quel volume c'est que de quel genre il est.
+            let roomForTag = rightEdge - 38 - 14 - 90 > tagW
+            let nameMax = max(70, rightEdge - 38 - (roomForTag ? tagW : 0) - 14)
             var name = v.name
             if textWidth(name, size: 12.5, weight: .semibold) > nameMax {
                 while name.count > 4 && textWidth(name + "…", size: 12.5, weight: .semibold) > nameMax {
@@ -189,23 +218,28 @@ final class StoragePanelView: NSView {
             let nameW = textWidth(name, size: 12.5, weight: .semibold) + 10
             row.addSubview(mkLabel(name, NSRect(x: 37, y: rh - 22, width: nameW, height: 18), 12.5, .semibold))
 
-            let tagRect = NSRect(x: 37 + nameW + 4, y: rh - 21, width: tagW, height: 16)
-            let tagView = mkCard(row, tagRect, radius: 8, alpha: 0.09)
-            tagView.addSubview(mkLabel(v.tag, NSRect(x: 0, y: 0, width: tagW, height: 14),
-                                       9.5, .semibold, alpha: 0.55, .center))
+            if roomForTag && 37 + nameW + 4 + tagW <= rightEdge - 6 {
+                let tagRect = NSRect(x: 37 + nameW + 4, y: rh - 21, width: tagW, height: 16)
+                let tagView = mkCard(row, tagRect, radius: 8, alpha: 0.09)
+                tagView.addSubview(mkLabel(v.tag, NSRect(x: 0, y: 0, width: tagW, height: 14),
+                                           9.5, .semibold, alpha: 0.55, .center))
+            }
 
             // Ligne 2 : barre puis volumétrie, bien séparées du nom
-            let bar = ProgressBar(frame: NSRect(x: 37, y: 23, width: rightEdge - 45, height: 5))
+            let bar = ProgressBar(frame: NSRect(x: 37, y: 23, width: max(40, rightEdge - 45), height: 5))
             bar.value = CGFloat(v.usedRatio)
             bar.tint = v.freePercent <= 10 ? dangerColor : (v.freePercent <= 20 ? warnColor : nil)
             row.addSubview(bar)
 
             let detail = "\(formatBytes(v.free)) libres sur \(formatBytes(v.total))"
-            row.addSubview(mkLabel(detail, NSRect(x: 37, y: 3, width: rightEdge - 45, height: 15),
+            row.addSubview(mkLabel(detail, NSRect(x: 37, y: 3, width: max(40, rightEdge - 45), height: 15),
                                    10.5, .regular, alpha: 0.5))
 
-            row.addSubview(mkLabel(pctTxt, NSRect(x: rightEdge, y: rh / 2 - 9, width: pctW, height: 19),
-                                   14, .bold, alpha: 1, .right, mono: true))
+            let pctLabel = mkLabel(pctTxt, NSRect(x: rightEdge, y: rh / 2 - 9, width: pctW, height: 19),
+                                   14, .bold, alpha: 1, .right, mono: true)
+            if v.freePercent <= 10 { pctLabel.textColor = dangerColor }
+            else if v.freePercent <= 20 { pctLabel.textColor = warnColor }
+            row.addSubview(pctLabel)
 
             let action = GlassButton(frame: NSRect(x: W - 12 - btnW, y: rh / 2 - 16, width: btnW, height: 32),
                                      title: btnTitle, compact: true)

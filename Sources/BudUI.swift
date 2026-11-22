@@ -149,6 +149,9 @@ final class HeroHeader: NSView {
     private var titleText: String
     private var subtitleText: String
     var trailing: String = ""
+    /// Teinte de la capsule de droite. Une alerte affichée dans le même
+    /// gris que le reste n'alerte personne.
+    var trailingTint: NSColor?
 
     init(frame: NSRect, title: String, subtitle: String) {
         titleText = title
@@ -194,13 +197,69 @@ final class HeroHeader: NSView {
         drawString(subtitleText, in: NSRect(x: 22, y: r.height - 74, width: r.width - 160, height: 20),
                    size: 12, weight: .medium, color: TH.dim(0.6))
         if !trailing.isEmpty {
-            let w = textWidth(trailing, size: 11.5, weight: .semibold) + 26
+            // La capsule ne déborde jamais sur le titre : au besoin elle
+            // rétrécit, et c'est le texte qui est coupé, pas la mise en page.
+            let want = textWidth(trailing, size: 11.5, weight: .semibold) + 26
+            let w = min(want, max(60, r.width - 200))
             let cap = NSRect(x: r.maxX - w - 18, y: r.height - 44, width: w, height: 26)
-            TH.fill(0.12).setFill()
+            let tint = trailingTint
+            (tint?.withAlphaComponent(0.22) ?? TH.fill(0.12)).setFill()
             capsule(cap).fill()
+            if let t = tint {
+                t.withAlphaComponent(0.70).setStroke()
+                let s = capsule(cap); s.lineWidth = 1; s.stroke()
+            }
             drawString(trailing, in: NSRect(x: cap.minX, y: cap.midY - 8, width: cap.width, height: 16),
-                       size: 11.5, weight: .semibold, color: TH.text, align: .center)
+                       size: 11.5, weight: .semibold, color: tint ?? TH.text, align: .center)
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Matière de verre
+//
+//  Deux primitives partagées par les boutons et les cartes,
+//  pour que tout l'habillage réagisse à la lumière de la même
+//  façon. Les écrire une fois plutôt qu'à chaque endroit est
+//  ce qui rend l'ensemble harmonieux : vingt reflets réglés
+//  séparément finissent par diverger.
+// ═══════════════════════════════════════════════════════════
+
+/// Le reflet spéculaire : une bande claire sur la moitié haute, bornée
+/// à la forme, qui s'éteint vers le milieu.
+func specular(_ shape: NSBezierPath, _ r: NSRect, strength: CGFloat) {
+    guard strength > 0.01, r.height > 6 else { return }
+    NSGraphicsContext.current?.saveGraphicsState()
+    shape.addClip()
+    let top = NSColor.white.withAlphaComponent(strength * (TH.dark ? 0.22 : 0.42))
+    let fade = NSColor.white.withAlphaComponent(0)
+    if let g = NSGradient(starting: top, ending: fade) {
+        g.draw(in: NSRect(x: r.minX, y: r.midY, width: r.width, height: r.height / 2), angle: -90)
+    }
+    NSGraphicsContext.current?.restoreGraphicsState()
+}
+
+/// Le liseré : vif en haut, éteint en bas. C'est ce dégradé qui donne
+/// l'épaisseur ; un contour uniforme reste un trait.
+func rim(_ shape: NSBezierPath, _ r: NSRect, color: NSColor, strength: CGFloat) {
+    guard strength > 0.01, r.height > 4 else { return }
+    // Un dégradé le long d'un contour n'existe pas en AppKit : on ne peut
+    // pas clipper sur un trait. On trace donc le même contour par bandes
+    // horizontales, d'opacité décroissante. Quatre suffisent — à cette
+    // échelle, les marches ne se voient pas.
+    let a = strength * (TH.dark ? 1.0 : 0.55)
+    let bands = 4
+    for i in 0..<bands {
+        let f = CGFloat(i) / CGFloat(bands - 1)         // 0 en haut, 1 en bas
+        let h = r.height / CGFloat(bands)
+        let band = NSRect(x: r.minX - 2, y: r.maxY - h * CGFloat(i + 1),
+                          width: r.width + 4, height: h)
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(rect: band).setClip()
+        color.withAlphaComponent(a * (1 - f) * (1 - f)).setStroke()
+        shape.lineWidth = 1.4
+        shape.stroke()
+        NSGraphicsContext.current?.restoreGraphicsState()
     }
 }
 
@@ -219,6 +278,11 @@ final class KeyRecorder: NSView {
     var onChange: ((String) -> Void)?
     /// Phrase à afficher quand une combinaison est refusée.
     var onRefuse: ((String) -> Void)?
+    /// Rend le nom de l'action qui utilise déjà ce raccourci, ou `nil`.
+    /// Deux actions sur la même combinaison, et l'une des deux ne part
+    /// jamais : laquelle dépendrait de l'ordre du tableau, ce qui est
+    /// indéfendable. On refuse donc le doublon à la saisie.
+    var conflict: ((String) -> String?)?
 
     private var recording = false { didSet { needsDisplay = true } }
     private var monitor: Any?
@@ -263,6 +327,11 @@ final class KeyRecorder: NSView {
             guard Shortcuts.isUsable(candidate) else {
                 s.onRefuse?("Il faut au moins ⌘, ⌥ ou ⌃ — sans quoi le raccourci "
                     + "intercepterait votre frappe dans toutes les applications.")
+                return nil
+            }
+            if let taken = s.conflict?(candidate) {
+                s.onRefuse?("\(Shortcuts.display(candidate)) sert déjà à « \(taken) ». "
+                    + "Changez d'abord celui-là, ou choisissez une autre touche.")
                 return nil
             }
             s.combo = candidate
@@ -381,21 +450,42 @@ final class GlassButton: NSView {
         // pour un bouton destructeur, qui reste rouge quoi qu'on demande.
         let tint = destructive ? dangerColor : (accentTint ?? TH.accent)
 
+        // ── Matière ──
+        //
+        //  Le verre d'iOS 26 n'existe pas en AppKit sur macOS 12 : il n'y a
+        //  pas d'API à appeler, et BUD vise Monterey. On en reprend donc
+        //  les trois principes à la main, sans prétendre à autre chose —
+        //  une matière épaisse plutôt qu'un aplat, un reflet spéculaire en
+        //  haut, un liseré qui s'éclaire sur le bord supérieur.
+        //
+        //  C'est le liseré qui fait le plus : un contour d'intensité
+        //  constante lit comme un trait dessiné, un contour qui s'éteint
+        //  vers le bas lit comme une épaisseur.
         if !enabledFlag {
             TH.fill(0.04).setFill()
             path.fill()
         } else if prominent || selected {
-            let top = tint.blended(withFraction: 0.16, of: NSColor.white) ?? tint
-            let bottom = tint.blended(withFraction: 0.14, of: NSColor.black) ?? tint
+            let top = tint.blended(withFraction: 0.22, of: NSColor.white) ?? tint
+            let bottom = tint.blended(withFraction: 0.16, of: NSColor.black) ?? tint
             if let g = NSGradient(starting: top, ending: bottom) { g.draw(in: path, angle: -90) }
             else { tint.setFill(); path.fill() }
             if hoverT > 0.01 {
                 NSColor.white.withAlphaComponent(0.10 * hoverT).setFill()
                 path.fill()
             }
+            specular(path, r, strength: 0.30 + 0.12 * hoverT)
+            rim(path, r, color: NSColor.white, strength: 0.42)
         } else {
-            TH.fill(0.07 + 0.07 * hoverT + 0.06 * pressT).setFill()
-            path.fill()
+            // Un dégradé très court plutôt qu'un aplat : deux pour cent
+            // d'écart entre le haut et le bas suffisent à donner du corps.
+            let a = 0.07 + 0.07 * hoverT + 0.06 * pressT
+            if let g = NSGradient(starting: TH.fill(a + 0.025), ending: TH.fill(a)) {
+                g.draw(in: path, angle: -90)
+            } else {
+                TH.fill(a).setFill()
+                path.fill()
+            }
+            specular(path, r, strength: 0.16 + 0.10 * hoverT)
             let gloss = NSBezierPath(roundedRect: NSRect(x: r.minX + 6, y: r.midY + 1,
                                                          width: max(1, r.width - 12),
                                                          height: max(1, r.height / 2 - 2)),
@@ -1263,6 +1353,13 @@ final class ShortcutsWindow: NSWindowController {
             let rec = KeyRecorder(frame: NSRect(x: W - 152, y: y - 5, width: 130, height: 30),
                                   combo: current(a.key))
             let key = a.key
+            rec.conflict = { [weak self] candidate in
+                guard let s = self else { return nil }
+                for other in Shortcuts.actions where other.key != key {
+                    if s.current(other.key) == candidate { return other.label }
+                }
+                return nil
+            }
             rec.onChange = { [weak self] combo in
                 self?.onSet?(key, combo)
                 self?.note.stringValue = "\(a.label) : \(Shortcuts.display(combo))"

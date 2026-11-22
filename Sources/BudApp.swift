@@ -600,6 +600,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
 
         storagePanel.onEject = { [weak self] msg in self?.setStatus(msg) }
+        storagePanel.lowThreshold = state.lowDiskThreshold
         agentsPanel.onAnswered = { [weak self] msg in
             self?.refreshAgentBadges()
             self?.setStatus(msg)
@@ -1101,8 +1102,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             ("mailWatch", "Veille courrier", "envelope.badge.fill"),
             ("alarmSound", "Son des alarmes", "alarm.fill")
         ]
-        let cols: CGFloat = 3
-        let ow = (W - 24) / cols
+        // Quatre colonnes et non trois : les treize interrupteurs tiennent
+        // alors en quatre rangées au lieu de cinq, et la rangée gagnée
+        // laisse la place au bouton des raccourcis, qui n'était accessible
+        // que depuis l'onglet Outils.
+        let cols: CGFloat = 4
+        let ow = (W - 36) / cols
         for (i, o) in opts.enumerated() {
             let col = CGFloat(i % Int(cols)), row = CGFloat(i / Int(cols))
             let t = ToggleRow(frame: NSRect(x: col * (ow + 12), y: H - 380 - row * 46, width: ow, height: 42),
@@ -1111,6 +1116,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             p.addSubview(t)
             toggleRows[o.0] = t
         }
+
+        let keysBtn = GlassButton(frame: NSRect(x: 0, y: 6, width: W, height: 42),
+                                  title: "Raccourcis clavier et pastilles de l'aperçu…",
+                                  icon: "keyboard", prominent: true)
+        keysBtn.onClick = { [weak self] _ in self?.openShortcuts() }
+        p.addSubview(keysBtn)
     }
 
     // ═══════════ Chat ═══════════
@@ -1747,6 +1758,14 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let vols = scanVolumes()
         let boot = vols.first { $0.isBoot } ?? vols.first
         let ext = vols.filter { !$0.isBoot }.count
+        // L'heure de l'entête était posée une seule fois, à l'ouverture de
+        // l'aperçu, tandis que la pastille se rafraîchissait chaque seconde :
+        // après une minute de survol, les deux affichaient une minute
+        // différente. Une seule écriture, au même instant, pour les deux.
+        if notchState == .glance {
+            chrome.subtitle = longDateString() + " · " + clockString()
+        }
+
         chrome.chips = PreviewChips.current(state).map { key -> (String, String, NSColor?) in
             guard let c = PreviewChips.chip(key) else { return ("questionmark", "—", nil) }
             return (c.icon, chipValue(key, boot: boot, ext: ext, focus: focusTxt), c.color)

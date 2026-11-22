@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 23.7 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 23.8 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -875,6 +875,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
 
         storagePanel.onEject = { [weak self] msg in self?.setStatus(msg) }
+        storagePanel.lowThreshold = state.lowDiskThreshold
         agentsPanel.onAnswered = { [weak self] msg in
             self?.refreshAgentBadges()
             self?.setStatus(msg)
@@ -1376,8 +1377,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             ("mailWatch", "Veille courrier", "envelope.badge.fill"),
             ("alarmSound", "Son des alarmes", "alarm.fill")
         ]
-        let cols: CGFloat = 3
-        let ow = (W - 24) / cols
+        // Quatre colonnes et non trois : les treize interrupteurs tiennent
+        // alors en quatre rangées au lieu de cinq, et la rangée gagnée
+        // laisse la place au bouton des raccourcis, qui n'était accessible
+        // que depuis l'onglet Outils.
+        let cols: CGFloat = 4
+        let ow = (W - 36) / cols
         for (i, o) in opts.enumerated() {
             let col = CGFloat(i % Int(cols)), row = CGFloat(i / Int(cols))
             let t = ToggleRow(frame: NSRect(x: col * (ow + 12), y: H - 380 - row * 46, width: ow, height: 42),
@@ -1386,6 +1391,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             p.addSubview(t)
             toggleRows[o.0] = t
         }
+
+        let keysBtn = GlassButton(frame: NSRect(x: 0, y: 6, width: W, height: 42),
+                                  title: "Raccourcis clavier et pastilles de l'aperçu…",
+                                  icon: "keyboard", prominent: true)
+        keysBtn.onClick = { [weak self] _ in self?.openShortcuts() }
+        p.addSubview(keysBtn)
     }
 
     // ═══════════ Chat ═══════════
@@ -2022,6 +2033,14 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let vols = scanVolumes()
         let boot = vols.first { $0.isBoot } ?? vols.first
         let ext = vols.filter { !$0.isBoot }.count
+        // L'heure de l'entête était posée une seule fois, à l'ouverture de
+        // l'aperçu, tandis que la pastille se rafraîchissait chaque seconde :
+        // après une minute de survol, les deux affichaient une minute
+        // différente. Une seule écriture, au même instant, pour les deux.
+        if notchState == .glance {
+            chrome.subtitle = longDateString() + " · " + clockString()
+        }
+
         chrome.chips = PreviewChips.current(state).map { key -> (String, String, NSColor?) in
             guard let c = PreviewChips.chip(key) else { return ("questionmark", "—", nil) }
             return (c.icon, chipValue(key, boot: boot, ext: ext, focus: focusTxt), c.color)
@@ -4283,6 +4302,16 @@ final class BudStore {
 //  Thème global
 // ═══════════════════════════════════════════════════════════
 
+extension NSColor {
+    /// Luminance perçue, 0 à 1. La conversion en sRGB est obligatoire :
+    /// lire `redComponent` sur une couleur d'un autre espace lève une
+    /// exception Objective-C, et un gris de catalogue n'est pas en RVB.
+    var luminance: CGFloat {
+        guard let c = usingColorSpace(.sRGB) else { return 0.5 }
+        return 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent
+    }
+}
+
 let accentPalette: [(String, NSColor)] = [
     ("Vert menthe",    NSColor(calibratedRed: 0.22, green: 0.85, blue: 0.62, alpha: 1)),
     ("Bleu océan",     NSColor(calibratedRed: 0.29, green: 0.62, blue: 0.99, alpha: 1)),
@@ -4310,7 +4339,19 @@ struct Theme {
         dark ? NSColor(calibratedWhite: 1, alpha: a) : NSColor(calibratedWhite: 0.15, alpha: a * 0.85)
     }
     func dim(_ a: CGFloat) -> NSColor { text.withAlphaComponent(a) }
-    var onAccent: NSColor { NSColor(calibratedWhite: 0.06, alpha: 0.92) }
+
+    /// Ce qu'on écrit **sur** la couleur d'accent.
+    ///
+    /// C'était du quasi-noir, quelle que soit la teinte. Les six accents
+    /// d'usine sont clairs, donc cela passait — mais « Blanc pur » devient
+    /// graphite en thème clair, et le noir sur graphite ne se lit plus.
+    /// On choisit maintenant d'après la luminance réelle de la couleur,
+    /// ce qui tient aussi pour toute teinte ajoutée plus tard.
+    var onAccent: NSColor {
+        accent.luminance > 0.55
+            ? NSColor(calibratedWhite: 0.06, alpha: 0.95)
+            : NSColor(calibratedWhite: 1.00, alpha: 0.97)
+    }
 }
 
 var TH = Theme()
@@ -4714,7 +4755,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.7"
+let budVersion = "23.8"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -4918,6 +4959,11 @@ final class BudSprite {
     private var scaleX: CGFloat = 1, velScaleX: CGFloat = 0
     private var scaleY: CGFloat = 1, velScaleY: CGFloat = 0
     private var jump: CGFloat = 0, velJump: CGFloat = 0
+    /// Danse : balancement latéral, et le côté vers lequel part le
+    /// prochain temps. Alterner donne un pas à deux temps ; sans cela,
+    /// BUD tremblerait sur place au lieu de danser.
+    private var sway: CGFloat = 0, velSway: CGFloat = 0
+    private var danceSide: CGFloat = 1
     private var tilt: CGFloat = 0, tiltVel: CGFloat = 0
     private var waveUntil = Date.distantPast
 
@@ -5020,9 +5066,15 @@ final class BudSprite {
             beat += dt * 2.1
             if beat >= 1 {
                 beat -= 1
+                danceSide = -danceSide
                 velJump += 38
                 velScaleX += 0.030
                 velScaleY -= 0.034
+                // Le pas de côté et l'inclinaison partent du même temps et
+                // du même côté : c'est leur accord qui fait la danse. Les
+                // dissocier donnerait deux mouvements qui se contrarient.
+                velSway += 54 * danceSide
+                tiltVel += 0.034 * danceSide
             }
         }
 
@@ -5044,6 +5096,11 @@ final class BudSprite {
         scaleY += velScaleY * dt
         velJump = (velJump + (0 - jump) * 160 * dt) * exp(-11 * dt)
         jump += velJump * dt
+        // Ressort plus mou que celui du saut : le balancement doit traîner
+        // un peu derrière le temps, comme un corps qui suit la musique.
+        velSway = (velSway + (0 - sway) * 95 * dt) * exp(-8 * dt)
+        sway += velSway * dt
+        if !equalizer && abs(sway) < 0.05 && abs(velSway) < 0.05 { sway = 0; velSway = 0 }
 
         return true   // la respiration anime en continu, très légèrement
     }
@@ -5092,7 +5149,10 @@ final class BudSprite {
         }
 
         ctx.saveGState()
-        ctx.translateBy(x: cx + shakeX, y: cy + floatY + jump + shakeY)
+        // Le balancement est en proportion de la taille : un sprite de
+        // 34 pt dans le notch et un de 200 pt dans le panneau doivent
+        // danser de la même façon, pas du même nombre de points.
+        ctx.translateBy(x: cx + shakeX + sway * (s / 160), y: cy + floatY + jump + shakeY)
         ctx.rotate(by: tilt)
         ctx.scaleBy(x: scaleX * breathX, y: scaleY * breathY)
 
@@ -11496,17 +11556,38 @@ final class StoragePanelView: NSView {
 
     func stepRing() { ring.step() }
 
+    /// Le seuil d'alerte, en pourcentage de place libre. Posé par
+    /// l'application : relire le fichier d'état à chaque rafraîchissement,
+    /// et pour chaque volume, serait payer un accès disque pour un entier.
+    var lowThreshold: Int = 10
+
     func refresh(animated: Bool = false) {
         let vols = scanVolumes()
 
         if let boot = vols.first(where: { $0.isBoot }) ?? vols.first {
             let pct = Int((boot.usedRatio * 100).rounded())
+            // L'anneau prend la couleur de l'alerte : un disque plein doit
+            // se voir sans avoir à lire le chiffre.
+            let low = lowThreshold
+            ring.tint = boot.freePercent <= max(5, low / 2) ? dangerColor
+                      : (boot.freePercent <= low ? warnColor : nil)
             ring.set(pct, caption: "occupé", animated: animated)
             tileFree.set(formatBytes(boot.free), hint: "\(boot.freePercent) % encore libres")
             tileUsed.set(formatBytes(boot.used), hint: "\(pct) % du disque")
             tileTotal.set(formatBytes(boot.total), hint: "disque de démarrage")
-            hero.set(subtitle: "\(boot.name) · \(formatBytes(boot.free)) encore disponibles",
-                     trailing: boot.freePercent <= 10 ? "Disque saturé" : "")
+            // Le seuil d'alerte est celui réglé par l'utilisateur, pas un 10
+            // en dur : afficher « disque saturé » à 10 % alors qu'on a
+            // demandé d'être prévenu à 25 serait ignorer le réglage.
+            let seuil = lowThreshold
+            if boot.freePercent <= seuil {
+                hero.trailingTint = boot.freePercent <= max(5, seuil / 2) ? dangerColor : warnColor
+                hero.set(subtitle: "\(boot.name) · \(formatBytes(boot.free)) encore disponibles",
+                         trailing: "\(boot.freePercent) % libres")
+            } else {
+                hero.trailingTint = nil
+                hero.set(subtitle: "\(boot.name) · \(formatBytes(boot.free)) encore disponibles",
+                         trailing: "")
+            }
         }
         let ext = vols.filter { !$0.isBoot }.count
         tileCount.set("\(vols.count)", hint: ext == 0 ? "aucun volume externe" : "\(ext) en plus du démarrage")
@@ -11532,14 +11613,22 @@ final class StoragePanelView: NSView {
             let ejectable = v.isRemovable || (!v.isInternal && !v.isBoot)
             let btnTitle = ejectable ? "Éjecter" : "Ouvrir"
             let btnW = max(74, textWidth(btnTitle, size: 11.5, weight: .semibold) + 26)
-            let rightEdge = W - 12 - btnW - 10 - pctW
+            // Garde-fou de mise en page. « 100 % » est plus large que « 7 % » :
+            // sur un disque presque plein, la colonne de droite grossit, et
+            // sans ce plancher la barre de progression recevait une largeur
+            // négative et le nom passait sous le pourcentage. C'est le défaut
+            // d'affichage qu'on voyait précisément quand le stockage était bas.
+            let rightEdge = max(150, W - 12 - btnW - 10 - pctW)
 
             // Ligne 1 : icône, nom, étiquette de type
             let iv = mkIcon(row, v.icon, x: 13, y: rh - 22, size: 15, alpha: 0.6)
             if v.isRemovable { iv.contentTintColor = TH.accent }
 
             let tagW = textWidth(v.tag, size: 9.5, weight: .semibold) + 16
-            let nameMax = rightEdge - 38 - tagW - 14
+            // L'étiquette de type cède la place avant le nom : mieux vaut
+            // savoir quel volume c'est que de quel genre il est.
+            let roomForTag = rightEdge - 38 - 14 - 90 > tagW
+            let nameMax = max(70, rightEdge - 38 - (roomForTag ? tagW : 0) - 14)
             var name = v.name
             if textWidth(name, size: 12.5, weight: .semibold) > nameMax {
                 while name.count > 4 && textWidth(name + "…", size: 12.5, weight: .semibold) > nameMax {
@@ -11550,23 +11639,28 @@ final class StoragePanelView: NSView {
             let nameW = textWidth(name, size: 12.5, weight: .semibold) + 10
             row.addSubview(mkLabel(name, NSRect(x: 37, y: rh - 22, width: nameW, height: 18), 12.5, .semibold))
 
-            let tagRect = NSRect(x: 37 + nameW + 4, y: rh - 21, width: tagW, height: 16)
-            let tagView = mkCard(row, tagRect, radius: 8, alpha: 0.09)
-            tagView.addSubview(mkLabel(v.tag, NSRect(x: 0, y: 0, width: tagW, height: 14),
-                                       9.5, .semibold, alpha: 0.55, .center))
+            if roomForTag && 37 + nameW + 4 + tagW <= rightEdge - 6 {
+                let tagRect = NSRect(x: 37 + nameW + 4, y: rh - 21, width: tagW, height: 16)
+                let tagView = mkCard(row, tagRect, radius: 8, alpha: 0.09)
+                tagView.addSubview(mkLabel(v.tag, NSRect(x: 0, y: 0, width: tagW, height: 14),
+                                           9.5, .semibold, alpha: 0.55, .center))
+            }
 
             // Ligne 2 : barre puis volumétrie, bien séparées du nom
-            let bar = ProgressBar(frame: NSRect(x: 37, y: 23, width: rightEdge - 45, height: 5))
+            let bar = ProgressBar(frame: NSRect(x: 37, y: 23, width: max(40, rightEdge - 45), height: 5))
             bar.value = CGFloat(v.usedRatio)
             bar.tint = v.freePercent <= 10 ? dangerColor : (v.freePercent <= 20 ? warnColor : nil)
             row.addSubview(bar)
 
             let detail = "\(formatBytes(v.free)) libres sur \(formatBytes(v.total))"
-            row.addSubview(mkLabel(detail, NSRect(x: 37, y: 3, width: rightEdge - 45, height: 15),
+            row.addSubview(mkLabel(detail, NSRect(x: 37, y: 3, width: max(40, rightEdge - 45), height: 15),
                                    10.5, .regular, alpha: 0.5))
 
-            row.addSubview(mkLabel(pctTxt, NSRect(x: rightEdge, y: rh / 2 - 9, width: pctW, height: 19),
-                                   14, .bold, alpha: 1, .right, mono: true))
+            let pctLabel = mkLabel(pctTxt, NSRect(x: rightEdge, y: rh / 2 - 9, width: pctW, height: 19),
+                                   14, .bold, alpha: 1, .right, mono: true)
+            if v.freePercent <= 10 { pctLabel.textColor = dangerColor }
+            else if v.freePercent <= 20 { pctLabel.textColor = warnColor }
+            row.addSubview(pctLabel)
 
             let action = GlassButton(frame: NSRect(x: W - 12 - btnW, y: rh / 2 - 16, width: btnW, height: 32),
                                      title: btnTitle, compact: true)
@@ -11773,6 +11867,9 @@ final class HeroHeader: NSView {
     private var titleText: String
     private var subtitleText: String
     var trailing: String = ""
+    /// Teinte de la capsule de droite. Une alerte affichée dans le même
+    /// gris que le reste n'alerte personne.
+    var trailingTint: NSColor?
 
     init(frame: NSRect, title: String, subtitle: String) {
         titleText = title
@@ -11818,13 +11915,69 @@ final class HeroHeader: NSView {
         drawString(subtitleText, in: NSRect(x: 22, y: r.height - 74, width: r.width - 160, height: 20),
                    size: 12, weight: .medium, color: TH.dim(0.6))
         if !trailing.isEmpty {
-            let w = textWidth(trailing, size: 11.5, weight: .semibold) + 26
+            // La capsule ne déborde jamais sur le titre : au besoin elle
+            // rétrécit, et c'est le texte qui est coupé, pas la mise en page.
+            let want = textWidth(trailing, size: 11.5, weight: .semibold) + 26
+            let w = min(want, max(60, r.width - 200))
             let cap = NSRect(x: r.maxX - w - 18, y: r.height - 44, width: w, height: 26)
-            TH.fill(0.12).setFill()
+            let tint = trailingTint
+            (tint?.withAlphaComponent(0.22) ?? TH.fill(0.12)).setFill()
             capsule(cap).fill()
+            if let t = tint {
+                t.withAlphaComponent(0.70).setStroke()
+                let s = capsule(cap); s.lineWidth = 1; s.stroke()
+            }
             drawString(trailing, in: NSRect(x: cap.minX, y: cap.midY - 8, width: cap.width, height: 16),
-                       size: 11.5, weight: .semibold, color: TH.text, align: .center)
+                       size: 11.5, weight: .semibold, color: tint ?? TH.text, align: .center)
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Matière de verre
+//
+//  Deux primitives partagées par les boutons et les cartes,
+//  pour que tout l'habillage réagisse à la lumière de la même
+//  façon. Les écrire une fois plutôt qu'à chaque endroit est
+//  ce qui rend l'ensemble harmonieux : vingt reflets réglés
+//  séparément finissent par diverger.
+// ═══════════════════════════════════════════════════════════
+
+/// Le reflet spéculaire : une bande claire sur la moitié haute, bornée
+/// à la forme, qui s'éteint vers le milieu.
+func specular(_ shape: NSBezierPath, _ r: NSRect, strength: CGFloat) {
+    guard strength > 0.01, r.height > 6 else { return }
+    NSGraphicsContext.current?.saveGraphicsState()
+    shape.addClip()
+    let top = NSColor.white.withAlphaComponent(strength * (TH.dark ? 0.22 : 0.42))
+    let fade = NSColor.white.withAlphaComponent(0)
+    if let g = NSGradient(starting: top, ending: fade) {
+        g.draw(in: NSRect(x: r.minX, y: r.midY, width: r.width, height: r.height / 2), angle: -90)
+    }
+    NSGraphicsContext.current?.restoreGraphicsState()
+}
+
+/// Le liseré : vif en haut, éteint en bas. C'est ce dégradé qui donne
+/// l'épaisseur ; un contour uniforme reste un trait.
+func rim(_ shape: NSBezierPath, _ r: NSRect, color: NSColor, strength: CGFloat) {
+    guard strength > 0.01, r.height > 4 else { return }
+    // Un dégradé le long d'un contour n'existe pas en AppKit : on ne peut
+    // pas clipper sur un trait. On trace donc le même contour par bandes
+    // horizontales, d'opacité décroissante. Quatre suffisent — à cette
+    // échelle, les marches ne se voient pas.
+    let a = strength * (TH.dark ? 1.0 : 0.55)
+    let bands = 4
+    for i in 0..<bands {
+        let f = CGFloat(i) / CGFloat(bands - 1)         // 0 en haut, 1 en bas
+        let h = r.height / CGFloat(bands)
+        let band = NSRect(x: r.minX - 2, y: r.maxY - h * CGFloat(i + 1),
+                          width: r.width + 4, height: h)
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(rect: band).setClip()
+        color.withAlphaComponent(a * (1 - f) * (1 - f)).setStroke()
+        shape.lineWidth = 1.4
+        shape.stroke()
+        NSGraphicsContext.current?.restoreGraphicsState()
     }
 }
 
@@ -11843,6 +11996,11 @@ final class KeyRecorder: NSView {
     var onChange: ((String) -> Void)?
     /// Phrase à afficher quand une combinaison est refusée.
     var onRefuse: ((String) -> Void)?
+    /// Rend le nom de l'action qui utilise déjà ce raccourci, ou `nil`.
+    /// Deux actions sur la même combinaison, et l'une des deux ne part
+    /// jamais : laquelle dépendrait de l'ordre du tableau, ce qui est
+    /// indéfendable. On refuse donc le doublon à la saisie.
+    var conflict: ((String) -> String?)?
 
     private var recording = false { didSet { needsDisplay = true } }
     private var monitor: Any?
@@ -11887,6 +12045,11 @@ final class KeyRecorder: NSView {
             guard Shortcuts.isUsable(candidate) else {
                 s.onRefuse?("Il faut au moins ⌘, ⌥ ou ⌃ — sans quoi le raccourci "
                     + "intercepterait votre frappe dans toutes les applications.")
+                return nil
+            }
+            if let taken = s.conflict?(candidate) {
+                s.onRefuse?("\(Shortcuts.display(candidate)) sert déjà à « \(taken) ». "
+                    + "Changez d'abord celui-là, ou choisissez une autre touche.")
                 return nil
             }
             s.combo = candidate
@@ -12005,21 +12168,42 @@ final class GlassButton: NSView {
         // pour un bouton destructeur, qui reste rouge quoi qu'on demande.
         let tint = destructive ? dangerColor : (accentTint ?? TH.accent)
 
+        // ── Matière ──
+        //
+        //  Le verre d'iOS 26 n'existe pas en AppKit sur macOS 12 : il n'y a
+        //  pas d'API à appeler, et BUD vise Monterey. On en reprend donc
+        //  les trois principes à la main, sans prétendre à autre chose —
+        //  une matière épaisse plutôt qu'un aplat, un reflet spéculaire en
+        //  haut, un liseré qui s'éclaire sur le bord supérieur.
+        //
+        //  C'est le liseré qui fait le plus : un contour d'intensité
+        //  constante lit comme un trait dessiné, un contour qui s'éteint
+        //  vers le bas lit comme une épaisseur.
         if !enabledFlag {
             TH.fill(0.04).setFill()
             path.fill()
         } else if prominent || selected {
-            let top = tint.blended(withFraction: 0.16, of: NSColor.white) ?? tint
-            let bottom = tint.blended(withFraction: 0.14, of: NSColor.black) ?? tint
+            let top = tint.blended(withFraction: 0.22, of: NSColor.white) ?? tint
+            let bottom = tint.blended(withFraction: 0.16, of: NSColor.black) ?? tint
             if let g = NSGradient(starting: top, ending: bottom) { g.draw(in: path, angle: -90) }
             else { tint.setFill(); path.fill() }
             if hoverT > 0.01 {
                 NSColor.white.withAlphaComponent(0.10 * hoverT).setFill()
                 path.fill()
             }
+            specular(path, r, strength: 0.30 + 0.12 * hoverT)
+            rim(path, r, color: NSColor.white, strength: 0.42)
         } else {
-            TH.fill(0.07 + 0.07 * hoverT + 0.06 * pressT).setFill()
-            path.fill()
+            // Un dégradé très court plutôt qu'un aplat : deux pour cent
+            // d'écart entre le haut et le bas suffisent à donner du corps.
+            let a = 0.07 + 0.07 * hoverT + 0.06 * pressT
+            if let g = NSGradient(starting: TH.fill(a + 0.025), ending: TH.fill(a)) {
+                g.draw(in: path, angle: -90)
+            } else {
+                TH.fill(a).setFill()
+                path.fill()
+            }
+            specular(path, r, strength: 0.16 + 0.10 * hoverT)
             let gloss = NSBezierPath(roundedRect: NSRect(x: r.minX + 6, y: r.midY + 1,
                                                          width: max(1, r.width - 12),
                                                          height: max(1, r.height / 2 - 2)),
@@ -12887,6 +13071,13 @@ final class ShortcutsWindow: NSWindowController {
             let rec = KeyRecorder(frame: NSRect(x: W - 152, y: y - 5, width: 130, height: 30),
                                   combo: current(a.key))
             let key = a.key
+            rec.conflict = { [weak self] candidate in
+                guard let s = self else { return nil }
+                for other in Shortcuts.actions where other.key != key {
+                    if s.current(other.key) == candidate { return other.label }
+                }
+                return nil
+            }
             rec.onChange = { [weak self] combo in
                 self?.onSet?(key, combo)
                 self?.note.stringValue = "\(a.label) : \(Shortcuts.display(combo))"

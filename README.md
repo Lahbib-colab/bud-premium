@@ -281,6 +281,8 @@ Spotify et Alexa ont été retirés en version 23. Alexa surtout : Amazon n'expo
 
 ### Travail
 
+La section **Stockage** colore l'alerte au lieu de l'écrire en gris : l'anneau, la capsule de l'entête et le pourcentage de chaque volume passent à l'ambre puis au rouge, selon le seuil que vous avez réglé. Les largeurs de ligne ont des planchers, car « 100 % » est plus large que « 7 % » : sur un disque presque plein, la colonne de droite s'élargissait et la barre de progression recevait une largeur négative.
+
 **Stockage** — anneau d'occupation du disque de démarrage, quatre tuiles (libre, occupé, capacité, volumes), liste de tous les volumes avec barre colorée, type et bouton d'éjection. Bouton **Tout éjecter**. Constantes du Mac : CPU, mémoire, uptime. Alerte quand le disque passe sous le seuil configuré.
 
 **Nettoyage** — sept cibles analysées à l'octet : corbeille personnelle, corbeilles des volumes externes, caches, journaux, données Xcode, fichiers `.DS_Store`, téléchargements de plus de 60 jours. Analyse d'abord, confirmation détaillée ensuite. Animation pendant le travail : des poussières sont aspirées vers la corbeille, le compteur d'octets grimpe en direct, et la fin déclenche une gerbe d'accent.
@@ -309,7 +311,11 @@ L'onglet est rangé en **groupes titrés** — Système, Applications, Capture d
 
 Si l'image fait moins de 4 Ko, c'est que l'autorisation manque : BUD vous renvoie vers Réglages Système → Confidentialité et sécurité → **Enregistrement de l'écran**, au lieu de laisser un cadre noir sur votre Bureau.
 
-**Réglages** — apparence (auto, clair, sombre), matière du panneau (opaque, verre dépoli, cristal), six couleurs d'accent dont le blanc, et treize interrupteurs de comportement.
+**Réglages** — apparence (auto, clair, sombre), matière du panneau (opaque, verre dépoli, cristal), six couleurs d'accent dont le blanc, treize interrupteurs de comportement, et l'accès aux raccourcis clavier et aux pastilles de l'aperçu.
+
+Le texte posé sur la couleur d'accent choisit le noir ou le blanc d'après la **luminance réelle** de cette couleur. Les six accents d'usine sont clairs, mais « Blanc pur » devient graphite en thème clair, et le noir sur graphite ne se lit plus.
+
+L'habillage emprunte ses principes au verre d'iOS 26 sans prétendre l'imiter : il n'en existe aucune API en AppKit sur macOS 12, et BUD vise Monterey. Les boutons reçoivent un dégradé court plutôt qu'un aplat, un reflet spéculaire sur la moitié haute, et un liseré qui s'éteint vers le bas — c'est ce dernier qui donne l'épaisseur, un contour d'intensité constante se lisant comme un trait dessiné. AppKit ne sachant pas dégrader le long d'un tracé, il est peint en quatre bandes horizontales. Les deux primitives sont écrites une fois et partagées : vingt reflets réglés séparément finissent par diverger.
 
 ---
 
@@ -330,6 +336,8 @@ Ce sont les raccourcis d'usine. **Tous se changent** : onglet Outils → *Raccou
 | ⌘⌥A | Demandes des agents |
 | ⌘⌥F | Démarrer ou arrêter un focus |
 | Échap | Replier |
+
+Une combinaison **déjà prise** est refusée, en nommant l'action qui l'utilise : deux actions sur la même touche, et l'une des deux ne part jamais — laquelle dépendrait de l'ordre du tableau, ce qui est indéfendable.
 
 Une combinaison sans ⌘, ⌃ ni ⌥ est **refusée** : elle intercepterait votre frappe ordinaire dans toutes les applications. Le capteur de touche installe un moniteur **local**, retiré dès la capture terminée — un moniteur global avalerait les touches de tout le système pendant l'enregistrement.
 

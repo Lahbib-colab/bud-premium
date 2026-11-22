@@ -134,6 +134,11 @@ final class BudSprite {
     private var scaleX: CGFloat = 1, velScaleX: CGFloat = 0
     private var scaleY: CGFloat = 1, velScaleY: CGFloat = 0
     private var jump: CGFloat = 0, velJump: CGFloat = 0
+    /// Danse : balancement latéral, et le côté vers lequel part le
+    /// prochain temps. Alterner donne un pas à deux temps ; sans cela,
+    /// BUD tremblerait sur place au lieu de danser.
+    private var sway: CGFloat = 0, velSway: CGFloat = 0
+    private var danceSide: CGFloat = 1
     private var tilt: CGFloat = 0, tiltVel: CGFloat = 0
     private var waveUntil = Date.distantPast
 
@@ -236,9 +241,15 @@ final class BudSprite {
             beat += dt * 2.1
             if beat >= 1 {
                 beat -= 1
+                danceSide = -danceSide
                 velJump += 38
                 velScaleX += 0.030
                 velScaleY -= 0.034
+                // Le pas de côté et l'inclinaison partent du même temps et
+                // du même côté : c'est leur accord qui fait la danse. Les
+                // dissocier donnerait deux mouvements qui se contrarient.
+                velSway += 54 * danceSide
+                tiltVel += 0.034 * danceSide
             }
         }
 
@@ -260,6 +271,11 @@ final class BudSprite {
         scaleY += velScaleY * dt
         velJump = (velJump + (0 - jump) * 160 * dt) * exp(-11 * dt)
         jump += velJump * dt
+        // Ressort plus mou que celui du saut : le balancement doit traîner
+        // un peu derrière le temps, comme un corps qui suit la musique.
+        velSway = (velSway + (0 - sway) * 95 * dt) * exp(-8 * dt)
+        sway += velSway * dt
+        if !equalizer && abs(sway) < 0.05 && abs(velSway) < 0.05 { sway = 0; velSway = 0 }
 
         return true   // la respiration anime en continu, très légèrement
     }
@@ -308,7 +324,10 @@ final class BudSprite {
         }
 
         ctx.saveGState()
-        ctx.translateBy(x: cx + shakeX, y: cy + floatY + jump + shakeY)
+        // Le balancement est en proportion de la taille : un sprite de
+        // 34 pt dans le notch et un de 200 pt dans le panneau doivent
+        // danser de la même façon, pas du même nombre de points.
+        ctx.translateBy(x: cx + shakeX + sway * (s / 160), y: cy + floatY + jump + shakeY)
         ctx.rotate(by: tilt)
         ctx.scaleBy(x: scaleX * breathX, y: scaleY * breathY)
 
