@@ -78,7 +78,15 @@ for a in "$REPO"/Art/*.png; do
   [ -f "$a" ] || continue
   n="$(basename "$a")"
   printf '\nbase64 -D > "%s" << %s\n' "\$ART_DIR/$n" "'EOF_BUDART_9X4'"
-  base64 "$a" | fold -w 76
+  # « base64 < fichier » et non « base64 fichier » : la version BSD de
+  # macOS, où ce script tourne aussi, ne prend pas de nom de fichier en
+  # argument. Et le repliage est imposé plutôt que laissé au défaut, qui
+  # diffère d'une plateforme à l'autre — sinon l'installeur régénéré sur
+  # macOS ne correspond plus à celui engagé depuis Linux.
+  # La substitution mange les sauts de ligne de fin, printf en remet
+  # exactement un : sans cela le délimiteur se collait à la dernière
+  # ligne de base64 et le heredoc ne se fermait jamais.
+  printf '%s\n' "$(base64 < "$a" | tr -d '\n' | fold -w 76)"
   printf 'EOF_BUDART_9X4\n'
 done
 
