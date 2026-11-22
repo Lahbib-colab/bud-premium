@@ -234,7 +234,9 @@ final class MusicPanelView: NSView {
     /// le notch et l'animation de BUD suivent sans attendre le sondage.
     var onNowPlaying: ((NowPlaying) -> Void)?
 
-    init(frame: NSRect) {
+    // « override » : en retirant le paramètre source, cette signature est
+    // devenue celle de NSView.init(frame:), qu'il faut donc redéclarer.
+    override init(frame: NSRect) {
         hero = HeroHeader(frame: NSRect(x: 0, y: frame.height - 92, width: frame.width, height: 92),
                           title: "Musique", subtitle: "Apple Music, piloté sans quitter votre travail.")
         super.init(frame: frame)

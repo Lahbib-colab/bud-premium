@@ -14,7 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15]
+        # macos-14 a été retiré par GitHub : son image renvoie
+        # « The configuration macos-14-arm64-us-default is not supported ».
+        os: [macos-15, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
