@@ -1,5 +1,5 @@
 {
-  "version": "23.7",
-  "notes": "Canal de repli, lu par les versions antérieures à 23.1 dont le bouton ne sait qu'ouvrir une adresse. On y met donc le disque d'installation lui-même, et non la page de la version : le navigateur télécharge BUD-Premium-23.7.dmg, vous l'ouvrez, vous glissez BUD dans Applications. C'est le dernier passage à la main : à partir de 23.1 le bouton télécharge et installe dans BUD, en lisant l'API des releases et plus ce fichier.",
-  "url": "https://github.com/Lahbib-colab/bud-premium/releases/download/v23.7/BUD-Premium-23.7.dmg"
+  "version": "23.8",
+  "notes": "Canal de repli, lu par les versions antérieures à 23.1 dont le bouton ne sait qu'ouvrir une adresse. On y met donc le disque d'installation lui-même, et non la page de la version : le navigateur télécharge BUD-Premium-23.8.dmg, vous l'ouvrez, vous glissez BUD dans Applications. C'est le dernier passage à la main : à partir de 23.1 le bouton télécharge et installe dans BUD, en lisant l'API des releases et plus ce fichier.",
+  "url": "https://github.com/Lahbib-colab/bud-premium/releases/download/v23.8/BUD-Premium-23.8.dmg"
 }
