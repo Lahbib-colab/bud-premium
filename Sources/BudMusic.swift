@@ -241,6 +241,47 @@ enum MusicBridge {
         """)
     }
 
+    /// Arrêt, et non pause : Musique revient au début du morceau. Les deux
+    /// ne font pas la même chose, et un lecteur qui n'offre que « pause »
+    /// oblige à rouvrir Musique pour l'autre.
+    static func stop() { tell("stop") }
+
+    // ─────────────────────────────────────────────────────────
+    //  Volume du Mac
+    //
+    //  À ne pas confondre avec celui de Musique. `sound volume`
+    //  règle le niveau de l'application dans le mélangeur ;
+    //  `output volume` règle la sortie de la machine, celle des
+    //  touches du clavier. Baisser l'un n'agit pas sur l'autre,
+    //  et chercher pourquoi « le volume ne fait rien » quand
+    //  c'est l'autre qui est à zéro peut durer longtemps. BUD
+    //  montre donc les deux, nommés.
+    // ─────────────────────────────────────────────────────────
+
+    /// Volume de sortie du Mac, 0 à 100, et son état de coupure.
+    static func systemVolume() -> (level: Int, muted: Bool) {
+        let out = runShell("/usr/bin/osascript",
+                           ["-e", "set v to output volume of (get volume settings)",
+                            "-e", "set m to output muted of (get volume settings)",
+                            "-e", "return (v as string) & \"|\" & (m as string)"])
+        let p = out.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "|")
+        guard p.count >= 2 else { return (50, false) }
+        // Un Mac sans sortie réglable renvoie -1 : on n'en fait pas un 0,
+        // qui laisserait croire que le son est coupé.
+        let lvl = Int(p[0].trimmingCharacters(in: .whitespaces)) ?? 50
+        let muted = p[1].trimmingCharacters(in: .whitespaces).lowercased() == "true"
+        return (lvl < 0 ? 50 : min(100, lvl), muted)
+    }
+
+    static func setSystemVolume(_ v: Int) {
+        let n = max(0, min(100, v))
+        runShell("/usr/bin/osascript", ["-e", "set volume output volume \(n)"])
+    }
+
+    static func setSystemMuted(_ m: Bool) {
+        runShell("/usr/bin/osascript", ["-e", "set volume output muted \(m)"])
+    }
+
     static func setVolume(_ v: Int) {
         guard running() else { return }
         osa("tell application \"Music\" to set sound volume to \(max(0, min(100, v)))")
@@ -391,6 +432,12 @@ final class MusicPanelView: NSView {
     private var repeatBtn: GlassButton!
     private var volLabel: NSTextField!
     private var volSlider: NSSlider!
+    private var sysLabel: NSTextField!
+    private var sysSlider: NSSlider!
+    private var muteBtn: GlassButton!
+    private var stopBtn: GlassButton!
+    private var sysHeld = false
+    private var sysMuted = false
     private var eq: EqualizerView!
     private var hint: NSTextField!
     private var cover: CoverPlate!
@@ -442,11 +489,12 @@ final class MusicPanelView: NSView {
 
         // ── Transport : reculer · précédent · lecture · suivant · avancer ──
         let ty = H - 326
-        let tw = (W - 48) / 5
+        let tw = (W - 60) / 6
         let specs: [(String, () -> Void)] = [
             ("gobackward.15", { [weak self] in self?.run { MusicBridge.seek(by: -15) } }),
             ("backward.fill", { [weak self] in self?.run { MusicBridge.previous() } }),
-            ("playpause.fill", { [weak self] in self?.run { MusicBridge.playPause() } }),
+            ("play.fill", { [weak self] in self?.run { MusicBridge.playPause() } }),
+            ("stop.fill", { [weak self] in self?.run { MusicBridge.stop() } }),
             ("forward.fill", { [weak self] in self?.run { MusicBridge.next() } }),
             ("goforward.15", { [weak self] in self?.run { MusicBridge.seek(by: 15) } })
         ]
@@ -459,6 +507,7 @@ final class MusicPanelView: NSView {
             made.append(b)
         }
         playBtn = made[2]
+        stopBtn = made[3]
 
         // ── Aléatoire et répétition ──
         let my = ty - 60
@@ -471,9 +520,33 @@ final class MusicPanelView: NSView {
         repeatBtn.onClick = { [weak self] _ in self?.run { MusicBridge.cycleRepeat() } }
         [shuffleBtn, repeatBtn].forEach { addSubview($0) }
 
-        // ── Volume : un curseur plutôt que deux boutons ──
-        mkSection(self, my - 24, W, "Volume")
-        volSlider = NSSlider(frame: NSRect(x: 0, y: my - 78, width: W - 64, height: 24))
+        // ── Les deux volumes ──
+        //
+        //  Celui du Mac d'abord : c'est celui des touches du clavier, et
+        //  celui qu'on cherche neuf fois sur dix. Celui de Musique ensuite,
+        //  qui n'est que le niveau de l'application dans le mélangeur.
+        //  Les confondre, c'est passer un quart d'heure à monter l'un
+        //  pendant que l'autre est à zéro.
+        mkSection(self, my - 26, W, "Volume du Mac")
+        muteBtn = GlassButton(frame: NSRect(x: 0, y: my - 58, width: 44, height: 28),
+                              title: "", icon: "speaker.slash.fill")
+        muteBtn.onClick = { [weak self] _ in self?.toggleMute() }
+        addSubview(muteBtn)
+        sysSlider = NSSlider(frame: NSRect(x: 54, y: my - 56, width: W - 118, height: 24))
+        sysSlider.minValue = 0
+        sysSlider.maxValue = 100
+        sysSlider.doubleValue = 50
+        sysSlider.isContinuous = true
+        sysSlider.target = self
+        sysSlider.action = #selector(systemVolumeChanged(_:))
+        addSubview(sysSlider)
+        sysLabel = mkLabel("50", NSRect(x: W - 58, y: my - 56, width: 58, height: 20),
+                           13, .semibold, alpha: 0.7, .right)
+        sysLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        addSubview(sysLabel)
+
+        mkSection(self, my - 84, W, "Volume de Musique")
+        volSlider = NSSlider(frame: NSRect(x: 0, y: my - 116, width: W - 64, height: 24))
         volSlider.minValue = 0
         volSlider.maxValue = 100
         volSlider.doubleValue = 50
@@ -481,12 +554,12 @@ final class MusicPanelView: NSView {
         volSlider.target = self
         volSlider.action = #selector(volumeChanged(_:))
         addSubview(volSlider)
-        volLabel = mkLabel("50", NSRect(x: W - 58, y: my - 76, width: 58, height: 20),
+        volLabel = mkLabel("50", NSRect(x: W - 58, y: my - 116, width: 58, height: 20),
                            13, .semibold, alpha: 0.7, .right)
         volLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         addSubview(volLabel)
 
-        hint = NSTextField(frame: NSRect(x: 0, y: 58, width: W, height: 34))
+        hint = NSTextField(frame: NSRect(x: 0, y: 8, width: W, height: 40))
         hint.isBezeled = false
         hint.drawsBackground = false
         hint.isEditable = false
@@ -512,6 +585,46 @@ final class MusicPanelView: NSView {
                                      title: "Actualiser", icon: "arrow.clockwise")
         refreshBtn.onClick = { [weak self] _ in self?.refresh() }
         [openBtn, refreshBtn].forEach { addSubview($0) }
+    }
+
+    /// Le volume du Mac, écrit pendant le glissement et relu seulement
+    /// après : relire en même temps ferait sauter le curseur sous le doigt.
+    @objc private func systemVolumeChanged(_ s: NSSlider) {
+        let v = Int(s.doubleValue.rounded())
+        sysLabel.stringValue = "\(v)"
+        sysHeld = true
+        MusicBridge.setSystemVolume(v)
+        // Monter le son d'un Mac coupé doit le rallumer : autrement le
+        // curseur bouge et rien ne sort.
+        if sysMuted && v > 0 {
+            MusicBridge.setSystemMuted(false)
+            sysMuted = false
+            muteBtn.selected = false
+        }
+        NSObject.cancelPreviousPerformRequests(withTarget: self,
+                                               selector: #selector(releaseSystemVolume), object: nil)
+        perform(#selector(releaseSystemVolume), with: nil, afterDelay: 0.8)
+    }
+
+    @objc private func releaseSystemVolume() { sysHeld = false }
+
+    private func toggleMute() {
+        sysMuted.toggle()
+        MusicBridge.setSystemMuted(sysMuted)
+        muteBtn.selected = sysMuted
+        hint.stringValue = sysMuted ? "Son du Mac coupé." : "Son du Mac rétabli."
+    }
+
+    /// Relit le volume du Mac. Appelé par le sondage du panneau, pas par
+    /// un minuteur à lui : un aller-retour AppleScript par seconde pour
+    /// un curseur serait cher payé.
+    private func refreshSystemVolume() {
+        guard !sysHeld else { return }
+        let (lvl, muted) = MusicBridge.systemVolume()
+        sysSlider.doubleValue = Double(lvl)
+        sysLabel.stringValue = muted ? "coupé" : "\(lvl)"
+        sysMuted = muted
+        muteBtn.selected = muted
     }
 
     @objc private func volumeChanged(_ s: NSSlider) {
@@ -561,6 +674,9 @@ final class MusicPanelView: NSView {
             cover.image = nil
             cover.dim = true
             ArtworkStore.clear()
+            // Le volume du Mac ne dépend pas de Musique : il reste réglable
+            // même l'application fermée, et c'est souvent là qu'on le cherche.
+            refreshSystemVolume()
             return
         }
 
@@ -581,6 +697,12 @@ final class MusicPanelView: NSView {
             volSlider.doubleValue = Double(n.volume)
             volLabel.stringValue = "\(n.volume)"
         }
+        refreshSystemVolume()
+
+        // L'icône dit l'action à venir, pas l'état présent : pendant la
+        // lecture on offre la pause, à l'arrêt on offre la lecture.
+        playBtn.iconName = n.playing ? "pause.fill" : "play.fill"
+        stopBtn.enabledFlag = n.playing || n.hasTrack
 
         shuffleBtn.prominent = n.shuffle
         repeatBtn.prominent = n.repeatMode != "off"

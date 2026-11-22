@@ -671,7 +671,16 @@ final class NotchChrome: NSView {
     var greeting = "Coucou"
     var subtitle = ""
     var mono = ""                      // ligne de commande d'une demande d'agent
-    var chips: [(String, String)] = []
+    /// Icône, valeur, teinte. La teinte à `nil` garde l'ancien gris.
+    var chips: [(String, String, NSColor?)] = []
+    /// Les rectangles des pastilles, mémorisés au dessin pour savoir
+    /// laquelle est sous le curseur. Calculer la mise en page deux fois —
+    /// une pour dessiner, une pour viser — serait deux occasions de
+    /// diverger.
+    private var chipRects: [NSRect] = []
+    private var chipHover = -1
+    /// Appelé avec l'indice de la pastille cliquée.
+    var onChipClick: ((Int) -> Void)?
     var progress: CGFloat = 0
     var badge: NSColor?
     var alertCount = 0
@@ -703,12 +712,36 @@ final class NotchChrome: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       options: [.mouseEnteredAndExited, .mouseMoved,
+                                                 .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
     override func mouseEntered(with e: NSEvent) { onHover?(true) }
-    override func mouseExited(with e: NSEvent) { onHover?(false) }
-    override func mouseUp(with e: NSEvent) { if state != .open { onClick?() } }
+    override func mouseExited(with e: NSEvent) {
+        onHover?(false)
+        if chipHover != -1 { chipHover = -1; needsDisplay = true }
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        let i = chipIndex(at: convert(e.locationInWindow, from: nil))
+        if i != chipHover { chipHover = i; needsDisplay = true }
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        guard state != .open else { return }
+        // Une pastille cliquée mène à son panneau ; partout ailleurs, le
+        // clic ouvre BUD comme avant.
+        let i = chipIndex(at: convert(e.locationInWindow, from: nil))
+        if i >= 0 { onChipClick?(i); return }
+        onClick?()
+    }
+
+    /// L'indice de la pastille sous le point, ou -1.
+    private func chipIndex(at p: NSPoint) -> Int {
+        guard state == .glance else { return -1 }
+        for (i, r) in chipRects.enumerated() where r.contains(p) { return i }
+        return -1
+    }
 
     private func budRect() -> NSRect {
         switch state {
@@ -936,16 +969,22 @@ final class NotchChrome: NSView {
         if !chips.isEmpty {
             let gap: CGFloat = 8
             let cw = (b.width - 44 - gap * CGFloat(chips.count - 1)) / CGFloat(chips.count)
+            chipRects.removeAll()
             for (i, chip) in chips.enumerated() {
                 let r = NSRect(x: 22 + CGFloat(i) * (cw + gap), y: top - 128, width: cw, height: 28)
-                TH.fill(0.09).setFill()
+                chipRects.append(r)
+                let tint = chip.2 ?? TH.dim(0.68)
+                let live = (i == chipHover)
+                // La pastille survolée s'éclaire de sa propre teinte : c'est
+                // ce qui dit qu'elle se clique, sans ajouter un libellé.
+                (live ? tint.withAlphaComponent(0.20) : TH.fill(0.09)).setFill()
                 capsule(r).fill()
                 let sp = capsule(r)
-                TH.fill(0.07).setStroke()
+                (live ? tint.withAlphaComponent(0.50) : TH.fill(0.07)).setStroke()
                 sp.lineWidth = 1
                 sp.stroke()
                 drawSymbol(chip.0, center: NSPoint(x: r.minX + 17, y: r.midY), size: 11.5,
-                           weight: .semibold, color: TH.dim(0.68))
+                           weight: .semibold, color: tint)
                 let maxW = r.width - 32
                 drawString(chip.1, in: NSRect(x: r.minX + 28, y: r.midY - 8, width: maxW, height: 16),
                            size: 11.5, weight: .semibold, color: TH.text, mono: true)
@@ -1185,13 +1224,19 @@ final class ShortcutsWindow: NSWindowController {
     private var note: NSTextField!
     private var current: (String) -> String
 
+    /// Les quatre pastilles de l'aperçu en vigueur.
+    var chipsNow: () -> [String] = { PreviewChips.fallback }
+    /// Appelé quand une pastille change : l'emplacement et la nouvelle clé.
+    var onChipSet: ((Int, String) -> Void)?
+    private var chipPops: [NSPopUpButton] = []
+
     init(current: @escaping (String) -> String) {
         self.current = current
         let rows = Shortcuts.actions.count
-        let H: CGFloat = CGFloat(rows) * 42 + 132
+        let H: CGFloat = CGFloat(rows) * 42 + 132 + 96
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: H),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        w.title = "Raccourcis de BUD"
+        w.title = "Raccourcis et aperçu"
         w.isReleasedWhenClosed = false
         w.center()
         super.init(window: w)
@@ -1231,6 +1276,32 @@ final class ShortcutsWindow: NSWindowController {
             recorders[a.key] = rec
         }
 
+        // ── Les quatre pastilles de l'aperçu ──
+        let chipTop = H - 96 - CGFloat(Shortcuts.actions.count) * 42 - 18
+        let sec = mkLabel("Pastilles de l'aperçu",
+                          NSRect(x: 22, y: chipTop, width: W - 44, height: 18), 12.5, .bold)
+        content.addSubview(sec)
+        let hint2 = mkLabel("Ce que montrent les quatre capsules sous la salutation. Un clic dessus ouvre le panneau correspondant.",
+                            NSRect(x: 22, y: chipTop - 18, width: W - 44, height: 16), 10.5, .regular, alpha: 0.45)
+        content.addSubview(hint2)
+
+        let keys = chipsNow()
+        let pw = (W - 44 - 24) / 4
+        for slot in 0..<4 {
+            let pop = NSPopUpButton(frame: NSRect(x: 22 + CGFloat(slot) * (pw + 8),
+                                                  y: chipTop - 54, width: pw, height: 26))
+            for c in PreviewChips.catalogue { pop.addItem(withTitle: c.label) }
+            if slot < keys.count,
+               let i = PreviewChips.catalogue.firstIndex(where: { $0.key == keys[slot] }) {
+                pop.selectItem(at: i)
+            }
+            pop.tag = slot
+            pop.target = self
+            pop.action = #selector(chipPicked(_:))
+            content.addSubview(pop)
+            chipPops.append(pop)
+        }
+
         note = mkLabel("", NSRect(x: 22, y: 50, width: W - 44, height: 30), 11, .regular, alpha: 0.55)
         note.lineBreakMode = .byWordWrapping
         note.maximumNumberOfLines = 2
@@ -1255,8 +1326,23 @@ final class ShortcutsWindow: NSWindowController {
         content.addSubview(done)
     }
 
+    @objc private func chipPicked(_ sender: NSPopUpButton) {
+        let i = sender.indexOfSelectedItem
+        guard i >= 0, i < PreviewChips.catalogue.count else { return }
+        let c = PreviewChips.catalogue[i]
+        onChipSet?(sender.tag, c.key)
+        note.stringValue = "Pastille \(sender.tag + 1) : \(c.label)."
+        note.textColor = TH.dim(0.55)
+    }
+
     /// Relit les raccourcis en vigueur — utile si l'état a changé ailleurs.
     func refresh() {
         for a in Shortcuts.actions { recorders[a.key]?.combo = current(a.key) }
+        let keys = chipsNow()
+        for (slot, pop) in chipPops.enumerated() where slot < keys.count {
+            if let i = PreviewChips.catalogue.firstIndex(where: { $0.key == keys[slot] }) {
+                pop.selectItem(at: i)
+            }
+        }
     }
 }

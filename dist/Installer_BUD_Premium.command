@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 23.6 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 23.7 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -574,6 +574,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         chrome.autoresizingMask = [.width, .height]
         chrome.onHover = { [weak self] inside in self?.hover(inside) }
         chrome.onClick = { [weak self] in self?.notchClicked() }
+        chrome.onChipClick = { [weak self] i in self?.openChip(i) }
         host.addSubview(chrome)
 
         buildApprovalBar()
@@ -1574,6 +1575,72 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         chatPanel.actions = a
     }
 
+    // ═══════════ Les pastilles de l'aperçu ═══════════
+
+    /// Ce qu'affiche une pastille. Tout doit tenir en quelques caractères :
+    /// quatre capsules se partagent 470 pt, et une valeur tronquée vaut
+    /// moins que pas de valeur du tout.
+    private func chipValue(_ key: String, boot: VolumeInfo?, ext: Int, focus: String) -> String {
+        switch key {
+        case "disk":      return boot.map { formatBytes($0.free) } ?? "—"
+        case "external":  return ext > 0 ? "\(ext)" : "—"
+        case "agents":    return pendingAgents > 0 ? "\(pendingAgents)" : "—"
+        case "focus":     return focus
+        case "clock":     return clockString()
+        case "battery":   return batteryShort()
+        case "mail":      return lastUnread >= 0 ? "\(lastUnread)" : "—"
+        case "reminders": return nextReminderShort()
+        case "music":     return nowPlayingTitle.isEmpty
+                                ? "—" : String(nowPlayingTitle.prefix(14))
+        case "memory":    return memoryShort()
+        default:          return "—"
+        }
+    }
+
+    /// « 87 % » ou « — » sur une machine sans batterie. La phrase complète
+    /// de `batteryLine()` ne tiendrait pas dans une capsule.
+    private func batteryShort() -> String {
+        let out = runShell("/usr/bin/pmset", ["-g", "batt"])
+        guard out.contains("InternalBattery"),
+              let r = out.range(of: "[0-9]{1,3}%", options: .regularExpression) else { return "—" }
+        return String(out[r])
+    }
+
+    /// L'heure du prochain rappel non fait, ou « — ».
+    private func nextReminderShort() -> String {
+        let due = ReminderStore.shared.items
+            .filter { !$0.done }
+            .sorted { $0.date < $1.date }
+        guard let n = due.first else { return "—" }
+        let f = DateFormatter(); f.locale = Locale(identifier: "fr_FR")
+        f.dateFormat = Calendar.current.isDateInToday(n.date) ? "HH:mm" : "d MMM"
+        return f.string(from: n.date)
+    }
+
+    /// Mémoire libre, en gigaoctets.
+    private func memoryShort() -> String {
+        let m = memoryStats()
+        let free = m.total - m.used
+        return free > 0 ? String(format: "%.1f Go", free / 1_073_741_824) : "—"
+    }
+
+    /// Le clic sur une pastille mène à ce qu'elle montre.
+    private func openChip(_ index: Int) {
+        let keys = PreviewChips.current(state)
+        guard index >= 0, index < keys.count, let c = PreviewChips.chip(keys[index]) else {
+            openPanel(); return
+        }
+        switch c.target {
+        case "storage":   openPanel(); selectTab(tabStorage)
+        case "agents":    openPanel(); selectTab(tabAgents)
+        case "mail":      openPanel(); selectTab(tabMail)
+        case "reminders": openPanel(); selectTab(tabReminders)
+        case "music":     openPanel(); selectTab(tabMusic)
+        case "focus":     openPanel(); selectTab(tabFocus)
+        default:          openPanel()
+        }
+    }
+
     // ═══════════ Ce que BUD sait faire en plus, depuis le chat ═══════════
 
     /// Verrouille la session si le Mac en offre le moyen, et dit
@@ -1955,12 +2022,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let vols = scanVolumes()
         let boot = vols.first { $0.isBoot } ?? vols.first
         let ext = vols.filter { !$0.isBoot }.count
-        chrome.chips = [
-            ("internaldrive.fill", boot.map { formatBytes($0.free) } ?? "—"),
-            (ext > 0 ? "externaldrive.fill" : "bell.badge.fill", ext > 0 ? "\(ext)" : "\(pendingAgents)"),
-            ("timer", focusTxt),
-            ("clock", clockString())
-        ]
+        chrome.chips = PreviewChips.current(state).map { key -> (String, String, NSColor?) in
+            guard let c = PreviewChips.chip(key) else { return ("questionmark", "—", nil) }
+            return (c.icon, chipValue(key, boot: boot, ext: ext, focus: focusTxt), c.color)
+        }
         chrome.progress = ratio
         if pendingAgents > 0 { chrome.badge = dangerColor }
         else if let b = boot, b.freePercent <= state.lowDiskThreshold { chrome.badge = warnColor }
@@ -2581,6 +2646,21 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                 guard let s = self else { return }
                 s.state.shortcuts = [:]
                 BudStore.shared.save(s.state)
+            }
+            w.chipsNow = { [weak self] in
+                guard let s = self else { return PreviewChips.fallback }
+                return PreviewChips.current(s.state)
+            }
+            w.onChipSet = { [weak self] slot, key in
+                guard let s = self else { return }
+                var keys = PreviewChips.current(s.state)
+                guard slot >= 0, slot < keys.count else { return }
+                keys[slot] = key
+                s.state.previewChips = keys
+                BudStore.shared.save(s.state)
+                // L'aperçu se redessine au prochain battement, mais on ne
+                // fait pas attendre : le réglage doit se voir tout de suite.
+                s.refreshChips()
             }
             shortcutsWin = w
         }
@@ -4108,6 +4188,8 @@ struct BudState: Codable {
     //  ce qui manque retombe sur le raccourci d'usine.
     var shortcuts: [String: String] = [:]
     var voiceEnabled: Bool = true     // dictée accessible depuis le chat
+    /// Les quatre pastilles de l'aperçu, par clé. Vide = celles d'usine.
+    var previewChips: [String] = []
 
     init() {}
 
@@ -4156,6 +4238,7 @@ struct BudState: Codable {
         budSkin = try c.decodeIfPresent(Int.self, forKey: .budSkin) ?? z.budSkin
         shortcuts = try c.decodeIfPresent([String: String].self, forKey: .shortcuts) ?? z.shortcuts
         voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? z.voiceEnabled
+        previewChips = try c.decodeIfPresent([String].self, forKey: .previewChips) ?? z.previewChips
         // Un état écrit par la v17 ne connaît que budPremium : on le reporte.
         if budSkin == 0 && budPremium { budSkin = 1 }
         if budSkin < 0 || budSkin > 2 { budSkin = 0 }
@@ -4317,6 +4400,72 @@ struct ShortcutAction {
     let key: String
     let label: String
     let fallback: String
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Les pastilles de l'aperçu
+//
+//  Les quatre capsules sous la salutation. Elles étaient
+//  figées — disque, disques externes, focus, heure — et
+//  purement décoratives. Elles deviennent au choix, teintées,
+//  et cliquables : chacune mène au panneau qui la concerne.
+// ═══════════════════════════════════════════════════════════
+
+struct PreviewChip {
+    let key: String
+    let label: String        // dans la fenêtre de réglage
+    let icon: String
+    let color: NSColor
+    /// L'onglet à ouvrir au clic, ou "" pour une pastille qui n'ouvre rien.
+    let target: String
+}
+
+enum PreviewChips {
+    static let catalogue: [PreviewChip] = [
+        PreviewChip(key: "disk", label: "Espace libre", icon: "internaldrive.fill",
+                    color: NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1),
+                    target: "storage"),
+        PreviewChip(key: "external", label: "Disques externes", icon: "externaldrive.fill",
+                    color: NSColor(calibratedRed: 0.36, green: 0.80, blue: 0.76, alpha: 1),
+                    target: "storage"),
+        PreviewChip(key: "agents", label: "Demandes des agents", icon: "bell.badge.fill",
+                    color: NSColor(calibratedRed: 1.00, green: 0.55, blue: 0.35, alpha: 1),
+                    target: "agents"),
+        PreviewChip(key: "focus", label: "Focus en cours", icon: "timer",
+                    color: NSColor(calibratedRed: 0.74, green: 0.47, blue: 1.00, alpha: 1),
+                    target: "focus"),
+        PreviewChip(key: "clock", label: "Heure", icon: "clock",
+                    color: NSColor(calibratedWhite: 0.80, alpha: 1), target: ""),
+        PreviewChip(key: "battery", label: "Batterie", icon: "battery.100",
+                    color: NSColor(calibratedRed: 0.40, green: 0.82, blue: 0.56, alpha: 1),
+                    target: ""),
+        PreviewChip(key: "mail", label: "Courrier non lu", icon: "envelope.fill",
+                    color: NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1),
+                    target: "mail"),
+        PreviewChip(key: "reminders", label: "Prochain rappel", icon: "checklist",
+                    color: NSColor(calibratedRed: 0.96, green: 0.69, blue: 0.27, alpha: 1),
+                    target: "reminders"),
+        PreviewChip(key: "music", label: "Lecture en cours", icon: "music.note",
+                    color: NSColor(calibratedRed: 1.00, green: 0.45, blue: 0.62, alpha: 1),
+                    target: "music"),
+        PreviewChip(key: "memory", label: "Mémoire libre", icon: "memorychip",
+                    color: NSColor(calibratedRed: 0.74, green: 0.47, blue: 1.00, alpha: 1),
+                    target: "")
+    ]
+
+    static let fallback = ["disk", "external", "focus", "clock"]
+
+    static func chip(_ key: String) -> PreviewChip? {
+        catalogue.first { $0.key == key }
+    }
+
+    /// Les quatre clés en vigueur. On revient à l'usine si l'état est vide
+    /// ou abîmé — une liste de longueur inattendue casserait la rangée.
+    static func current(_ state: BudState) -> [String] {
+        let s = state.previewChips
+        guard s.count == 4, s.allSatisfy({ chip($0) != nil }) else { return fallback }
+        return s
+    }
 }
 
 enum Shortcuts {
@@ -4565,7 +4714,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.6"
+let budVersion = "23.7"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -5937,8 +6086,10 @@ enum GmailClient {
         p.replacingOccurrences(of: " ", with: "")
     }
 
-    static func fetchInbox(user: String, password: String, limit: Int = 5) -> GmailSnapshot {
-        fetchInbox(user: user, auth: .appPassword(password), limit: limit)
+    static func fetchInbox(user: String, password: String, limit: Int = 5,
+                           snippetLimit: Int = 12) -> GmailSnapshot {
+        fetchInbox(user: user, auth: .appPassword(password), limit: limit,
+                   snippetLimit: snippetLimit)
     }
 
     /// Vérifie le couple adresse / mot de passe d'application.
@@ -5959,7 +6110,8 @@ enum GmailClient {
     }
 
     /// Non-lus et derniers messages de la boîte de réception.
-    static func fetchInbox(user: String, auth: GmailAuthMode, limit: Int = 5) -> GmailSnapshot {
+    static func fetchInbox(user: String, auth: GmailAuthMode, limit: Int = 5,
+                           snippetLimit: Int = 12) -> GmailSnapshot {
         var snap = GmailSnapshot()
         guard let s = TLSLineSocket(host: imapHost, port: 993) else {
             snap.error = "IMAP injoignable."
@@ -6012,11 +6164,16 @@ enum GmailClient {
 
         for (i, uid) in all.suffix(limit).reversed().enumerated() {
             let tag = "f\(i)"
+            // LIST-UNSUBSCRIBE, LIST-ID et PRECEDENCE servent au classement
+            // par type. Un message portant un lien de désabonnement est un
+            // envoi en masse — signal bien plus sûr qu'un mot-clé dans
+            // l'objet, puisque c'est l'expéditeur lui-même qui le déclare.
             s.write("\(tag) UID FETCH \(uid) (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE "
-                    + "REPLY-TO RETURN-PATH MESSAGE-ID AUTHENTICATION-RESULTS RECEIVED-SPF)] "
+                    + "REPLY-TO RETURN-PATH MESSAGE-ID AUTHENTICATION-RESULTS RECEIVED-SPF "
+                    + "LIST-UNSUBSCRIBE LIST-ID PRECEDENCE)] "
                     + "BODYSTRUCTURE)")
             var subject = "", from = "", date = "", replyTo = ""
-            var ret = "", mid = "", authRes = "", spf = ""
+            var ret = "", mid = "", authRes = "", spf = "", bulk = ""
             var structure = ""
             var lastKey = ""
             while let l = s.readLine() {
@@ -6047,6 +6204,10 @@ enum GmailClient {
                 case "message-id": mid = value
                 case "authentication-results": authRes = value
                 case "received-spf": spf = value
+                case "list-unsubscribe", "list-id", "precedence":
+                    // Les trois disent la même chose — « envoi en masse ».
+                    // Un seul suffit, et les réunir évite trois champs.
+                    bulk += " " + value
                 default: lastKey = ""
                 }
             }
@@ -6062,7 +6223,15 @@ enum GmailClient {
             m.spf = spf
             m.unread = unseen.contains(uid)
             m.attachments = attachmentNames(in: structure)
-            m.snippet = fetchSnippet(s, uid: uid, tag: "b\(i)")
+            m.bulkHeaders = bulk.trimmingCharacters(in: .whitespaces)
+            // Le corps n'est rapatrié que pour les premiers messages : à
+            // soixante, un aller-retour de 8 Ko chacun ferait attendre une
+            // minute avant le premier affichage. Les suivants le chargent
+            // à l'ouverture, et l'aperçu de leur ligne reste vide d'ici là.
+            if i < snippetLimit {
+                m.snippet = fetchSnippet(s, uid: uid, tag: "b\(i)")
+            }
+            m.category = MailSorter.categorize(m)
             m.threat = MailGuard.analyze(m)
             snap.messages.append(m)
         }
@@ -6128,6 +6297,34 @@ enum GmailClient {
 
     /// Déplace des messages vers le dossier indésirable du compte.
     /// Renvoie nil si tout s'est bien passé.
+    /// Rapatrie le corps d'un seul message, pour ceux que le relevé n'a
+    /// pas chargés. Une connexion pour un message : c'est le prix de ne
+    /// pas faire attendre une minute à l'ouverture de la boîte.
+    static func body(user: String, auth: GmailAuthMode, uid: String) -> String? {
+        guard !uid.isEmpty, let s = TLSLineSocket(host: imapHost, port: 993) else { return nil }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("c1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("c1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("c1 OK") { logged = true; break }
+            if l.hasPrefix("c1 NO") || l.hasPrefix("c1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return nil }
+        // EXAMINE et non SELECT : la boîte est ouverte en lecture seule,
+        // pour qu'ouvrir un message ne le marque pas comme lu à l'insu
+        // de l'utilisateur.
+        s.write("c2 EXAMINE INBOX")
+        while let l = s.readLine() { if l.hasPrefix("c2 ") { break } }
+        let body = fetchSnippet(s, uid: uid, tag: "c3")
+        s.write("c9 LOGOUT")
+        return body.isEmpty ? nil : body
+    }
+
     /// Déplace des messages vers l'indésirable.
     static func quarantine(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
         move(user: user, auth: auth, uids: uids, role: "\\Junk", fallback: "[Gmail]/Spam")
@@ -6808,6 +7005,12 @@ struct MailMessage {
         return String(flat.prefix(200))
     }
 
+    /// Les en-têtes d'envoi en masse réunis : List-Unsubscribe, List-Id,
+    /// Precedence. Trois façons de dire la même chose.
+    var bulkHeaders: String = ""
+    /// Le type auquel BUD rattache ce message.
+    var category: MailCategory = .principal
+
     /// Les deux lettres de la pastille : initiales du nom si on en a un,
     /// sinon les deux premières de l'adresse.
     var initials: String {
@@ -6862,6 +7065,125 @@ struct MailMessage {
         s = s.replacingOccurrences(of: "[ \\t\u{00A0}]+\n", with: "\n", options: .regularExpression)
         s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le classement par type
+//
+//  Quatre casiers, comme dans Mail : ce qu'on vous écrit, ce
+//  qui concerne un achat, ce qui vous informe, ce qui vous
+//  vend quelque chose.
+//
+//  Le signal décisif n'est pas dans l'objet mais dans les
+//  en-têtes : un message portant un lien de désabonnement est
+//  un envoi en masse, point. C'est une information que
+//  l'expéditeur fournit lui-même, et qu'il n'a aucun intérêt à
+//  falsifier — contrairement à un objet, qu'on écrit pour
+//  attirer l'œil. Les mots-clés ne servent qu'à départager les
+//  envois en masse entre eux, et à rattraper le cas d'une
+//  facture envoyée sans en-tête de liste.
+//
+//  Le classement ne cache rien et ne supprime rien : il range.
+//  Un message mal rangé reste visible dans « Tous ».
+// ═══════════════════════════════════════════════════════════
+
+enum MailCategory: Int, CaseIterable {
+    case principal, transactions, updates, promotions
+
+    var label: String {
+        switch self {
+        case .principal:    return "Principal"
+        case .transactions: return "Transactions"
+        case .updates:      return "Mises à jour"
+        case .promotions:   return "Promotions"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .principal:    return "person.crop.circle"
+        case .transactions: return "creditcard"
+        case .updates:      return "bell"
+        case .promotions:   return "tag"
+        }
+    }
+    var color: NSColor {
+        switch self {
+        case .principal:    return NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1)
+        case .transactions: return NSColor(calibratedRed: 0.40, green: 0.82, blue: 0.56, alpha: 1)
+        case .updates:      return NSColor(calibratedRed: 0.74, green: 0.47, blue: 1.00, alpha: 1)
+        case .promotions:   return NSColor(calibratedRed: 0.96, green: 0.69, blue: 0.27, alpha: 1)
+        }
+    }
+}
+
+enum MailSorter {
+
+    private static func norm(_ s: String) -> String {
+        s.lowercased().folding(options: [.diacriticInsensitive],
+                               locale: Locale(identifier: "fr_FR"))
+    }
+
+    private static func any(_ t: String, _ words: [String]) -> Bool {
+        words.contains { t.contains($0) }
+    }
+
+    /// Un achat, une facture, un virement, une livraison : ce qu'on garde
+    /// parce qu'on en aura besoin. Reconnu même sans en-tête de liste,
+    /// car beaucoup de confirmations partent d'un vrai serveur de gestion.
+    private static let moneyWords = [
+        "facture", "recu de", "votre recu", "votre commande", "commande n",
+        "paiement", "virement", "prelevement", "remboursement", "devis",
+        "renouvellement", "echeance", "votre abonnement",
+        "votre colis", "livraison", "expedie", "suivi de commande",
+        "reservation", "billet", "confirmation de", "numero de commande",
+        "order", "invoice", "receipt", "payment", "shipped", "delivery"
+    ]
+
+    /// Ce qui pousse à acheter. Le point d'exclamation et les pourcentages
+    /// sont caractéristiques, mais ne suffisent jamais seuls.
+    private static let saleWords = [
+        "promo", "promotion", "solde", "reduction", "-50%", "-30%", "-20%",
+        "offre", "exclusif", "vente privee", "code promo", "bon plan",
+        "derniere chance", "jusqu a -", "gratuit", "cadeau", "deal",
+        "black friday", "sale", "discount", "offer"
+    ]
+
+    /// Ce qui informe sans rien vendre.
+    private static let newsWords = [
+        "newsletter", "actualite", "infolettre", "recapitulatif", "resume de",
+        "nouveautes", "votre semaine", "digest", "notification", "alerte",
+        "mise a jour", "rapport", "a la une"
+    ]
+
+    static func categorize(_ m: MailMessage) -> MailCategory {
+        let subject = norm(m.subject)
+        let from = norm(m.sender + " " + m.address)
+        let bulk = !m.bulkHeaders.isEmpty
+
+        // Une transaction prime sur tout le reste, en masse ou non : une
+        // confirmation de commande part souvent d'une plateforme qui
+        // ajoute un lien de désabonnement, et la ranger en promotions
+        // ferait perdre la seule trace d'un achat.
+        if any(subject, moneyWords) { return .transactions }
+        if any(from, ["facture", "billing", "invoice", "commande", "order",
+                      "payment", "paiement", "no-reply@paypal", "service-client"]) {
+            return .transactions
+        }
+
+        // Sans en-tête d'envoi en masse, c'est quelqu'un qui écrit.
+        guard bulk else { return .principal }
+
+        if any(subject, saleWords) { return .promotions }
+        if any(subject, newsWords) { return .updates }
+
+        // Reste les envois en masse indécidables. Une adresse d'expédition
+        // commerciale penche vers la promotion ; sinon on informe.
+        if any(from, ["promo", "offres", "marketing", "deals", "shop",
+                      "boutique", "news@", "newsletter"]) {
+            return any(from, ["news@", "newsletter"]) ? .updates : .promotions
+        }
+        return .updates
     }
 }
 
@@ -7014,6 +7336,10 @@ enum MailBridge {
                                 sender: p[1].trimmingCharacters(in: .whitespacesAndNewlines),
                                 date: p[2].trimmingCharacters(in: .whitespacesAndNewlines))
             if p.count >= 4 { m.snippet = p[3] }
+            // Sans en-tête de liste — AppleScript ne les donne pas — le
+            // classement ne repose que sur l'objet et l'expéditeur : il
+            // reconnaîtra une facture, et rangera le reste en principal.
+            m.category = MailSorter.categorize(m)
             return m
         }
     }
@@ -7101,7 +7427,11 @@ enum MailRouter {
             return (s.unread, s.messages, sourceLabel, s.error)
         }
         guard MailBridge.mailRunning() else { return (-1, [], "Mail.app", "Mail est fermé.") }
-        return (MailBridge.unreadCount(), MailBridge.latestUnread(limit), "Mail.app", nil)
+        // La passerelle AppleScript n'a pas de chargement différé : chaque
+        // message coûte son corps dans la même réponse. Au-delà d'une
+        // vingtaine, l'attente devient sensible, donc on plafonne ici
+        // plutôt que de laisser la boîte se figer.
+        return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil)
     }
 
     static func send(to: String, subject: String, body: String, mailFrom: String,
@@ -7120,6 +7450,12 @@ enum MailRouter {
             return "Reliez un compte Gmail pour isoler des messages."
         }
         return GmailClient.quarantine(user: user, auth: auth, uids: uids)
+    }
+
+    /// Le corps d'un message que le relevé n'a pas chargé.
+    static func body(uid: String) -> String? {
+        guard let (user, auth) = mode() else { return nil }
+        return GmailClient.body(user: user, auth: auth, uid: uid)
     }
 
     /// Met des messages à la corbeille du compte. Rien n'est effacé :
@@ -7163,6 +7499,9 @@ final class MailRow: NSView {
     var onSelect: ((MailMessage) -> Void)?
     var onSwipeDelete: ((MailMessage) -> Void)?
     var onSwipeReply: ((MailMessage) -> Void)?
+    /// Mode sélection : la pastille d'initiales cède la place à une case.
+    var picking = false { didSet { needsDisplay = true } }
+    var checked = false { didSet { needsDisplay = true } }
     private var hover = false
     private var track: NSTrackingArea?
 
@@ -7316,15 +7655,30 @@ final class MailRow: NSView {
         // d'avoir lu son nom.
         let av = NSRect(x: 14, y: r.midY - 17, width: 34, height: 34)
         let tint = message.tint
-        tint.withAlphaComponent(0.26).setFill()
-        NSBezierPath(ovalIn: av).fill()
-        tint.withAlphaComponent(0.55).setStroke()
-        let ring = NSBezierPath(ovalIn: av.insetBy(dx: 0.5, dy: 0.5))
-        ring.lineWidth = 1
-        ring.stroke()
-        drawString(message.initials,
-                   in: NSRect(x: av.minX, y: av.midY - 7.5, width: av.width, height: 15),
-                   size: 12.5, weight: .bold, color: tint, align: .center)
+        if picking {
+            // La case prend exactement la place de la pastille : la colonne
+            // de texte ne bouge pas quand on entre en sélection.
+            let box = av.insetBy(dx: 5, dy: 5)
+            let p = NSBezierPath(roundedRect: box, xRadius: 7, yRadius: 7)
+            if checked {
+                TH.accent.setFill(); p.fill()
+                drawSymbol("checkmark", center: NSPoint(x: box.midX, y: box.midY),
+                           size: 12, weight: .bold, color: TH.onAccent)
+            } else {
+                TH.fill(0.10).setFill(); p.fill()
+                TH.fill(0.22).setStroke(); p.lineWidth = 1.4; p.stroke()
+            }
+        } else {
+            tint.withAlphaComponent(0.26).setFill()
+            NSBezierPath(ovalIn: av).fill()
+            tint.withAlphaComponent(0.55).setStroke()
+            let ring = NSBezierPath(ovalIn: av.insetBy(dx: 0.5, dy: 0.5))
+            ring.lineWidth = 1
+            ring.stroke()
+            drawString(message.initials,
+                       in: NSRect(x: av.minX, y: av.midY - 7.5, width: av.width, height: 15),
+                       size: 12.5, weight: .bold, color: tint, align: .center)
+        }
 
         // Trois lignes : expéditeur, objet, aperçu. Les ordonnées descendent
         // d'un pas régulier depuis le haut, ce qui garde le même interligne
@@ -7391,10 +7745,21 @@ final class MailRow: NSView {
                    size: 11.5, weight: message.unread ? .semibold : .regular,
                    color: TH.dim(message.unread ? 0.78 : 0.62))
 
+        // Le type, en petit à droite de l'aperçu : discret, mais il dit
+        // pourquoi un message se trouve dans tel onglet.
+        let catW = textWidth(message.category.label, size: 9, weight: .semibold) + 16
+        let catBox = NSRect(x: r.width - 14 - catW, y: line3.minY, width: catW, height: 14)
+        message.category.color.withAlphaComponent(0.16).setFill()
+        capsule(catBox).fill()
+        drawString(message.category.label,
+                   in: NSRect(x: catBox.minX, y: catBox.minY + 1, width: catBox.width, height: 12),
+                   size: 9, weight: .semibold,
+                   color: message.category.color.withAlphaComponent(0.85), align: .center)
+
         let preview = message.preview
         if !preview.isEmpty {
             drawString(preview,
-                       in: NSRect(x: x, y: line3.minY, width: max(60, r.width - 14 - x),
+                       in: NSRect(x: x, y: line3.minY, width: max(60, catBox.minX - 10 - x),
                                   height: line3.height),
                        size: 10.5, weight: .regular, color: TH.dim(0.34))
         }
@@ -7424,6 +7789,15 @@ final class MailPanelView: NSView {
     private var readerScroll: NSScrollView!
     private var readerText: NSTextView!
     private var deleteBtn: GlassButton!
+    // ── Tri et sélection ──
+    private var catSeg: SegmentedBar!
+    private var selectBtn: GlassButton!
+    /// 0 = tous, sinon `MailCategory(rawValue: filter - 1)`.
+    private var filter = 0
+    private var selecting = false
+    /// Les UID cochés. Un ensemble, parce que la liste se reconstruit à
+    /// chaque filtre et que les coches doivent survivre au tri.
+    private var checked: Set<String> = []
     private var selected: MailMessage?
     private var lastMessages: [MailMessage] = []
     private var replyRef: String = ""
@@ -7471,9 +7845,32 @@ final class MailPanelView: NSView {
         modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
         addSubview(modeSeg)
 
-        // Les deux modes partagent le même cadre — bord haut à 424, bord bas
-        // à 66 — pour que la bascule ne décale rien à l'écran.
-        scroll.frame = NSRect(x: 0, y: 134, width: W, height: 290)
+        // ── Barre de types, façon Mail ──
+        //
+        //  « Tous » en premier et sélectionné par défaut : un classement
+        //  qui cache du courrier dès l'ouverture serait un piège. On range,
+        //  on ne masque pas.
+        catSeg = SegmentedBar(frame: NSRect(x: 0, y: 396, width: W - 112, height: 32),
+                              items: [SegmentedBar.Item(title: "Tous", icon: nil),
+                                      SegmentedBar.Item(title: "Principal", icon: nil),
+                                      SegmentedBar.Item(title: "Transactions", icon: nil),
+                                      SegmentedBar.Item(title: "Mises à jour", icon: nil),
+                                      SegmentedBar.Item(title: "Promotions", icon: nil)],
+                              selected: 0)
+        catSeg.onSelect = { [weak self] i in
+            self?.filter = i
+            self?.rebuildList()
+        }
+        addSubview(catSeg)
+
+        selectBtn = GlassButton(frame: NSRect(x: W - 104, y: 396, width: 104, height: 32),
+                                title: "Sélection", icon: "checklist", compact: true)
+        selectBtn.onClick = { [weak self] _ in self?.toggleSelecting() }
+        addSubview(selectBtn)
+
+        // Les trois modes partagent le même cadre bas, à 66, pour que la
+        // bascule ne décale rien à l'écran.
+        scroll.frame = NSRect(x: 0, y: 134, width: W, height: 252)
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false
@@ -7650,6 +8047,34 @@ final class MailPanelView: NSView {
         select(m)
         fillReader(m)
         setMode(1)
+
+        // Les messages au-delà des premiers n'ont pas leur corps : le
+        // relevé ne le rapatrie que pour les premiers, sinon la boîte
+        // mettrait une minute à s'afficher. On le cherche maintenant,
+        // et on remplit le lecteur quand il arrive.
+        guard m.snippet.isEmpty, !m.uid.isEmpty, MailRouter.gmailReady else { return }
+        readerText.string = "Chargement du message…"
+        let uid = m.uid
+        DispatchQueue.global(qos: .userInitiated).async {
+            let body = MailRouter.body(uid: uid)
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self, s.selected?.uid == uid else { return }
+                guard let body = body, !body.isEmpty else {
+                    s.readerText.string = "Le corps de ce message n'a pas pu être rapatrié. "
+                        + "Ouvrez-le dans Mail pour le lire en entier."
+                    return
+                }
+                // On garde le corps : revenir sur ce message ne redemandera
+                // rien au serveur.
+                var filled = m
+                filled.snippet = body
+                if let i = s.lastMessages.firstIndex(where: { $0.uid == uid }) {
+                    s.lastMessages[i].snippet = body
+                }
+                s.selected = filled
+                s.fillReader(filled)
+            }
+        }
     }
 
     private func fillReader(_ m: MailMessage) {
@@ -7690,6 +8115,8 @@ final class MailPanelView: NSView {
     /// Met le message sélectionné à la corbeille du compte. Rien n'est
     /// effacé : le serveur le garde, et il se reprend depuis la corbeille.
     private func deleteSelected() {
+        // En mode sélection, le bouton agit sur tout ce qui est coché.
+        if selecting && !checked.isEmpty { deleteChecked(); return }
         guard let m = selected else {
             statusLabel.stringValue = "Choisissez d'abord un message."
             return
@@ -7720,6 +8147,77 @@ final class MailPanelView: NSView {
     }
 
     // ── Sélection d'un message ──
+
+    // ═══════════ Sélection multiple ═══════════
+
+    private func toggleSelecting() {
+        selecting.toggle()
+        if !selecting { checked.removeAll() }
+        selectBtn.selected = selecting
+        selectBtn.title = selecting ? "Terminer" : "Sélection"
+        updateSelectionStatus()
+        rebuildList()
+    }
+
+    private func toggleCheck(_ m: MailMessage) {
+        guard !m.uid.isEmpty else {
+            statusLabel.stringValue = "Ce message n'a pas d'identifiant — "
+                + "la sélection demande un compte relié."
+            return
+        }
+        if checked.contains(m.uid) { checked.remove(m.uid) } else { checked.insert(m.uid) }
+        for r in rows {
+            guard let row = r as? MailRow, row.message.uid == m.uid else { continue }
+            row.checked = checked.contains(m.uid)
+        }
+        updateSelectionStatus()
+    }
+
+    private func updateSelectionStatus() {
+        guard selecting else {
+            deleteBtn?.enabledFlag = selected != nil
+            statusLabel?.stringValue = ""
+            return
+        }
+        let n = checked.count
+        deleteBtn?.enabledFlag = n > 0
+        statusLabel?.stringValue = n == 0
+            ? "Cochez les messages à supprimer."
+            : (n == 1 ? "1 message sélectionné." : "\(n) messages sélectionnés.")
+    }
+
+    /// Supprime tout ce qui est coché, en une seule commande IMAP.
+    private func deleteChecked() {
+        let uids = Array(checked)
+        guard !uids.isEmpty else { return }
+        let a = NSAlert()
+        a.messageText = uids.count == 1
+            ? "Mettre ce message à la corbeille ?"
+            : "Mettre \(uids.count) messages à la corbeille ?"
+        a.informativeText = "Ils partent dans la corbeille du compte, d'où vous pouvez les reprendre."
+        a.addButton(withTitle: "Mettre à la corbeille")
+        a.addButton(withTitle: "Annuler")
+        a.alertStyle = .warning
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        statusLabel.stringValue = "Mise à la corbeille de \(uids.count) message(s)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let err = MailRouter.trash(uids)
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self else { return }
+                if let err = err {
+                    s.statusLabel.stringValue = err
+                } else {
+                    s.checked.removeAll()
+                    s.selecting = false
+                    s.selectBtn.selected = false
+                    s.selectBtn.title = "Sélection"
+                    s.statusLabel.stringValue = "\(uids.count) message(s) à la corbeille."
+                    s.refresh()
+                }
+            }
+        }
+    }
 
     /// Un balayage est vite fait, et parfois fait sans le vouloir : la
     /// suppression demande donc confirmation, alors que « Répondre » part
@@ -8055,7 +8553,7 @@ final class MailPanelView: NSView {
         unreadTile.set("…", hint: "lecture en cours")
         riskTile.set("…", hint: "analyse")
         DispatchQueue.global(qos: .userInitiated).async {
-            let snap = MailRouter.snapshot(8)
+            let snap = MailRouter.snapshot(60)
             DispatchQueue.main.async { [weak self] in
                 guard let s = self else { return }
                 let n = snap.unread
@@ -8075,33 +8573,58 @@ final class MailPanelView: NSView {
         }
     }
 
+    /// Reconstruit avec les messages déjà en mémoire — pour un changement
+    /// de filtre ou l'entrée en mode sélection, qui ne demandent pas de
+    /// retourner interroger le serveur.
+    private func rebuildList() { rebuildList(lastMessages) }
+
     private func rebuildList(_ msgs: [MailMessage]) {
         rows.forEach { $0.removeFromSuperview() }
         rows.removeAll()
         ThemeRegistry.shared.prune()
         lastMessages = msgs
 
+        // Le filtre ne change que ce qu'on voit : `lastMessages` garde tout,
+        // sans quoi passer sur « Promotions » puis « Tous » aurait perdu le
+        // reste de la boîte jusqu'au prochain relevé.
+        let shown: [MailMessage] = filter == 0
+            ? msgs
+            : msgs.filter { $0.category.rawValue == filter - 1 }
+
         let W = scroll.bounds.width - 6
         // 68 pt, dont 6 d'écart entre les cartes : il faut trois lignes —
         // expéditeur, objet, aperçu — là où 52 n'en tenaient que deux, et
         // encore collées l'une à l'autre.
         let rowH: CGFloat = 68
-        let totalH = max(scroll.bounds.height, CGFloat(msgs.count) * rowH)
+        let totalH = max(scroll.bounds.height, CGFloat(shown.count) * rowH)
         listHost.frame = NSRect(x: 0, y: 0, width: W, height: totalH)
 
-        if msgs.isEmpty {
-            let l = mkLabel(MailRouter.gmailReady || MailBridge.mailRunning()
-                            ? "Boîte vide." : "Aucune source de courrier.",
-                            NSRect(x: 0, y: totalH / 2 - 10, width: W, height: 20),
+        if shown.isEmpty {
+            let why: String
+            if !(MailRouter.gmailReady || MailBridge.mailRunning()) {
+                why = "Aucune source de courrier."
+            } else if filter != 0 && !msgs.isEmpty {
+                why = "Rien dans « \(MailCategory(rawValue: filter - 1)?.label ?? "") »."
+            } else {
+                why = "Boîte vide."
+            }
+            let l = mkLabel(why, NSRect(x: 0, y: totalH / 2 - 10, width: W, height: 20),
                             12, .medium, alpha: 0.35, .center)
             listHost.addSubview(l)
             rows.append(l)
             return
         }
-        for (i, m) in msgs.enumerated() {
+        for (i, m) in shown.enumerated() {
             let y = totalH - CGFloat(i + 1) * rowH + 6
             let row = MailRow(frame: NSRect(x: 0, y: y, width: W, height: rowH - 6), message: m)
-            row.onSelect = { [weak self] msg in self?.open(msg) }
+            row.picking = selecting
+            row.checked = checked.contains(m.uid) && !m.uid.isEmpty
+            row.onSelect = { [weak self] msg in
+                guard let s = self else { return }
+                // En mode sélection, un clic coche au lieu d'ouvrir : on
+                // est venu trier, pas lire.
+                if s.selecting { s.toggleCheck(msg) } else { s.open(msg) }
+            }
             row.onSwipeDelete = { [weak self] msg in
                 self?.select(msg)
                 self?.confirmSwipeDelete(msg)
@@ -8424,6 +8947,47 @@ enum MusicBridge {
         """)
     }
 
+    /// Arrêt, et non pause : Musique revient au début du morceau. Les deux
+    /// ne font pas la même chose, et un lecteur qui n'offre que « pause »
+    /// oblige à rouvrir Musique pour l'autre.
+    static func stop() { tell("stop") }
+
+    // ─────────────────────────────────────────────────────────
+    //  Volume du Mac
+    //
+    //  À ne pas confondre avec celui de Musique. `sound volume`
+    //  règle le niveau de l'application dans le mélangeur ;
+    //  `output volume` règle la sortie de la machine, celle des
+    //  touches du clavier. Baisser l'un n'agit pas sur l'autre,
+    //  et chercher pourquoi « le volume ne fait rien » quand
+    //  c'est l'autre qui est à zéro peut durer longtemps. BUD
+    //  montre donc les deux, nommés.
+    // ─────────────────────────────────────────────────────────
+
+    /// Volume de sortie du Mac, 0 à 100, et son état de coupure.
+    static func systemVolume() -> (level: Int, muted: Bool) {
+        let out = runShell("/usr/bin/osascript",
+                           ["-e", "set v to output volume of (get volume settings)",
+                            "-e", "set m to output muted of (get volume settings)",
+                            "-e", "return (v as string) & \"|\" & (m as string)"])
+        let p = out.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "|")
+        guard p.count >= 2 else { return (50, false) }
+        // Un Mac sans sortie réglable renvoie -1 : on n'en fait pas un 0,
+        // qui laisserait croire que le son est coupé.
+        let lvl = Int(p[0].trimmingCharacters(in: .whitespaces)) ?? 50
+        let muted = p[1].trimmingCharacters(in: .whitespaces).lowercased() == "true"
+        return (lvl < 0 ? 50 : min(100, lvl), muted)
+    }
+
+    static func setSystemVolume(_ v: Int) {
+        let n = max(0, min(100, v))
+        runShell("/usr/bin/osascript", ["-e", "set volume output volume \(n)"])
+    }
+
+    static func setSystemMuted(_ m: Bool) {
+        runShell("/usr/bin/osascript", ["-e", "set volume output muted \(m)"])
+    }
+
     static func setVolume(_ v: Int) {
         guard running() else { return }
         osa("tell application \"Music\" to set sound volume to \(max(0, min(100, v)))")
@@ -8574,6 +9138,12 @@ final class MusicPanelView: NSView {
     private var repeatBtn: GlassButton!
     private var volLabel: NSTextField!
     private var volSlider: NSSlider!
+    private var sysLabel: NSTextField!
+    private var sysSlider: NSSlider!
+    private var muteBtn: GlassButton!
+    private var stopBtn: GlassButton!
+    private var sysHeld = false
+    private var sysMuted = false
     private var eq: EqualizerView!
     private var hint: NSTextField!
     private var cover: CoverPlate!
@@ -8625,11 +9195,12 @@ final class MusicPanelView: NSView {
 
         // ── Transport : reculer · précédent · lecture · suivant · avancer ──
         let ty = H - 326
-        let tw = (W - 48) / 5
+        let tw = (W - 60) / 6
         let specs: [(String, () -> Void)] = [
             ("gobackward.15", { [weak self] in self?.run { MusicBridge.seek(by: -15) } }),
             ("backward.fill", { [weak self] in self?.run { MusicBridge.previous() } }),
-            ("playpause.fill", { [weak self] in self?.run { MusicBridge.playPause() } }),
+            ("play.fill", { [weak self] in self?.run { MusicBridge.playPause() } }),
+            ("stop.fill", { [weak self] in self?.run { MusicBridge.stop() } }),
             ("forward.fill", { [weak self] in self?.run { MusicBridge.next() } }),
             ("goforward.15", { [weak self] in self?.run { MusicBridge.seek(by: 15) } })
         ]
@@ -8642,6 +9213,7 @@ final class MusicPanelView: NSView {
             made.append(b)
         }
         playBtn = made[2]
+        stopBtn = made[3]
 
         // ── Aléatoire et répétition ──
         let my = ty - 60
@@ -8654,9 +9226,33 @@ final class MusicPanelView: NSView {
         repeatBtn.onClick = { [weak self] _ in self?.run { MusicBridge.cycleRepeat() } }
         [shuffleBtn, repeatBtn].forEach { addSubview($0) }
 
-        // ── Volume : un curseur plutôt que deux boutons ──
-        mkSection(self, my - 24, W, "Volume")
-        volSlider = NSSlider(frame: NSRect(x: 0, y: my - 78, width: W - 64, height: 24))
+        // ── Les deux volumes ──
+        //
+        //  Celui du Mac d'abord : c'est celui des touches du clavier, et
+        //  celui qu'on cherche neuf fois sur dix. Celui de Musique ensuite,
+        //  qui n'est que le niveau de l'application dans le mélangeur.
+        //  Les confondre, c'est passer un quart d'heure à monter l'un
+        //  pendant que l'autre est à zéro.
+        mkSection(self, my - 26, W, "Volume du Mac")
+        muteBtn = GlassButton(frame: NSRect(x: 0, y: my - 58, width: 44, height: 28),
+                              title: "", icon: "speaker.slash.fill")
+        muteBtn.onClick = { [weak self] _ in self?.toggleMute() }
+        addSubview(muteBtn)
+        sysSlider = NSSlider(frame: NSRect(x: 54, y: my - 56, width: W - 118, height: 24))
+        sysSlider.minValue = 0
+        sysSlider.maxValue = 100
+        sysSlider.doubleValue = 50
+        sysSlider.isContinuous = true
+        sysSlider.target = self
+        sysSlider.action = #selector(systemVolumeChanged(_:))
+        addSubview(sysSlider)
+        sysLabel = mkLabel("50", NSRect(x: W - 58, y: my - 56, width: 58, height: 20),
+                           13, .semibold, alpha: 0.7, .right)
+        sysLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        addSubview(sysLabel)
+
+        mkSection(self, my - 84, W, "Volume de Musique")
+        volSlider = NSSlider(frame: NSRect(x: 0, y: my - 116, width: W - 64, height: 24))
         volSlider.minValue = 0
         volSlider.maxValue = 100
         volSlider.doubleValue = 50
@@ -8664,12 +9260,12 @@ final class MusicPanelView: NSView {
         volSlider.target = self
         volSlider.action = #selector(volumeChanged(_:))
         addSubview(volSlider)
-        volLabel = mkLabel("50", NSRect(x: W - 58, y: my - 76, width: 58, height: 20),
+        volLabel = mkLabel("50", NSRect(x: W - 58, y: my - 116, width: 58, height: 20),
                            13, .semibold, alpha: 0.7, .right)
         volLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         addSubview(volLabel)
 
-        hint = NSTextField(frame: NSRect(x: 0, y: 58, width: W, height: 34))
+        hint = NSTextField(frame: NSRect(x: 0, y: 8, width: W, height: 40))
         hint.isBezeled = false
         hint.drawsBackground = false
         hint.isEditable = false
@@ -8695,6 +9291,46 @@ final class MusicPanelView: NSView {
                                      title: "Actualiser", icon: "arrow.clockwise")
         refreshBtn.onClick = { [weak self] _ in self?.refresh() }
         [openBtn, refreshBtn].forEach { addSubview($0) }
+    }
+
+    /// Le volume du Mac, écrit pendant le glissement et relu seulement
+    /// après : relire en même temps ferait sauter le curseur sous le doigt.
+    @objc private func systemVolumeChanged(_ s: NSSlider) {
+        let v = Int(s.doubleValue.rounded())
+        sysLabel.stringValue = "\(v)"
+        sysHeld = true
+        MusicBridge.setSystemVolume(v)
+        // Monter le son d'un Mac coupé doit le rallumer : autrement le
+        // curseur bouge et rien ne sort.
+        if sysMuted && v > 0 {
+            MusicBridge.setSystemMuted(false)
+            sysMuted = false
+            muteBtn.selected = false
+        }
+        NSObject.cancelPreviousPerformRequests(withTarget: self,
+                                               selector: #selector(releaseSystemVolume), object: nil)
+        perform(#selector(releaseSystemVolume), with: nil, afterDelay: 0.8)
+    }
+
+    @objc private func releaseSystemVolume() { sysHeld = false }
+
+    private func toggleMute() {
+        sysMuted.toggle()
+        MusicBridge.setSystemMuted(sysMuted)
+        muteBtn.selected = sysMuted
+        hint.stringValue = sysMuted ? "Son du Mac coupé." : "Son du Mac rétabli."
+    }
+
+    /// Relit le volume du Mac. Appelé par le sondage du panneau, pas par
+    /// un minuteur à lui : un aller-retour AppleScript par seconde pour
+    /// un curseur serait cher payé.
+    private func refreshSystemVolume() {
+        guard !sysHeld else { return }
+        let (lvl, muted) = MusicBridge.systemVolume()
+        sysSlider.doubleValue = Double(lvl)
+        sysLabel.stringValue = muted ? "coupé" : "\(lvl)"
+        sysMuted = muted
+        muteBtn.selected = muted
     }
 
     @objc private func volumeChanged(_ s: NSSlider) {
@@ -8744,6 +9380,9 @@ final class MusicPanelView: NSView {
             cover.image = nil
             cover.dim = true
             ArtworkStore.clear()
+            // Le volume du Mac ne dépend pas de Musique : il reste réglable
+            // même l'application fermée, et c'est souvent là qu'on le cherche.
+            refreshSystemVolume()
             return
         }
 
@@ -8764,6 +9403,12 @@ final class MusicPanelView: NSView {
             volSlider.doubleValue = Double(n.volume)
             volLabel.stringValue = "\(n.volume)"
         }
+        refreshSystemVolume()
+
+        // L'icône dit l'action à venir, pas l'état présent : pendant la
+        // lecture on offre la pause, à l'arrêt on offre la lecture.
+        playBtn.iconName = n.playing ? "pause.fill" : "play.fill"
+        stopBtn.enabledFlag = n.playing || n.hasTrack
 
         shuffleBtn.prominent = n.shuffle
         repeatBtn.prominent = n.repeatMode != "off"
@@ -11650,7 +12295,16 @@ final class NotchChrome: NSView {
     var greeting = "Coucou"
     var subtitle = ""
     var mono = ""                      // ligne de commande d'une demande d'agent
-    var chips: [(String, String)] = []
+    /// Icône, valeur, teinte. La teinte à `nil` garde l'ancien gris.
+    var chips: [(String, String, NSColor?)] = []
+    /// Les rectangles des pastilles, mémorisés au dessin pour savoir
+    /// laquelle est sous le curseur. Calculer la mise en page deux fois —
+    /// une pour dessiner, une pour viser — serait deux occasions de
+    /// diverger.
+    private var chipRects: [NSRect] = []
+    private var chipHover = -1
+    /// Appelé avec l'indice de la pastille cliquée.
+    var onChipClick: ((Int) -> Void)?
     var progress: CGFloat = 0
     var badge: NSColor?
     var alertCount = 0
@@ -11682,12 +12336,36 @@ final class NotchChrome: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       options: [.mouseEnteredAndExited, .mouseMoved,
+                                                 .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
     override func mouseEntered(with e: NSEvent) { onHover?(true) }
-    override func mouseExited(with e: NSEvent) { onHover?(false) }
-    override func mouseUp(with e: NSEvent) { if state != .open { onClick?() } }
+    override func mouseExited(with e: NSEvent) {
+        onHover?(false)
+        if chipHover != -1 { chipHover = -1; needsDisplay = true }
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        let i = chipIndex(at: convert(e.locationInWindow, from: nil))
+        if i != chipHover { chipHover = i; needsDisplay = true }
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        guard state != .open else { return }
+        // Une pastille cliquée mène à son panneau ; partout ailleurs, le
+        // clic ouvre BUD comme avant.
+        let i = chipIndex(at: convert(e.locationInWindow, from: nil))
+        if i >= 0 { onChipClick?(i); return }
+        onClick?()
+    }
+
+    /// L'indice de la pastille sous le point, ou -1.
+    private func chipIndex(at p: NSPoint) -> Int {
+        guard state == .glance else { return -1 }
+        for (i, r) in chipRects.enumerated() where r.contains(p) { return i }
+        return -1
+    }
 
     private func budRect() -> NSRect {
         switch state {
@@ -11915,16 +12593,22 @@ final class NotchChrome: NSView {
         if !chips.isEmpty {
             let gap: CGFloat = 8
             let cw = (b.width - 44 - gap * CGFloat(chips.count - 1)) / CGFloat(chips.count)
+            chipRects.removeAll()
             for (i, chip) in chips.enumerated() {
                 let r = NSRect(x: 22 + CGFloat(i) * (cw + gap), y: top - 128, width: cw, height: 28)
-                TH.fill(0.09).setFill()
+                chipRects.append(r)
+                let tint = chip.2 ?? TH.dim(0.68)
+                let live = (i == chipHover)
+                // La pastille survolée s'éclaire de sa propre teinte : c'est
+                // ce qui dit qu'elle se clique, sans ajouter un libellé.
+                (live ? tint.withAlphaComponent(0.20) : TH.fill(0.09)).setFill()
                 capsule(r).fill()
                 let sp = capsule(r)
-                TH.fill(0.07).setStroke()
+                (live ? tint.withAlphaComponent(0.50) : TH.fill(0.07)).setStroke()
                 sp.lineWidth = 1
                 sp.stroke()
                 drawSymbol(chip.0, center: NSPoint(x: r.minX + 17, y: r.midY), size: 11.5,
-                           weight: .semibold, color: TH.dim(0.68))
+                           weight: .semibold, color: tint)
                 let maxW = r.width - 32
                 drawString(chip.1, in: NSRect(x: r.minX + 28, y: r.midY - 8, width: maxW, height: 16),
                            size: 11.5, weight: .semibold, color: TH.text, mono: true)
@@ -12164,13 +12848,19 @@ final class ShortcutsWindow: NSWindowController {
     private var note: NSTextField!
     private var current: (String) -> String
 
+    /// Les quatre pastilles de l'aperçu en vigueur.
+    var chipsNow: () -> [String] = { PreviewChips.fallback }
+    /// Appelé quand une pastille change : l'emplacement et la nouvelle clé.
+    var onChipSet: ((Int, String) -> Void)?
+    private var chipPops: [NSPopUpButton] = []
+
     init(current: @escaping (String) -> String) {
         self.current = current
         let rows = Shortcuts.actions.count
-        let H: CGFloat = CGFloat(rows) * 42 + 132
+        let H: CGFloat = CGFloat(rows) * 42 + 132 + 96
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: H),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        w.title = "Raccourcis de BUD"
+        w.title = "Raccourcis et aperçu"
         w.isReleasedWhenClosed = false
         w.center()
         super.init(window: w)
@@ -12210,6 +12900,32 @@ final class ShortcutsWindow: NSWindowController {
             recorders[a.key] = rec
         }
 
+        // ── Les quatre pastilles de l'aperçu ──
+        let chipTop = H - 96 - CGFloat(Shortcuts.actions.count) * 42 - 18
+        let sec = mkLabel("Pastilles de l'aperçu",
+                          NSRect(x: 22, y: chipTop, width: W - 44, height: 18), 12.5, .bold)
+        content.addSubview(sec)
+        let hint2 = mkLabel("Ce que montrent les quatre capsules sous la salutation. Un clic dessus ouvre le panneau correspondant.",
+                            NSRect(x: 22, y: chipTop - 18, width: W - 44, height: 16), 10.5, .regular, alpha: 0.45)
+        content.addSubview(hint2)
+
+        let keys = chipsNow()
+        let pw = (W - 44 - 24) / 4
+        for slot in 0..<4 {
+            let pop = NSPopUpButton(frame: NSRect(x: 22 + CGFloat(slot) * (pw + 8),
+                                                  y: chipTop - 54, width: pw, height: 26))
+            for c in PreviewChips.catalogue { pop.addItem(withTitle: c.label) }
+            if slot < keys.count,
+               let i = PreviewChips.catalogue.firstIndex(where: { $0.key == keys[slot] }) {
+                pop.selectItem(at: i)
+            }
+            pop.tag = slot
+            pop.target = self
+            pop.action = #selector(chipPicked(_:))
+            content.addSubview(pop)
+            chipPops.append(pop)
+        }
+
         note = mkLabel("", NSRect(x: 22, y: 50, width: W - 44, height: 30), 11, .regular, alpha: 0.55)
         note.lineBreakMode = .byWordWrapping
         note.maximumNumberOfLines = 2
@@ -12234,9 +12950,24 @@ final class ShortcutsWindow: NSWindowController {
         content.addSubview(done)
     }
 
+    @objc private func chipPicked(_ sender: NSPopUpButton) {
+        let i = sender.indexOfSelectedItem
+        guard i >= 0, i < PreviewChips.catalogue.count else { return }
+        let c = PreviewChips.catalogue[i]
+        onChipSet?(sender.tag, c.key)
+        note.stringValue = "Pastille \(sender.tag + 1) : \(c.label)."
+        note.textColor = TH.dim(0.55)
+    }
+
     /// Relit les raccourcis en vigueur — utile si l'état a changé ailleurs.
     func refresh() {
         for a in Shortcuts.actions { recorders[a.key]?.combo = current(a.key) }
+        let keys = chipsNow()
+        for (slot, pop) in chipPops.enumerated() where slot < keys.count {
+            if let i = PreviewChips.catalogue.firstIndex(where: { $0.key == keys[slot] }) {
+                pop.selectItem(at: i)
+            }
+        }
     }
 }
 EOF_BUDUI_SWIFT

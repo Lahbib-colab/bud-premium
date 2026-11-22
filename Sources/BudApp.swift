@@ -299,6 +299,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         chrome.autoresizingMask = [.width, .height]
         chrome.onHover = { [weak self] inside in self?.hover(inside) }
         chrome.onClick = { [weak self] in self?.notchClicked() }
+        chrome.onChipClick = { [weak self] i in self?.openChip(i) }
         host.addSubview(chrome)
 
         buildApprovalBar()
@@ -1299,6 +1300,72 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         chatPanel.actions = a
     }
 
+    // ═══════════ Les pastilles de l'aperçu ═══════════
+
+    /// Ce qu'affiche une pastille. Tout doit tenir en quelques caractères :
+    /// quatre capsules se partagent 470 pt, et une valeur tronquée vaut
+    /// moins que pas de valeur du tout.
+    private func chipValue(_ key: String, boot: VolumeInfo?, ext: Int, focus: String) -> String {
+        switch key {
+        case "disk":      return boot.map { formatBytes($0.free) } ?? "—"
+        case "external":  return ext > 0 ? "\(ext)" : "—"
+        case "agents":    return pendingAgents > 0 ? "\(pendingAgents)" : "—"
+        case "focus":     return focus
+        case "clock":     return clockString()
+        case "battery":   return batteryShort()
+        case "mail":      return lastUnread >= 0 ? "\(lastUnread)" : "—"
+        case "reminders": return nextReminderShort()
+        case "music":     return nowPlayingTitle.isEmpty
+                                ? "—" : String(nowPlayingTitle.prefix(14))
+        case "memory":    return memoryShort()
+        default:          return "—"
+        }
+    }
+
+    /// « 87 % » ou « — » sur une machine sans batterie. La phrase complète
+    /// de `batteryLine()` ne tiendrait pas dans une capsule.
+    private func batteryShort() -> String {
+        let out = runShell("/usr/bin/pmset", ["-g", "batt"])
+        guard out.contains("InternalBattery"),
+              let r = out.range(of: "[0-9]{1,3}%", options: .regularExpression) else { return "—" }
+        return String(out[r])
+    }
+
+    /// L'heure du prochain rappel non fait, ou « — ».
+    private func nextReminderShort() -> String {
+        let due = ReminderStore.shared.items
+            .filter { !$0.done }
+            .sorted { $0.date < $1.date }
+        guard let n = due.first else { return "—" }
+        let f = DateFormatter(); f.locale = Locale(identifier: "fr_FR")
+        f.dateFormat = Calendar.current.isDateInToday(n.date) ? "HH:mm" : "d MMM"
+        return f.string(from: n.date)
+    }
+
+    /// Mémoire libre, en gigaoctets.
+    private func memoryShort() -> String {
+        let m = memoryStats()
+        let free = m.total - m.used
+        return free > 0 ? String(format: "%.1f Go", free / 1_073_741_824) : "—"
+    }
+
+    /// Le clic sur une pastille mène à ce qu'elle montre.
+    private func openChip(_ index: Int) {
+        let keys = PreviewChips.current(state)
+        guard index >= 0, index < keys.count, let c = PreviewChips.chip(keys[index]) else {
+            openPanel(); return
+        }
+        switch c.target {
+        case "storage":   openPanel(); selectTab(tabStorage)
+        case "agents":    openPanel(); selectTab(tabAgents)
+        case "mail":      openPanel(); selectTab(tabMail)
+        case "reminders": openPanel(); selectTab(tabReminders)
+        case "music":     openPanel(); selectTab(tabMusic)
+        case "focus":     openPanel(); selectTab(tabFocus)
+        default:          openPanel()
+        }
+    }
+
     // ═══════════ Ce que BUD sait faire en plus, depuis le chat ═══════════
 
     /// Verrouille la session si le Mac en offre le moyen, et dit
@@ -1680,12 +1747,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let vols = scanVolumes()
         let boot = vols.first { $0.isBoot } ?? vols.first
         let ext = vols.filter { !$0.isBoot }.count
-        chrome.chips = [
-            ("internaldrive.fill", boot.map { formatBytes($0.free) } ?? "—"),
-            (ext > 0 ? "externaldrive.fill" : "bell.badge.fill", ext > 0 ? "\(ext)" : "\(pendingAgents)"),
-            ("timer", focusTxt),
-            ("clock", clockString())
-        ]
+        chrome.chips = PreviewChips.current(state).map { key -> (String, String, NSColor?) in
+            guard let c = PreviewChips.chip(key) else { return ("questionmark", "—", nil) }
+            return (c.icon, chipValue(key, boot: boot, ext: ext, focus: focusTxt), c.color)
+        }
         chrome.progress = ratio
         if pendingAgents > 0 { chrome.badge = dangerColor }
         else if let b = boot, b.freePercent <= state.lowDiskThreshold { chrome.badge = warnColor }
@@ -2306,6 +2371,21 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                 guard let s = self else { return }
                 s.state.shortcuts = [:]
                 BudStore.shared.save(s.state)
+            }
+            w.chipsNow = { [weak self] in
+                guard let s = self else { return PreviewChips.fallback }
+                return PreviewChips.current(s.state)
+            }
+            w.onChipSet = { [weak self] slot, key in
+                guard let s = self else { return }
+                var keys = PreviewChips.current(s.state)
+                guard slot >= 0, slot < keys.count else { return }
+                keys[slot] = key
+                s.state.previewChips = keys
+                BudStore.shared.save(s.state)
+                // L'aperçu se redessine au prochain battement, mais on ne
+                // fait pas attendre : le réglage doit se voir tout de suite.
+                s.refreshChips()
             }
             shortcutsWin = w
         }

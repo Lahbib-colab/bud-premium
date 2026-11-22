@@ -65,6 +65,8 @@ struct BudState: Codable {
     //  ce qui manque retombe sur le raccourci d'usine.
     var shortcuts: [String: String] = [:]
     var voiceEnabled: Bool = true     // dictée accessible depuis le chat
+    /// Les quatre pastilles de l'aperçu, par clé. Vide = celles d'usine.
+    var previewChips: [String] = []
 
     init() {}
 
@@ -113,6 +115,7 @@ struct BudState: Codable {
         budSkin = try c.decodeIfPresent(Int.self, forKey: .budSkin) ?? z.budSkin
         shortcuts = try c.decodeIfPresent([String: String].self, forKey: .shortcuts) ?? z.shortcuts
         voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? z.voiceEnabled
+        previewChips = try c.decodeIfPresent([String].self, forKey: .previewChips) ?? z.previewChips
         // Un état écrit par la v17 ne connaît que budPremium : on le reporte.
         if budSkin == 0 && budPremium { budSkin = 1 }
         if budSkin < 0 || budSkin > 2 { budSkin = 0 }
@@ -274,6 +277,72 @@ struct ShortcutAction {
     let key: String
     let label: String
     let fallback: String
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Les pastilles de l'aperçu
+//
+//  Les quatre capsules sous la salutation. Elles étaient
+//  figées — disque, disques externes, focus, heure — et
+//  purement décoratives. Elles deviennent au choix, teintées,
+//  et cliquables : chacune mène au panneau qui la concerne.
+// ═══════════════════════════════════════════════════════════
+
+struct PreviewChip {
+    let key: String
+    let label: String        // dans la fenêtre de réglage
+    let icon: String
+    let color: NSColor
+    /// L'onglet à ouvrir au clic, ou "" pour une pastille qui n'ouvre rien.
+    let target: String
+}
+
+enum PreviewChips {
+    static let catalogue: [PreviewChip] = [
+        PreviewChip(key: "disk", label: "Espace libre", icon: "internaldrive.fill",
+                    color: NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1),
+                    target: "storage"),
+        PreviewChip(key: "external", label: "Disques externes", icon: "externaldrive.fill",
+                    color: NSColor(calibratedRed: 0.36, green: 0.80, blue: 0.76, alpha: 1),
+                    target: "storage"),
+        PreviewChip(key: "agents", label: "Demandes des agents", icon: "bell.badge.fill",
+                    color: NSColor(calibratedRed: 1.00, green: 0.55, blue: 0.35, alpha: 1),
+                    target: "agents"),
+        PreviewChip(key: "focus", label: "Focus en cours", icon: "timer",
+                    color: NSColor(calibratedRed: 0.74, green: 0.47, blue: 1.00, alpha: 1),
+                    target: "focus"),
+        PreviewChip(key: "clock", label: "Heure", icon: "clock",
+                    color: NSColor(calibratedWhite: 0.80, alpha: 1), target: ""),
+        PreviewChip(key: "battery", label: "Batterie", icon: "battery.100",
+                    color: NSColor(calibratedRed: 0.40, green: 0.82, blue: 0.56, alpha: 1),
+                    target: ""),
+        PreviewChip(key: "mail", label: "Courrier non lu", icon: "envelope.fill",
+                    color: NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1),
+                    target: "mail"),
+        PreviewChip(key: "reminders", label: "Prochain rappel", icon: "checklist",
+                    color: NSColor(calibratedRed: 0.96, green: 0.69, blue: 0.27, alpha: 1),
+                    target: "reminders"),
+        PreviewChip(key: "music", label: "Lecture en cours", icon: "music.note",
+                    color: NSColor(calibratedRed: 1.00, green: 0.45, blue: 0.62, alpha: 1),
+                    target: "music"),
+        PreviewChip(key: "memory", label: "Mémoire libre", icon: "memorychip",
+                    color: NSColor(calibratedRed: 0.74, green: 0.47, blue: 1.00, alpha: 1),
+                    target: "")
+    ]
+
+    static let fallback = ["disk", "external", "focus", "clock"]
+
+    static func chip(_ key: String) -> PreviewChip? {
+        catalogue.first { $0.key == key }
+    }
+
+    /// Les quatre clés en vigueur. On revient à l'usine si l'état est vide
+    /// ou abîmé — une liste de longueur inattendue casserait la rangée.
+    static func current(_ state: BudState) -> [String] {
+        let s = state.previewChips
+        guard s.count == 4, s.allSatisfy({ chip($0) != nil }) else { return fallback }
+        return s
+    }
 }
 
 enum Shortcuts {
@@ -522,7 +591,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.6"
+let budVersion = "23.7"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult

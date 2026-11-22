@@ -125,6 +125,8 @@ Survolez le haut de l'écran pour l'aperçu, cliquez pour ouvrir. Il se replie �
 
 Devant une application en plein écran, BUD s'efface complètement — réglage désactivable.
 
+Les **quatre pastilles de l'aperçu** se choisissent parmi dix — espace libre, disques externes, agents, focus, heure, batterie, courrier non lu, prochain rappel, lecture en cours, mémoire libre. Chacune porte sa teinte et **se clique** pour ouvrir le panneau qui la concerne ; celle qu'on survole s'éclaire. Le réglage est dans la fenêtre *Raccourcis et aperçu*.
+
 Dans la barre repliée, **l'heure se lit comme sur un iPhone** : en gras, collée à gauche, la date du jour à sa droite en plus discret. Les chiffres sont à largeur fixe, sinon l'heure tremblerait à chaque minute — un « 1 » est plus étroit qu'un « 8 ». Pendant la lecture d'un morceau, la pochette, l'égaliseur et le titre défilant prennent cette place.
 
 ---
@@ -201,6 +203,14 @@ Le panneau a **deux modes**, *Boîte* et *Rédiger* : ils se partageaient la mê
 
 La boîte affiche les huit derniers messages, lus ou non, chacun sur une carte cliquable de **trois lignes** : l'expéditeur avec la date à droite, l'objet, puis un **aperçu du corps**. S'y ajoutent la pastille de non-lu, le trombone d'une pièce jointe, un liseré de couleur donnant le verdict de l'analyse et, pour un message signalé, une capsule rouge ou ambre. Trois compteurs en tête : non lus, suspects, voie utilisée.
 
+La boîte montre **soixante messages**, rangés en quatre types comme dans Mail — Principal, Transactions, Mises à jour, Promotions — avec « Tous » en premier et sélectionné par défaut : un classement qui cache du courrier dès l'ouverture serait un piège.
+
+Le signal décisif n'est pas dans l'objet mais dans les en-têtes `List-Unsubscribe`, `List-Id` et `Precedence`. Un message qui porte un lien de désabonnement est un envoi en masse : l'expéditeur le déclare lui-même et n'a aucun intérêt à mentir, contrairement à un objet, qu'on écrit pour attirer l'œil. Les mots-clés ne servent qu'à départager les envois en masse entre eux. Une transaction prime sur tout le reste, car une confirmation de commande part souvent d'une plateforme qui ajoute un lien de désabonnement, et la ranger en promotions ferait perdre la seule trace d'un achat.
+
+Le bouton **Sélection** remplace chaque pastille d'initiales par une case, à l'emplacement exact de la pastille pour que la colonne de texte ne bouge pas. *Supprimer* agit alors sur tout ce qui est coché, en une seule commande IMAP.
+
+Le corps n'est rapatrié que pour les douze premiers messages ; au-delà il se charge à l'ouverture, en `EXAMINE` et non `SELECT` — **en lecture seule**, pour qu'ouvrir un message ne le marque pas comme lu à votre insu. Soixante allers-retours de 8 Ko auraient fait attendre une minute avant le premier affichage.
+
 Une **pastille d'initiales** porte la couleur de l'expéditeur, tirée de son adresse : le même correspondant garde sa teinte d'une session à l'autre, et on le reconnaît avant d'avoir lu son nom. Douze teintes, et non une roue continue, où deux adresses voisines donneraient deux couleurs qu'on ne distingue pas. La pastille de non-lu devient un écusson posé sur ce disque.
 
 **Balayez une carte.** Vers la gauche pour supprimer, vers la droite pour répondre : le fond coloré apparaît sous la carte qui glisse, et la couleur s'affirme au passage du seuil. La suppression demande confirmation — un balayage est vite fait sans le vouloir — alors que « Répondre » part directement, puisque répondre ne détruit rien. Rien n'est effacé : le message va à la **corbeille du compte**, dont le nom est demandé au serveur par son rôle `\Trash`, car il est localisé.
@@ -256,6 +266,10 @@ Le guetteur local reste armé pendant l'opération : si vous préférez cliquer 
 **Musique** — Apple Music seule, pilotée en AppleScript. Titre, artiste, album, barre de progression avec position et durée, recul et avance de 15 s, curseur de volume, lecture aléatoire, répétition (aucune, tout, ce titre). Un seul aller-retour rapporte l'état complet, chaque propriété lue dans son propre `try` : si une version de Musique n'expose plus la répétition, on perd cette information, pas la totalité.
 
 Pendant la lecture, le notch replié montre le **titre défilant** à la place de l'heure — 214 pt ne suffisent pas pour les deux, et savoir ce qui joue vaut mieux qu'une horloge présente partout ailleurs — accompagné de quatre barres d'égaliseur, et **BUD prend le rythme** par impulsions dans ses ressorts.
+
+Le lecteur règle **deux volumes, nommés** : celui du Mac — `output volume`, celui des touches du clavier, avec sa coupure du son — et celui de Musique, qui n'est que le niveau de l'application dans le mélangeur. Les confondre, c'est monter l'un pendant que l'autre est à zéro. Monter le son d'un Mac coupé le rallume, sinon le curseur bouge et rien ne sort, et le volume du Mac reste réglable même Musique fermée.
+
+Le transport offre **Arrêt** en plus de Pause : Musique revient au début du morceau, ce que la pause ne fait pas. Le bouton central montre l'action à venir plutôt que l'état présent.
 
 La **pochette** s'affiche en 68 pt dans le panneau et en vignette de 18 pt dans le notch, à gauche de l'égaliseur. En pause elle s'assombrit sans disparaître : l'album ne change pas parce que la lecture s'arrête. Sans pochette — une radio, un flux — une note de musique tient la place.
 

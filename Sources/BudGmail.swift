@@ -184,8 +184,10 @@ enum GmailClient {
         p.replacingOccurrences(of: " ", with: "")
     }
 
-    static func fetchInbox(user: String, password: String, limit: Int = 5) -> GmailSnapshot {
-        fetchInbox(user: user, auth: .appPassword(password), limit: limit)
+    static func fetchInbox(user: String, password: String, limit: Int = 5,
+                           snippetLimit: Int = 12) -> GmailSnapshot {
+        fetchInbox(user: user, auth: .appPassword(password), limit: limit,
+                   snippetLimit: snippetLimit)
     }
 
     /// Vérifie le couple adresse / mot de passe d'application.
@@ -206,7 +208,8 @@ enum GmailClient {
     }
 
     /// Non-lus et derniers messages de la boîte de réception.
-    static func fetchInbox(user: String, auth: GmailAuthMode, limit: Int = 5) -> GmailSnapshot {
+    static func fetchInbox(user: String, auth: GmailAuthMode, limit: Int = 5,
+                           snippetLimit: Int = 12) -> GmailSnapshot {
         var snap = GmailSnapshot()
         guard let s = TLSLineSocket(host: imapHost, port: 993) else {
             snap.error = "IMAP injoignable."
@@ -259,11 +262,16 @@ enum GmailClient {
 
         for (i, uid) in all.suffix(limit).reversed().enumerated() {
             let tag = "f\(i)"
+            // LIST-UNSUBSCRIBE, LIST-ID et PRECEDENCE servent au classement
+            // par type. Un message portant un lien de désabonnement est un
+            // envoi en masse — signal bien plus sûr qu'un mot-clé dans
+            // l'objet, puisque c'est l'expéditeur lui-même qui le déclare.
             s.write("\(tag) UID FETCH \(uid) (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE "
-                    + "REPLY-TO RETURN-PATH MESSAGE-ID AUTHENTICATION-RESULTS RECEIVED-SPF)] "
+                    + "REPLY-TO RETURN-PATH MESSAGE-ID AUTHENTICATION-RESULTS RECEIVED-SPF "
+                    + "LIST-UNSUBSCRIBE LIST-ID PRECEDENCE)] "
                     + "BODYSTRUCTURE)")
             var subject = "", from = "", date = "", replyTo = ""
-            var ret = "", mid = "", authRes = "", spf = ""
+            var ret = "", mid = "", authRes = "", spf = "", bulk = ""
             var structure = ""
             var lastKey = ""
             while let l = s.readLine() {
@@ -294,6 +302,10 @@ enum GmailClient {
                 case "message-id": mid = value
                 case "authentication-results": authRes = value
                 case "received-spf": spf = value
+                case "list-unsubscribe", "list-id", "precedence":
+                    // Les trois disent la même chose — « envoi en masse ».
+                    // Un seul suffit, et les réunir évite trois champs.
+                    bulk += " " + value
                 default: lastKey = ""
                 }
             }
@@ -309,7 +321,15 @@ enum GmailClient {
             m.spf = spf
             m.unread = unseen.contains(uid)
             m.attachments = attachmentNames(in: structure)
-            m.snippet = fetchSnippet(s, uid: uid, tag: "b\(i)")
+            m.bulkHeaders = bulk.trimmingCharacters(in: .whitespaces)
+            // Le corps n'est rapatrié que pour les premiers messages : à
+            // soixante, un aller-retour de 8 Ko chacun ferait attendre une
+            // minute avant le premier affichage. Les suivants le chargent
+            // à l'ouverture, et l'aperçu de leur ligne reste vide d'ici là.
+            if i < snippetLimit {
+                m.snippet = fetchSnippet(s, uid: uid, tag: "b\(i)")
+            }
+            m.category = MailSorter.categorize(m)
             m.threat = MailGuard.analyze(m)
             snap.messages.append(m)
         }
@@ -375,6 +395,34 @@ enum GmailClient {
 
     /// Déplace des messages vers le dossier indésirable du compte.
     /// Renvoie nil si tout s'est bien passé.
+    /// Rapatrie le corps d'un seul message, pour ceux que le relevé n'a
+    /// pas chargés. Une connexion pour un message : c'est le prix de ne
+    /// pas faire attendre une minute à l'ouverture de la boîte.
+    static func body(user: String, auth: GmailAuthMode, uid: String) -> String? {
+        guard !uid.isEmpty, let s = TLSLineSocket(host: imapHost, port: 993) else { return nil }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("c1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("c1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("c1 OK") { logged = true; break }
+            if l.hasPrefix("c1 NO") || l.hasPrefix("c1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return nil }
+        // EXAMINE et non SELECT : la boîte est ouverte en lecture seule,
+        // pour qu'ouvrir un message ne le marque pas comme lu à l'insu
+        // de l'utilisateur.
+        s.write("c2 EXAMINE INBOX")
+        while let l = s.readLine() { if l.hasPrefix("c2 ") { break } }
+        let body = fetchSnippet(s, uid: uid, tag: "c3")
+        s.write("c9 LOGOUT")
+        return body.isEmpty ? nil : body
+    }
+
     /// Déplace des messages vers l'indésirable.
     static func quarantine(user: String, auth: GmailAuthMode, uids: [String]) -> String? {
         move(user: user, auth: auth, uids: uids, role: "\\Junk", fallback: "[Gmail]/Spam")

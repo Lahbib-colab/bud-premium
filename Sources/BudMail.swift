@@ -52,6 +52,12 @@ struct MailMessage {
         return String(flat.prefix(200))
     }
 
+    /// Les en-têtes d'envoi en masse réunis : List-Unsubscribe, List-Id,
+    /// Precedence. Trois façons de dire la même chose.
+    var bulkHeaders: String = ""
+    /// Le type auquel BUD rattache ce message.
+    var category: MailCategory = .principal
+
     /// Les deux lettres de la pastille : initiales du nom si on en a un,
     /// sinon les deux premières de l'adresse.
     var initials: String {
@@ -106,6 +112,125 @@ struct MailMessage {
         s = s.replacingOccurrences(of: "[ \\t\u{00A0}]+\n", with: "\n", options: .regularExpression)
         s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le classement par type
+//
+//  Quatre casiers, comme dans Mail : ce qu'on vous écrit, ce
+//  qui concerne un achat, ce qui vous informe, ce qui vous
+//  vend quelque chose.
+//
+//  Le signal décisif n'est pas dans l'objet mais dans les
+//  en-têtes : un message portant un lien de désabonnement est
+//  un envoi en masse, point. C'est une information que
+//  l'expéditeur fournit lui-même, et qu'il n'a aucun intérêt à
+//  falsifier — contrairement à un objet, qu'on écrit pour
+//  attirer l'œil. Les mots-clés ne servent qu'à départager les
+//  envois en masse entre eux, et à rattraper le cas d'une
+//  facture envoyée sans en-tête de liste.
+//
+//  Le classement ne cache rien et ne supprime rien : il range.
+//  Un message mal rangé reste visible dans « Tous ».
+// ═══════════════════════════════════════════════════════════
+
+enum MailCategory: Int, CaseIterable {
+    case principal, transactions, updates, promotions
+
+    var label: String {
+        switch self {
+        case .principal:    return "Principal"
+        case .transactions: return "Transactions"
+        case .updates:      return "Mises à jour"
+        case .promotions:   return "Promotions"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .principal:    return "person.crop.circle"
+        case .transactions: return "creditcard"
+        case .updates:      return "bell"
+        case .promotions:   return "tag"
+        }
+    }
+    var color: NSColor {
+        switch self {
+        case .principal:    return NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1)
+        case .transactions: return NSColor(calibratedRed: 0.40, green: 0.82, blue: 0.56, alpha: 1)
+        case .updates:      return NSColor(calibratedRed: 0.74, green: 0.47, blue: 1.00, alpha: 1)
+        case .promotions:   return NSColor(calibratedRed: 0.96, green: 0.69, blue: 0.27, alpha: 1)
+        }
+    }
+}
+
+enum MailSorter {
+
+    private static func norm(_ s: String) -> String {
+        s.lowercased().folding(options: [.diacriticInsensitive],
+                               locale: Locale(identifier: "fr_FR"))
+    }
+
+    private static func any(_ t: String, _ words: [String]) -> Bool {
+        words.contains { t.contains($0) }
+    }
+
+    /// Un achat, une facture, un virement, une livraison : ce qu'on garde
+    /// parce qu'on en aura besoin. Reconnu même sans en-tête de liste,
+    /// car beaucoup de confirmations partent d'un vrai serveur de gestion.
+    private static let moneyWords = [
+        "facture", "recu de", "votre recu", "votre commande", "commande n",
+        "paiement", "virement", "prelevement", "remboursement", "devis",
+        "renouvellement", "echeance", "votre abonnement",
+        "votre colis", "livraison", "expedie", "suivi de commande",
+        "reservation", "billet", "confirmation de", "numero de commande",
+        "order", "invoice", "receipt", "payment", "shipped", "delivery"
+    ]
+
+    /// Ce qui pousse à acheter. Le point d'exclamation et les pourcentages
+    /// sont caractéristiques, mais ne suffisent jamais seuls.
+    private static let saleWords = [
+        "promo", "promotion", "solde", "reduction", "-50%", "-30%", "-20%",
+        "offre", "exclusif", "vente privee", "code promo", "bon plan",
+        "derniere chance", "jusqu a -", "gratuit", "cadeau", "deal",
+        "black friday", "sale", "discount", "offer"
+    ]
+
+    /// Ce qui informe sans rien vendre.
+    private static let newsWords = [
+        "newsletter", "actualite", "infolettre", "recapitulatif", "resume de",
+        "nouveautes", "votre semaine", "digest", "notification", "alerte",
+        "mise a jour", "rapport", "a la une"
+    ]
+
+    static func categorize(_ m: MailMessage) -> MailCategory {
+        let subject = norm(m.subject)
+        let from = norm(m.sender + " " + m.address)
+        let bulk = !m.bulkHeaders.isEmpty
+
+        // Une transaction prime sur tout le reste, en masse ou non : une
+        // confirmation de commande part souvent d'une plateforme qui
+        // ajoute un lien de désabonnement, et la ranger en promotions
+        // ferait perdre la seule trace d'un achat.
+        if any(subject, moneyWords) { return .transactions }
+        if any(from, ["facture", "billing", "invoice", "commande", "order",
+                      "payment", "paiement", "no-reply@paypal", "service-client"]) {
+            return .transactions
+        }
+
+        // Sans en-tête d'envoi en masse, c'est quelqu'un qui écrit.
+        guard bulk else { return .principal }
+
+        if any(subject, saleWords) { return .promotions }
+        if any(subject, newsWords) { return .updates }
+
+        // Reste les envois en masse indécidables. Une adresse d'expédition
+        // commerciale penche vers la promotion ; sinon on informe.
+        if any(from, ["promo", "offres", "marketing", "deals", "shop",
+                      "boutique", "news@", "newsletter"]) {
+            return any(from, ["news@", "newsletter"]) ? .updates : .promotions
+        }
+        return .updates
     }
 }
 
@@ -258,6 +383,10 @@ enum MailBridge {
                                 sender: p[1].trimmingCharacters(in: .whitespacesAndNewlines),
                                 date: p[2].trimmingCharacters(in: .whitespacesAndNewlines))
             if p.count >= 4 { m.snippet = p[3] }
+            // Sans en-tête de liste — AppleScript ne les donne pas — le
+            // classement ne repose que sur l'objet et l'expéditeur : il
+            // reconnaîtra une facture, et rangera le reste en principal.
+            m.category = MailSorter.categorize(m)
             return m
         }
     }
@@ -345,7 +474,11 @@ enum MailRouter {
             return (s.unread, s.messages, sourceLabel, s.error)
         }
         guard MailBridge.mailRunning() else { return (-1, [], "Mail.app", "Mail est fermé.") }
-        return (MailBridge.unreadCount(), MailBridge.latestUnread(limit), "Mail.app", nil)
+        // La passerelle AppleScript n'a pas de chargement différé : chaque
+        // message coûte son corps dans la même réponse. Au-delà d'une
+        // vingtaine, l'attente devient sensible, donc on plafonne ici
+        // plutôt que de laisser la boîte se figer.
+        return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil)
     }
 
     static func send(to: String, subject: String, body: String, mailFrom: String,
@@ -364,6 +497,12 @@ enum MailRouter {
             return "Reliez un compte Gmail pour isoler des messages."
         }
         return GmailClient.quarantine(user: user, auth: auth, uids: uids)
+    }
+
+    /// Le corps d'un message que le relevé n'a pas chargé.
+    static func body(uid: String) -> String? {
+        guard let (user, auth) = mode() else { return nil }
+        return GmailClient.body(user: user, auth: auth, uid: uid)
     }
 
     /// Met des messages à la corbeille du compte. Rien n'est effacé :
@@ -407,6 +546,9 @@ final class MailRow: NSView {
     var onSelect: ((MailMessage) -> Void)?
     var onSwipeDelete: ((MailMessage) -> Void)?
     var onSwipeReply: ((MailMessage) -> Void)?
+    /// Mode sélection : la pastille d'initiales cède la place à une case.
+    var picking = false { didSet { needsDisplay = true } }
+    var checked = false { didSet { needsDisplay = true } }
     private var hover = false
     private var track: NSTrackingArea?
 
@@ -560,15 +702,30 @@ final class MailRow: NSView {
         // d'avoir lu son nom.
         let av = NSRect(x: 14, y: r.midY - 17, width: 34, height: 34)
         let tint = message.tint
-        tint.withAlphaComponent(0.26).setFill()
-        NSBezierPath(ovalIn: av).fill()
-        tint.withAlphaComponent(0.55).setStroke()
-        let ring = NSBezierPath(ovalIn: av.insetBy(dx: 0.5, dy: 0.5))
-        ring.lineWidth = 1
-        ring.stroke()
-        drawString(message.initials,
-                   in: NSRect(x: av.minX, y: av.midY - 7.5, width: av.width, height: 15),
-                   size: 12.5, weight: .bold, color: tint, align: .center)
+        if picking {
+            // La case prend exactement la place de la pastille : la colonne
+            // de texte ne bouge pas quand on entre en sélection.
+            let box = av.insetBy(dx: 5, dy: 5)
+            let p = NSBezierPath(roundedRect: box, xRadius: 7, yRadius: 7)
+            if checked {
+                TH.accent.setFill(); p.fill()
+                drawSymbol("checkmark", center: NSPoint(x: box.midX, y: box.midY),
+                           size: 12, weight: .bold, color: TH.onAccent)
+            } else {
+                TH.fill(0.10).setFill(); p.fill()
+                TH.fill(0.22).setStroke(); p.lineWidth = 1.4; p.stroke()
+            }
+        } else {
+            tint.withAlphaComponent(0.26).setFill()
+            NSBezierPath(ovalIn: av).fill()
+            tint.withAlphaComponent(0.55).setStroke()
+            let ring = NSBezierPath(ovalIn: av.insetBy(dx: 0.5, dy: 0.5))
+            ring.lineWidth = 1
+            ring.stroke()
+            drawString(message.initials,
+                       in: NSRect(x: av.minX, y: av.midY - 7.5, width: av.width, height: 15),
+                       size: 12.5, weight: .bold, color: tint, align: .center)
+        }
 
         // Trois lignes : expéditeur, objet, aperçu. Les ordonnées descendent
         // d'un pas régulier depuis le haut, ce qui garde le même interligne
@@ -635,10 +792,21 @@ final class MailRow: NSView {
                    size: 11.5, weight: message.unread ? .semibold : .regular,
                    color: TH.dim(message.unread ? 0.78 : 0.62))
 
+        // Le type, en petit à droite de l'aperçu : discret, mais il dit
+        // pourquoi un message se trouve dans tel onglet.
+        let catW = textWidth(message.category.label, size: 9, weight: .semibold) + 16
+        let catBox = NSRect(x: r.width - 14 - catW, y: line3.minY, width: catW, height: 14)
+        message.category.color.withAlphaComponent(0.16).setFill()
+        capsule(catBox).fill()
+        drawString(message.category.label,
+                   in: NSRect(x: catBox.minX, y: catBox.minY + 1, width: catBox.width, height: 12),
+                   size: 9, weight: .semibold,
+                   color: message.category.color.withAlphaComponent(0.85), align: .center)
+
         let preview = message.preview
         if !preview.isEmpty {
             drawString(preview,
-                       in: NSRect(x: x, y: line3.minY, width: max(60, r.width - 14 - x),
+                       in: NSRect(x: x, y: line3.minY, width: max(60, catBox.minX - 10 - x),
                                   height: line3.height),
                        size: 10.5, weight: .regular, color: TH.dim(0.34))
         }
@@ -668,6 +836,15 @@ final class MailPanelView: NSView {
     private var readerScroll: NSScrollView!
     private var readerText: NSTextView!
     private var deleteBtn: GlassButton!
+    // ── Tri et sélection ──
+    private var catSeg: SegmentedBar!
+    private var selectBtn: GlassButton!
+    /// 0 = tous, sinon `MailCategory(rawValue: filter - 1)`.
+    private var filter = 0
+    private var selecting = false
+    /// Les UID cochés. Un ensemble, parce que la liste se reconstruit à
+    /// chaque filtre et que les coches doivent survivre au tri.
+    private var checked: Set<String> = []
     private var selected: MailMessage?
     private var lastMessages: [MailMessage] = []
     private var replyRef: String = ""
@@ -715,9 +892,32 @@ final class MailPanelView: NSView {
         modeSeg.onSelect = { [weak self] i in self?.setMode(i) }
         addSubview(modeSeg)
 
-        // Les deux modes partagent le même cadre — bord haut à 424, bord bas
-        // à 66 — pour que la bascule ne décale rien à l'écran.
-        scroll.frame = NSRect(x: 0, y: 134, width: W, height: 290)
+        // ── Barre de types, façon Mail ──
+        //
+        //  « Tous » en premier et sélectionné par défaut : un classement
+        //  qui cache du courrier dès l'ouverture serait un piège. On range,
+        //  on ne masque pas.
+        catSeg = SegmentedBar(frame: NSRect(x: 0, y: 396, width: W - 112, height: 32),
+                              items: [SegmentedBar.Item(title: "Tous", icon: nil),
+                                      SegmentedBar.Item(title: "Principal", icon: nil),
+                                      SegmentedBar.Item(title: "Transactions", icon: nil),
+                                      SegmentedBar.Item(title: "Mises à jour", icon: nil),
+                                      SegmentedBar.Item(title: "Promotions", icon: nil)],
+                              selected: 0)
+        catSeg.onSelect = { [weak self] i in
+            self?.filter = i
+            self?.rebuildList()
+        }
+        addSubview(catSeg)
+
+        selectBtn = GlassButton(frame: NSRect(x: W - 104, y: 396, width: 104, height: 32),
+                                title: "Sélection", icon: "checklist", compact: true)
+        selectBtn.onClick = { [weak self] _ in self?.toggleSelecting() }
+        addSubview(selectBtn)
+
+        // Les trois modes partagent le même cadre bas, à 66, pour que la
+        // bascule ne décale rien à l'écran.
+        scroll.frame = NSRect(x: 0, y: 134, width: W, height: 252)
         scroll.hasVerticalScroller = true
         scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false
@@ -894,6 +1094,34 @@ final class MailPanelView: NSView {
         select(m)
         fillReader(m)
         setMode(1)
+
+        // Les messages au-delà des premiers n'ont pas leur corps : le
+        // relevé ne le rapatrie que pour les premiers, sinon la boîte
+        // mettrait une minute à s'afficher. On le cherche maintenant,
+        // et on remplit le lecteur quand il arrive.
+        guard m.snippet.isEmpty, !m.uid.isEmpty, MailRouter.gmailReady else { return }
+        readerText.string = "Chargement du message…"
+        let uid = m.uid
+        DispatchQueue.global(qos: .userInitiated).async {
+            let body = MailRouter.body(uid: uid)
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self, s.selected?.uid == uid else { return }
+                guard let body = body, !body.isEmpty else {
+                    s.readerText.string = "Le corps de ce message n'a pas pu être rapatrié. "
+                        + "Ouvrez-le dans Mail pour le lire en entier."
+                    return
+                }
+                // On garde le corps : revenir sur ce message ne redemandera
+                // rien au serveur.
+                var filled = m
+                filled.snippet = body
+                if let i = s.lastMessages.firstIndex(where: { $0.uid == uid }) {
+                    s.lastMessages[i].snippet = body
+                }
+                s.selected = filled
+                s.fillReader(filled)
+            }
+        }
     }
 
     private func fillReader(_ m: MailMessage) {
@@ -934,6 +1162,8 @@ final class MailPanelView: NSView {
     /// Met le message sélectionné à la corbeille du compte. Rien n'est
     /// effacé : le serveur le garde, et il se reprend depuis la corbeille.
     private func deleteSelected() {
+        // En mode sélection, le bouton agit sur tout ce qui est coché.
+        if selecting && !checked.isEmpty { deleteChecked(); return }
         guard let m = selected else {
             statusLabel.stringValue = "Choisissez d'abord un message."
             return
@@ -964,6 +1194,77 @@ final class MailPanelView: NSView {
     }
 
     // ── Sélection d'un message ──
+
+    // ═══════════ Sélection multiple ═══════════
+
+    private func toggleSelecting() {
+        selecting.toggle()
+        if !selecting { checked.removeAll() }
+        selectBtn.selected = selecting
+        selectBtn.title = selecting ? "Terminer" : "Sélection"
+        updateSelectionStatus()
+        rebuildList()
+    }
+
+    private func toggleCheck(_ m: MailMessage) {
+        guard !m.uid.isEmpty else {
+            statusLabel.stringValue = "Ce message n'a pas d'identifiant — "
+                + "la sélection demande un compte relié."
+            return
+        }
+        if checked.contains(m.uid) { checked.remove(m.uid) } else { checked.insert(m.uid) }
+        for r in rows {
+            guard let row = r as? MailRow, row.message.uid == m.uid else { continue }
+            row.checked = checked.contains(m.uid)
+        }
+        updateSelectionStatus()
+    }
+
+    private func updateSelectionStatus() {
+        guard selecting else {
+            deleteBtn?.enabledFlag = selected != nil
+            statusLabel?.stringValue = ""
+            return
+        }
+        let n = checked.count
+        deleteBtn?.enabledFlag = n > 0
+        statusLabel?.stringValue = n == 0
+            ? "Cochez les messages à supprimer."
+            : (n == 1 ? "1 message sélectionné." : "\(n) messages sélectionnés.")
+    }
+
+    /// Supprime tout ce qui est coché, en une seule commande IMAP.
+    private func deleteChecked() {
+        let uids = Array(checked)
+        guard !uids.isEmpty else { return }
+        let a = NSAlert()
+        a.messageText = uids.count == 1
+            ? "Mettre ce message à la corbeille ?"
+            : "Mettre \(uids.count) messages à la corbeille ?"
+        a.informativeText = "Ils partent dans la corbeille du compte, d'où vous pouvez les reprendre."
+        a.addButton(withTitle: "Mettre à la corbeille")
+        a.addButton(withTitle: "Annuler")
+        a.alertStyle = .warning
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        statusLabel.stringValue = "Mise à la corbeille de \(uids.count) message(s)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let err = MailRouter.trash(uids)
+            DispatchQueue.main.async { [weak self] in
+                guard let s = self else { return }
+                if let err = err {
+                    s.statusLabel.stringValue = err
+                } else {
+                    s.checked.removeAll()
+                    s.selecting = false
+                    s.selectBtn.selected = false
+                    s.selectBtn.title = "Sélection"
+                    s.statusLabel.stringValue = "\(uids.count) message(s) à la corbeille."
+                    s.refresh()
+                }
+            }
+        }
+    }
 
     /// Un balayage est vite fait, et parfois fait sans le vouloir : la
     /// suppression demande donc confirmation, alors que « Répondre » part
@@ -1299,7 +1600,7 @@ final class MailPanelView: NSView {
         unreadTile.set("…", hint: "lecture en cours")
         riskTile.set("…", hint: "analyse")
         DispatchQueue.global(qos: .userInitiated).async {
-            let snap = MailRouter.snapshot(8)
+            let snap = MailRouter.snapshot(60)
             DispatchQueue.main.async { [weak self] in
                 guard let s = self else { return }
                 let n = snap.unread
@@ -1319,33 +1620,58 @@ final class MailPanelView: NSView {
         }
     }
 
+    /// Reconstruit avec les messages déjà en mémoire — pour un changement
+    /// de filtre ou l'entrée en mode sélection, qui ne demandent pas de
+    /// retourner interroger le serveur.
+    private func rebuildList() { rebuildList(lastMessages) }
+
     private func rebuildList(_ msgs: [MailMessage]) {
         rows.forEach { $0.removeFromSuperview() }
         rows.removeAll()
         ThemeRegistry.shared.prune()
         lastMessages = msgs
 
+        // Le filtre ne change que ce qu'on voit : `lastMessages` garde tout,
+        // sans quoi passer sur « Promotions » puis « Tous » aurait perdu le
+        // reste de la boîte jusqu'au prochain relevé.
+        let shown: [MailMessage] = filter == 0
+            ? msgs
+            : msgs.filter { $0.category.rawValue == filter - 1 }
+
         let W = scroll.bounds.width - 6
         // 68 pt, dont 6 d'écart entre les cartes : il faut trois lignes —
         // expéditeur, objet, aperçu — là où 52 n'en tenaient que deux, et
         // encore collées l'une à l'autre.
         let rowH: CGFloat = 68
-        let totalH = max(scroll.bounds.height, CGFloat(msgs.count) * rowH)
+        let totalH = max(scroll.bounds.height, CGFloat(shown.count) * rowH)
         listHost.frame = NSRect(x: 0, y: 0, width: W, height: totalH)
 
-        if msgs.isEmpty {
-            let l = mkLabel(MailRouter.gmailReady || MailBridge.mailRunning()
-                            ? "Boîte vide." : "Aucune source de courrier.",
-                            NSRect(x: 0, y: totalH / 2 - 10, width: W, height: 20),
+        if shown.isEmpty {
+            let why: String
+            if !(MailRouter.gmailReady || MailBridge.mailRunning()) {
+                why = "Aucune source de courrier."
+            } else if filter != 0 && !msgs.isEmpty {
+                why = "Rien dans « \(MailCategory(rawValue: filter - 1)?.label ?? "") »."
+            } else {
+                why = "Boîte vide."
+            }
+            let l = mkLabel(why, NSRect(x: 0, y: totalH / 2 - 10, width: W, height: 20),
                             12, .medium, alpha: 0.35, .center)
             listHost.addSubview(l)
             rows.append(l)
             return
         }
-        for (i, m) in msgs.enumerated() {
+        for (i, m) in shown.enumerated() {
             let y = totalH - CGFloat(i + 1) * rowH + 6
             let row = MailRow(frame: NSRect(x: 0, y: y, width: W, height: rowH - 6), message: m)
-            row.onSelect = { [weak self] msg in self?.open(msg) }
+            row.picking = selecting
+            row.checked = checked.contains(m.uid) && !m.uid.isEmpty
+            row.onSelect = { [weak self] msg in
+                guard let s = self else { return }
+                // En mode sélection, un clic coche au lieu d'ouvrir : on
+                // est venu trier, pas lire.
+                if s.selecting { s.toggleCheck(msg) } else { s.open(msg) }
+            }
             row.onSwipeDelete = { [weak self] msg in
                 self?.select(msg)
                 self?.confirmSwipeDelete(msg)

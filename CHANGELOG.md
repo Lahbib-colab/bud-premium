@@ -2,6 +2,39 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.7 — la boîte au complet, le volume du Mac, les pastilles au choix
+
+**La boîte**
+
+- **Toute la boîte** : soixante messages au lieu de huit.
+- Le corps n'est rapatrié que pour les douze premiers. Au-delà, il se charge **à l'ouverture** du message : soixante allers-retours de 8 Ko chacun auraient fait attendre une minute avant le premier affichage. Le corps chargé est conservé — y revenir ne redemande rien.
+- Ce chargement ouvre la boîte en `EXAMINE` et non `SELECT` : **en lecture seule**, pour qu'ouvrir un message ne le marque pas comme lu à votre insu.
+- Par la passerelle Mail.app, la limite reste à vingt : AppleScript n'a pas de chargement différé, chaque message coûte son corps dans la même réponse.
+
+**Classement par type**, façon Mail : Principal, Transactions, Mises à jour, Promotions — avec « Tous » en premier et sélectionné par défaut, parce qu'un classement qui cache du courrier dès l'ouverture serait un piège.
+
+- Le signal décisif n'est **pas dans l'objet** mais dans les en-têtes : `List-Unsubscribe`, `List-Id`, `Precedence`. Un message qui porte un lien de désabonnement est un envoi en masse — l'expéditeur le déclare lui-même et n'a aucun intérêt à mentir, contrairement à un objet, qu'on écrit pour attirer l'œil.
+- Une transaction prime sur tout : une confirmation de commande part souvent d'une plateforme qui ajoute un lien de désabonnement, et la ranger en promotions ferait perdre la seule trace d'un achat.
+- Règles rejouées en Python sur dix-huit cas réalistes : 18 sur 18 bien rangés, « J'ai bien reçu ton message » compris, qui reste au principal.
+- Le type s'affiche en petit sur chaque ligne : on voit pourquoi un message est là où il est.
+
+**Sélection multiple** — bouton *Sélection*, puis une case prend la place de chaque pastille d'initiales, exactement à son emplacement pour que la colonne de texte ne bouge pas. *Supprimer* agit alors sur tout ce qui est coché, en une seule commande IMAP, après confirmation.
+
+**Le lecteur**
+
+- **Le volume du Mac**, enfin, avec sa coupure du son. Jusqu'ici le curseur réglait `sound volume`, le niveau de Musique dans le mélangeur — pas `output volume`, celui des touches du clavier. Baisser l'un n'agit pas sur l'autre, et chercher pourquoi « le volume ne fait rien » quand c'est l'autre qui est à zéro peut durer longtemps. Les deux sont là, nommés.
+- Monter le son d'un Mac coupé le rallume : sinon le curseur bouge et rien ne sort.
+- Un vrai bouton **Arrêt**, distinct de Pause : Musique revient au début du morceau, ce que la pause ne fait pas.
+- Le bouton central montre l'action à venir et non l'état présent — pause pendant la lecture, lecture à l'arrêt.
+- Le volume du Mac reste réglable **même Musique fermée** : il ne dépend pas d'elle, et c'est souvent là qu'on le cherche.
+
+**Les pastilles de l'aperçu**
+
+- Les quatre capsules sous la salutation étaient figées et décoratives. Elles sont maintenant **au choix** parmi dix — espace libre, disques externes, agents, focus, heure, batterie, courrier non lu, prochain rappel, lecture en cours, mémoire libre.
+- **Teintées** chacune de sa couleur, et **cliquables** : un clic ouvre le panneau correspondant. Celle qu'on survole s'éclaire de sa propre teinte, ce qui dit qu'elle se clique sans ajouter un libellé.
+- Les rectangles sont mémorisés au dessin plutôt que recalculés pour le clic : une mise en page faite deux fois, c'est deux occasions de diverger.
+- Le réglage vit dans la fenêtre *Raccourcis et aperçu*, avec les raccourcis clavier.
+
 ## 23.6 — lire, balayer, dicter
 
 **Lire un message en entier**
