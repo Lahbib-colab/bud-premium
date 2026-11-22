@@ -2079,6 +2079,15 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let changed = (currentTab != i)
         currentTab = i
 
+        // Activer un mode mérite un accusé de réception, et c'est le
+        // personnage qui le donne : il salue quand on vient le voir,
+        // il tressaille quand on ouvre un autre panneau. Seulement au
+        // changement — rejouer l'animation sur un clic répété donnerait
+        // l'air d'une application qui n'a pas compris.
+        if changed {
+            if i == tabCompanion { avatar?.wave() } else { avatar?.react() }
+        }
+
         // L'indicateur de sélection glisse d'une entrée à l'autre
         if sidebarItems.indices.contains(i) {
             let target = sidebarItems[i].frame.insetBy(dx: 0, dy: 1)
@@ -2086,8 +2095,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                 navIndicator.frame = target
             } else {
                 NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = 0.26
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 1.2, 0.4, 1)
+                    ctx.duration = Motion.base
+                    ctx.timingFunction = Motion.enter
                     navIndicator.animator().frame = target
                 }
             }

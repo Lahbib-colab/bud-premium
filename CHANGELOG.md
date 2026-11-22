@@ -2,6 +2,24 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 23.9 — une charte, et un seul endroit d'où sortent les valeurs
+
+**`Sources/BudDesign.swift`** — la couche de jetons dont toute l'interface hérite : espacement, rayons, rôles typographiques, durées et courbes, matières et élévations.
+
+BUD est une application AppKit : il n'y a pas de CSS, et une feuille de style n'aurait rien à styler. Les jetons en tiennent le rôle — nommer les valeurs une fois, les employer partout — avec un avantage que le CSS n'aurait pas ici : le compilateur refuse un jeton qui n'existe pas.
+
+**Ce qui rend la chose structurelle.** Les seize panneaux partagent six primitives : `GlassButton` (12 fichiers), `mkCard` (9), `SegmentedBar`, `HeroHeader`, `StatTile`, `ToggleRow`. Corriger la matière à ces six endroits la corrige dans Compagnon, Chat, Agents et Courrier d'un seul coup. La cohérence n'est plus à maintenir panneau par panneau.
+
+- **Une seule fonction dessine toute surface de verre** — `drawGlass(in:radius:level:hover:tint:)` — en quatre couches toujours dans le même ordre : fond dégradé, reflet spéculaire, liseré qui s'éteint, contour de fermeture. Les intervertir donne du plastique.
+- Les boutons et la barre segmentée y passent : un bouton au repos est une surface de niveau 1 qui monte au niveau 2 sous le curseur, exactement comme une carte. C'est ce partage qui évite qu'un bouton du Courrier ait l'air d'un autre matériau qu'une carte du Chat.
+- **`mkCard` rend maintenant une carte qui se dessine** au lieu d'une vue dont on colorait le calque. Elle relit donc le thème à chaque affichage, et un changement de thème ne peut plus la laisser avec une couleur périmée. Les quarante appels existants n'ont pas bougé : le paramètre `alpha` est traduit en niveau d'élévation.
+- **Une pointe de bleu dans les fonds.** Un gris parfaitement neutre sur fond sombre paraît sale ; deux pour cent de bleu suffisent à le rendre calme, sans qu'on puisse dire pourquoi. C'est le jeton le moins visible et le plus utile de la charte.
+- **Trois durées de mouvement, pas davantage**, et des courbes asymétriques : ce qui apparaît démarre vite et ralentit, ce qui disparaît fait l'inverse. Une sortie lente donne l'impression que l'application réfléchit avant d'obéir.
+- **BUD accuse réception d'un changement de mode** : il salue quand on ouvre son panneau, il tressaille quand on en ouvre un autre — seulement au changement, car rejouer l'animation sur un clic répété donnerait l'air d'une application qui n'a pas compris.
+- L'écart entre deux groupes (12) est plus grand que l'écart au sein d'un groupe (8). Ces quatre points sont ce qui dit au regard quels éléments vont ensemble : la seule hiérarchie qui fonctionne sans libellé.
+
+**[`DESIGN.md`](DESIGN.md)** — la charte écrite, versionnée avec le code qui l'applique, y compris ce qu'elle ne fait pas : elle ne reproduit pas le verre d'iOS 26, dont aucune API n'existe en AppKit sur macOS 12.
+
 ## 23.8 — matière, lisibilité, et BUD qui danse
 
 **Lisibilité selon le thème** — un vrai défaut corrigé

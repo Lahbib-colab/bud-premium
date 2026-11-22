@@ -71,13 +71,15 @@ func mkFitLabel(_ s: String, x: CGFloat, y: CGFloat, _ size: CGFloat, _ w: NSFon
 }
 
 @discardableResult
-func mkCard(_ parent: NSView, _ f: NSRect, radius: CGFloat = 14, alpha: CGFloat = 0.06) -> NSView {
-    let v = NSView(frame: f)
-    v.wantsLayer = true
-    v.layer?.cornerRadius = radius
-    v.layer?.backgroundColor = TH.fill(alpha).cgColor
+/// Une carte de verre. `alpha` est conservé dans la signature pour les
+/// quarante appels existants, mais il ne sert plus de couleur : il est
+/// traduit en niveau d'élévation, afin que l'application entière passe
+/// au même matériau sans toucher à chaque appel.
+func mkCard(_ parent: NSView, _ f: NSRect, radius: CGFloat = Radius.m,
+            alpha: CGFloat = 0.06) -> NSView {
+    let level = alpha <= 0.05 ? 0 : (alpha <= 0.08 ? 1 : 2)
+    let v = GlassCard(frame: f, radius: radius, level: level)
     parent.addSubview(v)
-    ThemeRegistry.shared.register(box: v, alpha: alpha)
     return v
 }
 
@@ -107,7 +109,8 @@ func mkStatRow(_ parent: NSView, _ y: CGFloat, _ x: CGFloat, _ w: CGFloat,
 }
 
 func mkSection(_ parent: NSView, _ y: CGFloat, _ w: CGFloat, _ t: String) {
-    parent.addSubview(mkLabel(t.uppercased(), NSRect(x: 2, y: y, width: w, height: 14), 9.5, .bold, alpha: 0.32))
+    parent.addSubview(mkLabel(t.uppercased(), NSRect(x: 2, y: y, width: w, height: 14),
+                              Typo.micro.size, Typo.micro.weight, alpha: Typo.Ink.ghost))
 }
 
 /// Tuile de statistique : grande valeur, légende en dessous.
@@ -170,7 +173,7 @@ final class HeroHeader: NSView {
 
     override func draw(_ dirty: NSRect) {
         let r = bounds
-        let path = NSBezierPath(roundedRect: r, xRadius: 18, yRadius: 18)
+        let path = NSBezierPath(roundedRect: r, xRadius: Radius.xl, yRadius: Radius.xl)
         let a = TH.accent
         let c1 = a.withAlphaComponent(TH.dark ? 0.26 : 0.20)
         let c2 = a.withAlphaComponent(TH.dark ? 0.05 : 0.04)
@@ -193,9 +196,9 @@ final class HeroHeader: NSView {
         }
 
         drawString(titleText, in: NSRect(x: 22, y: r.height - 50, width: r.width - 160, height: 30),
-                   size: 22, weight: .bold, color: TH.text)
+                   size: Typo.display.size, weight: Typo.display.weight, color: TH.text)
         drawString(subtitleText, in: NSRect(x: 22, y: r.height - 74, width: r.width - 160, height: 20),
-                   size: 12, weight: .medium, color: TH.dim(0.6))
+                   size: Typo.body.size, weight: Typo.body.weight, color: TH.dim(Typo.Ink.muted))
         if !trailing.isEmpty {
             // La capsule ne déborde jamais sur le titre : au besoin elle
             // rétrécit, et c'est le texte qui est coupé, pas la mise en page.
@@ -462,7 +465,7 @@ final class GlassButton: NSView {
         //  constante lit comme un trait dessiné, un contour qui s'éteint
         //  vers le bas lit comme une épaisseur.
         if !enabledFlag {
-            TH.fill(0.04).setFill()
+            Surface.fill(0).setFill()
             path.fill()
         } else if prominent || selected {
             let top = tint.blended(withFraction: 0.22, of: NSColor.white) ?? tint
@@ -476,25 +479,18 @@ final class GlassButton: NSView {
             specular(path, r, strength: 0.30 + 0.12 * hoverT)
             rim(path, r, color: NSColor.white, strength: 0.42)
         } else {
-            // Un dégradé très court plutôt qu'un aplat : deux pour cent
-            // d'écart entre le haut et le bas suffisent à donner du corps.
-            let a = 0.07 + 0.07 * hoverT + 0.06 * pressT
-            if let g = NSGradient(starting: TH.fill(a + 0.025), ending: TH.fill(a)) {
-                g.draw(in: path, angle: -90)
-            } else {
-                TH.fill(a).setFill()
-                path.fill()
-            }
-            specular(path, r, strength: 0.16 + 0.10 * hoverT)
-            let gloss = NSBezierPath(roundedRect: NSRect(x: r.minX + 6, y: r.midY + 1,
-                                                         width: max(1, r.width - 12),
-                                                         height: max(1, r.height / 2 - 2)),
-                                     xRadius: r.height / 3, yRadius: r.height / 3)
-            TH.fill(0.04 + 0.03 * hoverT).setFill()
-            gloss.fill()
-            TH.fill(0.10 + 0.10 * hoverT).setStroke()
-            path.lineWidth = 1
-            path.stroke()
+            // Un bouton au repos est une surface de niveau 1 qui monte au
+            // niveau 2 sous le curseur : la même matière que les cartes,
+            // le même reflet, le même liseré. C'est ce partage qui évite
+            // qu'un bouton du Courrier ait l'air d'un autre matériau
+            // qu'une carte du Chat.
+            let hovering = hoverT > 0.5 || pressT > 0.01
+            drawGlass(in: bounds.insetBy(dx: lift, dy: lift),
+                      radius: Radius.pill(r.height), level: hovering ? 2 : 1,
+                      hover: hoverT, tint: accentTint?.withAlphaComponent(0.5))
+            // Pas de contour supplémentaire ici : `drawGlass` ferme déjà
+            // la forme. En ajouter un doublerait le trait et épaissirait
+            // le bord d'un bouton sur deux.
         }
 
         let fg: NSColor = !enabledFlag ? TH.dim(0.25)
@@ -1163,26 +1159,19 @@ final class SegmentedBar: NSView {
 
     override func draw(_ dirty: NSRect) {
         let r = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let container = NSBezierPath(roundedRect: r, xRadius: 12, yRadius: 12)
-        TH.fill(0.05).setFill()
-        container.fill()
-        TH.fill(0.09).setStroke()
-        container.lineWidth = 1
-        container.stroke()
+        // Le conteneur est creux — niveau 0 — et la cellule choisie
+        // ressort au niveau 2 : c'est le même langage d'élévation que
+        // les cartes et les boutons, et non un style propre à la barre.
+        drawGlass(in: bounds, radius: Radius.m, level: 0)
 
         let w = r.width / CGFloat(items.count)
         for (i, it) in items.enumerated() {
             let cell = NSRect(x: r.minX + CGFloat(i) * w, y: r.minY, width: w, height: r.height).insetBy(dx: 3, dy: 3)
             if i == selected {
-                TH.fill(0.16).setFill()
-                NSBezierPath(roundedRect: cell, xRadius: 9.5, yRadius: 9.5).fill()
-                TH.accent.withAlphaComponent(0.35).setStroke()
-                let p = NSBezierPath(roundedRect: cell, xRadius: 9.5, yRadius: 9.5)
-                p.lineWidth = 1
-                p.stroke()
+                drawGlass(in: cell, radius: Radius.s, level: 2,
+                          tint: TH.accent.withAlphaComponent(0.42))
             } else if i == hoverIndex {
-                TH.fill(0.07).setFill()
-                NSBezierPath(roundedRect: cell, xRadius: 9.5, yRadius: 9.5).fill()
+                drawGlass(in: cell, radius: Radius.s, level: 1, hover: 0.6)
             }
 
             let fg = i == selected ? TH.text : TH.dim(i == hoverIndex ? 0.75 : 0.5)

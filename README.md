@@ -62,6 +62,22 @@ sudo xcode-select --install
 
 ---
 
+## Charte graphique
+
+L'interface entière suit un système de jetons unique, décrit dans
+**[DESIGN.md](DESIGN.md)** et implémenté dans `Sources/BudDesign.swift` :
+espacement de base 4, six rôles typographiques à graisses contrastées,
+quatre niveaux d'élévation, trois durées de mouvement, et une seule
+fonction qui dessine toute surface de verre.
+
+BUD est une application AppKit : il n'y a pas de CSS, et les jetons en
+tiennent le rôle. Les seize panneaux partagent six primitives — bouton,
+carte, barre segmentée, entête, tuile, interrupteur — et c'est par elles
+que la charte se propage à Compagnon, Chat, Agents et Courrier sans
+avoir à les reprendre un par un.
+
+---
+
 ## Organisation du dépôt
 
 ```
