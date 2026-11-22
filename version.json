@@ -1,0 +1,5 @@
+{
+  "version": "22.0",
+  "notes": "Courrier refait : réponse avec en-têtes de fil, analyse de hameçonnage locale, quarantaine IMAP. Compilation réparée (xcrun) et diagnostic des outils de développement.",
+  "url": "https://raw.githubusercontent.com/Lahbib-colab/bud-premium/main/dist/Installer_BUD_Premium.command"
+}
