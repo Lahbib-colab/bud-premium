@@ -137,6 +137,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     func applicationDidFinishLaunching(_ n: Notification) {
         refreshTheme()
+        // Le splash en premier, avant la construction des vues : c'est
+        // précisément ce temps-là qu'il couvre. Il ne retient rien — la
+        // construction continue derrière lui et il s'efface seul.
+        SplashWindow.present()
         normalizeSessions()
         buildWindow()
         buildStatusItem()
@@ -857,7 +861,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         skinSeg = SegmentedBar(frame: NSRect(x: 0, y: 126, width: W, height: 40),
                                items: [SegmentedBar.Item(title: "À plat", icon: "square.fill"),
                                        SegmentedBar.Item(title: "Nacré", icon: "sparkle"),
-                                       SegmentedBar.Item(title: "Métal", icon: "cpu")],
+                                       SegmentedBar.Item(title: "Métal", icon: "cpu"),
+                                       SegmentedBar.Item(title: "Logo", icon: "face.smiling")],
                                selected: state.budSkin)
         skinSeg.onSelect = { [weak self] i in self?.setBudSkin(i) }
         p.addSubview(skinSeg)
@@ -879,7 +884,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     /// Change l'habillage du personnage et le fait réagir, pour qu'on voie
     /// aussitôt le nouveau rendu bouger.
     private func setBudSkin(_ i: Int) {
-        state.budSkin = max(0, min(2, i))
+        state.budSkin = max(0, min(3, i))
         // L'ancien drapeau v17 reste dans le fichier pour les retours en
         // arrière : on le garde cohérent, sinon la migration au prochain
         // lancement réimposerait le nacré.
@@ -887,7 +892,9 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         BudStore.shared.save(state)
         applyBudStyle()
         avatar?.react()
-        setStatus(["Compagnon à plat", "Compagnon nacré", "Compagnon métal"][state.budSkin])
+        setStatus(["Compagnon à plat", "Compagnon nacré", "Compagnon métal",
+                   BudArt.hasCompanion ? "Compagnon logo"
+                     : "Logo indisponible dans ce paquet : dessin conservé."][state.budSkin])
     }
 
     private func buildFocus(_ p: NSView) {
@@ -2107,7 +2114,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     /// L'habillage du personnage est global : on le pose, puis on force
     /// le redessin des deux vues qui montrent BUD.
     private func applyBudStyle() {
-        BudSprite.style = state.budSkin == 2 ? .metal : (state.budSkin == 1 ? .premium : .flat)
+        switch state.budSkin {
+        case 3:  BudSprite.style = .logo
+        case 2:  BudSprite.style = .metal
+        case 1:  BudSprite.style = .premium
+        default: BudSprite.style = .flat
+        }
         skinSeg?.selected = state.budSkin
         avatar?.needsDisplay = true
         chrome?.needsDisplay = true

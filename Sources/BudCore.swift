@@ -618,7 +618,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.5"
+let budVersion = "24.6"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult

@@ -26,6 +26,7 @@ MODE="install"
 UNIVERSAL=0
 SRC_DIR=""
 TOOLS_DIR=""
+ART_DIR=""
 APP_DIR="$HOME/Applications/BUD.app"
 DO_OPEN=1
 
@@ -34,6 +35,7 @@ while [ $# -gt 0 ]; do
     check|install) MODE="$1"; shift ;;
     --src)   SRC_DIR="$2"; shift 2 ;;
     --tools) TOOLS_DIR="$2"; shift 2 ;;
+    --art)   ART_DIR="$2"; shift 2 ;;
     --app)   APP_DIR="$2"; shift 2 ;;
     --no-open) DO_OPEN=0; shift ;;
     --universal) UNIVERSAL=1; shift ;;
@@ -45,6 +47,7 @@ done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 [ -n "$SRC_DIR" ]   || SRC_DIR="$HERE/Sources"
 [ -n "$TOOLS_DIR" ] || TOOLS_DIR="$HERE/Tools"
+[ -n "$ART_DIR" ]   || ART_DIR="$HERE/Art"
 
 if [ ! -d "$SRC_DIR" ]; then
   echo "Sources introuvables : $SRC_DIR" >&2
@@ -271,6 +274,18 @@ else
   # shellcheck disable=SC2086
   run_swiftc -O -suppress-warnings -swift-version 5 ${TARGET:+-target "$TARGET"} \
     "$SRC_DIR"/*.swift "${FRAMEWORKS[@]}" -o "$BIN"
+fi
+
+# ── Illustrations ──
+#  Le logo et ses deux calques. Copiés tels quels : ce sont les images
+#  d'origine, pas une reconstitution.
+if [ -d "$ART_DIR" ]; then
+  cp -f "$ART_DIR"/*.png "$APP_DIR/Contents/Resources/" 2>/dev/null \
+    && echo "Illustrations copiées." || echo "Aucune illustration à copier."
+else
+  # Sans illustrations, l'habillage « Logo » retombe sur le dessin
+  # vectoriel et le démarrage se passe du splash. Rien ne casse.
+  echo "Dossier Art absent : habillage vectoriel seul."
 fi
 
 # ── Icône ──

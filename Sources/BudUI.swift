@@ -718,8 +718,16 @@ final class CompanionView: NSView {
     }
 
     override func draw(_ dirty: NSRect) {
-        sprite.draw(in: bounds.insetBy(dx: 1, dy: 1), detail: bounds.width >= 40,
-                    glowColor: alertCount > 0 ? warnColor : TH.accent)
+        // L'habillage « Logo » dessine votre illustration plutôt que le
+        // personnage vectoriel. Si le paquet ne la porte pas — une
+        // installation par les sources d'une version antérieure — on
+        // retombe sur le dessin, sans case vide.
+        if BudSprite.style == .logo && BudArt.hasCompanion {
+            sprite.drawLogo(in: bounds.insetBy(dx: 1, dy: 1))
+        } else {
+            sprite.draw(in: bounds.insetBy(dx: 1, dy: 1), detail: bounds.width >= 40,
+                        glowColor: alertCount > 0 ? warnColor : TH.accent)
+        }
         if alertCount > 0 {
             let txt = alertCount > 9 ? "9+" : "\(alertCount)"
             let d: CGFloat = 18

@@ -18,7 +18,7 @@ import Cocoa
 enum BudMood { case calm, happy, alert, sleepy, wink, dizzy }
 
 /// Trois habillages : à plat, nacré-or, et métal.
-enum BudStyle { case flat, premium, metal }
+enum BudStyle { case flat, premium, metal, logo }
 
 /// Palette du personnage, indépendante du thème de l'interface.
 enum BudSkin {
@@ -284,6 +284,55 @@ final class BudSprite {
 
     /// `detail` active l'ombre portée, les reflets et les effets d'humeur
     /// (tailles moyennes et grandes).
+    /// L'habillage « Logo » : votre Ü, animé par calques.
+    ///
+    /// La même horloge et le même battement que le dessin vectoriel, pour
+    /// que les deux habillages respirent au même rythme et qu'un
+    /// changement de réglage ne change que l'apparence.
+    ///
+    /// Les billes montent et penchent, le corps se tasse. Pendant la
+    /// lecture, le rebond est franc et la tête penche en mesure — c'est
+    /// là que la séparation en deux calques paie.
+    func drawLogo(in rect: NSRect) {
+        let t = clock
+        // Respiration au repos : un sixième du rebond de la danse, assez
+        // pour qu'on voie que BUD est vivant sans qu'il s'agite.
+        let breath = (sin(t * 2.3) + 1) / 2
+        var bounce = breath * 0.18
+        var tilt = sin(t * 0.9) * 1.2
+        var squash = breath * 0.018
+
+        if equalizer {
+            // `beat` est avancé par `step()`, comme pour l'égaliseur du
+            // dessin vectoriel : la danse ne dépend pas de la cadence de
+            // rafraîchissement de la vue.
+            let b = (sin(beat * 6.2) + 1) / 2
+            bounce = 0.25 + b * 0.75
+            tilt = sin(beat * 3.1) * 7
+            squash = 0.02 + b * 0.085
+        }
+        if effectiveMood == .alert {
+            // L'alerte secoue, sans monter : une alerte qui saute de joie
+            // dit le contraire de ce qu'elle doit dire.
+            tilt = sin(t * 18) * 5
+            bounce = 0.1
+        }
+        if effectiveMood == .sleepy {
+            bounce = breath * 0.06
+            tilt = -3 + sin(t * 0.6) * 1.0
+            squash = 0.03 + breath * 0.01
+        }
+
+        let side = min(rect.width, rect.height)
+        // L'illustration est plus haute que large : on l'inscrit sur la
+        // hauteur, centrée, pour qu'elle ne se déforme jamais.
+        let h = side * 0.96
+        let w = h * 0.757          // 218 / 288, le rapport des calques
+        let box = NSRect(x: rect.midX - w / 2, y: rect.midY - h / 2,
+                         width: w, height: h)
+        BudArt.drawCompanion(in: box, beat: bounce, tilt: tilt, squash: squash)
+    }
+
     func draw(in rect: NSRect, detail: Bool, glowColor: NSColor) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let m = effectiveMood

@@ -42,12 +42,13 @@ set -e
 SUPPORT_DIR="\$HOME/Library/Application Support/BUD-Assistant"
 SRC_DIR="\$SUPPORT_DIR/src"
 TOOLS_DIR="\$SUPPORT_DIR/tools"
+ART_DIR="\$SUPPORT_DIR/art"
 
 echo "============================================================"
 echo "   BUD Premium ${VERSION} — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
-mkdir -p "\$SRC_DIR" "\$TOOLS_DIR" "\$SUPPORT_DIR/agents"
+mkdir -p "\$SRC_DIR" "\$TOOLS_DIR" "\$SUPPORT_DIR/agents" "\$ART_DIR"
 
 # Sauvegarde de l'état avant toute écriture : une mise à jour ne doit
 # jamais coûter les réglages ni les notes.
@@ -66,6 +67,21 @@ done
 emit "$REPO/Tools/MakeIcon.swift" "\$TOOLS_DIR/MakeIcon.swift" "EOF_MAKEICON_X9"
 emit "$REPO/build.sh" "\$SUPPORT_DIR/build.sh" "EOF_BUDBUILD_7K2"
 
+# Les illustrations sont binaires : elles passent en base64, seule forme
+# qui traverse un script shell sans se faire abîmer par un octet nul ou
+# une fin de ligne réinterprétée.
+#
+# « base64 -D » et non « -d » : Monterey embarque la version BSD, qui ne
+# connaît que -D ; les macOS récents acceptent les deux. -D est donc la
+# seule option qui décode de Monterey à Sequoia.
+for a in "$REPO"/Art/*.png; do
+  [ -f "$a" ] || continue
+  n="$(basename "$a")"
+  printf '\nbase64 -D > "%s" << %s\n' "\$ART_DIR/$n" "'EOF_BUDART_9X4'"
+  base64 "$a" | fold -w 76
+  printf 'EOF_BUDART_9X4\n'
+done
+
 cat <<'MID'
 
 chmod +x "$SUPPORT_DIR/build.sh"
@@ -80,7 +96,7 @@ chmod +x "$SUPPORT_DIR/bud-ask"
 xattr -cr "$SUPPORT_DIR" 2>/dev/null || true
 
 # Toute la compilation vit dans build.sh, partagé avec le dépôt.
-bash "$SUPPORT_DIR/build.sh" install --src "$SRC_DIR" --tools "$TOOLS_DIR"
+bash "$SUPPORT_DIR/build.sh" install --src "$SRC_DIR" --tools "$TOOLS_DIR" --art "$ART_DIR"
 
 echo "Passerelle agents : \"$SUPPORT_DIR/bud-ask\" \"Titre\" \"Détail\" \"$PWD\""
 TAIL

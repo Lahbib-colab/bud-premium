@@ -2,6 +2,20 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.6 — votre logo prend vie
+
+**Trois images dans le paquet**, tirées de votre illustration : le mot entier, et le Ü coupé en deux calques — les deux billes d'un côté, le U avec son visage de l'autre, sur la même toile et aux mêmes dimensions, de sorte qu'ils se superposent sans calcul.
+
+**C'est ce découpage qui rend l'animation possible sans retoucher le dessin.** Les billes montent et penchent pendant que le corps se tasse, les pieds au sol. Au repos, la respiration vaut un sixième du rebond de la danse : assez pour qu'on voie que BUD est vivant, pas assez pour qu'il s'agite. Pendant la lecture, le rebond est franc et la tête penche en mesure. En alerte, il tremble sans monter — une alerte qui saute de joie dit le contraire de ce qu'elle doit dire.
+
+**Ce que BUD n'anime pas, et pourquoi.** Le visage est peint dans le corps de votre illustration. Le faire cligner demanderait de l'effacer puis de reconstituer ce qu'il y a dessous, c'est-à-dire de repeindre votre dessin. BUD anime donc ce qui se déplace et laisse l'expression telle que vous l'avez dessinée.
+
+**L'habillage « Logo »** s'ajoute aux trois autres dans Réglages → Habillage. Les anciens restent : le dessin vectoriel sert de secours si le paquet ne porte pas les images, et il n'y a jamais de case vide.
+
+**L'écran de démarrage dure une seconde et demie et ne retient rien.** Il couvre le temps de construction des vues — sans rien à l'écran, on clique deux fois sur l'icône. BUD finit de se construire derrière lui et le splash s'efface seul ; il ne prend ni le clic ni le clavier. Un écran de démarrage qui fait attendre est pire que pas d'écran du tout. Sa progression est portée par une horloge et non par des animations enchaînées, pour qu'il sache où il en est si une trame saute.
+
+**Les images traversent l'installateur en base64.** `base64 -D` et non `-d` : Monterey embarque la version BSD, qui ne connaît que `-D`, et les macOS récents acceptent les deux. Les trois fichiers ont été décodés et comparés à l'octet près.
+
 ## 24.5 — répondre à la voix
 
 **« Hey Bud, réponds au mail de Free. »** Le mot d'activation déverrouille, la phrase qui suit est la commande.
