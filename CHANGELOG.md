@@ -2,6 +2,29 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.0 — la fenêtre réparée, le courrier instantané
+
+**Fenêtre « Raccourcis et aperçu »**
+
+- **Les menus des pastilles ne répondaient pas**, et la cause n'était pas dans les menus. L'étiquette de statut occupait 50 à 80 points, les menus 60 à 86 : elle les recouvrait de vingt points. Posée après eux, elle était au-dessus — et un `NSTextField`, même non modifiable, reste une cible de clic. Elle avalait donc tout ce qui leur était destiné. Les deux symptômes, texte chevauché et contrôles inertes, n'en faisaient qu'un.
+- Par précaution, l'étiquette ne prend plus aucun clic, quelle que soit sa position : une ligne de statut n'a rien à intercepter.
+- **Les intitulés étaient tronqués** — « Disques ex… », « Focus en c… ». Quatre menus de front recevaient 113 points chacun. Deux rangées de deux leur en donnent 252, où « Disques externes » tient en entier.
+- **La fenêtre passait derrière BUD.** Le panneau de BUD vit au niveau `.statusBar` ; une fenêtre ordinaire se retrouvait dessous dès qu'on rouvrait le panneau, et devenait inatteignable. C'est maintenant un `NSPanel` flottant, placé juste au-dessus, qui peut encore devenir fenêtre clé — nécessaire, car le capteur de raccourci écoute par un moniteur local, qui ne reçoit les touches que si la fenêtre a le focus.
+
+**Courrier — le corps n'est plus pollué**
+
+`fetchSnippet` gardait **toutes** les lignes de la réponse IMAP, y compris celle qui l'ouvre — `* 9284 FETCH (UID 9284 BODY[1]<0> {2048}` — et la parenthèse qui la ferme. La commande s'affichait donc en tête du message, et était en plus donnée à l'analyse de hameçonnage comme si c'était du texte de l'expéditeur. Les deux lignes d'encadrement sont écartées, et le cas du corps court renvoyé entre guillemets sur la même ligne est traité. Rejoué sur quatre formes de réponse réelles.
+
+**Courrier — affichage instantané**
+
+- **Un cache sur disque.** La boîte s'affiche immédiatement avec le dernier état connu, au lieu d'une liste vide pendant que le serveur répond. Le cache est lié au compte : changer de compte l'efface, car montrer le courrier du compte précédent serait une fuite et non une optimisation.
+- **Un sondage qui coûte un aller-retour.** `STATUS INBOX (UIDNEXT UNSEEN)` dit si quelque chose a bougé sans rapatrier un seul message. Le relevé complet — session TLS, authentification, recherche, soixante en-têtes, douze corps — n'a lieu que si la réponse a changé.
+- **Une synchronisation de fond** toutes les quatre-vingt-dix secondes, hors du fil principal, avec une tolérance de vingt secondes pour se grouper avec les autres réveils du système. Le courrier arrive tout seul ; « Actualiser » n'est plus obligatoire.
+- La liste n'est **redessinée que si elle a changé** : repeindre soixante cartes identiques ferait sauter le défilement et perdrait la sélection pour rien.
+- « Actualiser » impose le relevé complet et saute le sondage, car il doit aussi voir ce que le sondage ne détecte pas — une suppression faite depuis un autre appareil.
+
+**Ce que ce n'est pas.** Pas du push. IMAP IDLE demanderait de tenir une connexion ouverte en permanence, de la rouvrir à chaque réveil de veille et de gérer son expiration toutes les vingt-neuf minutes. C'est faisable ; ce n'est pas fait ici, et le sondage intelligent en donne l'essentiel pour une fraction du risque.
+
 ## 23.9 — une charte, et un seul endroit d'où sortent les valeurs
 
 **`Sources/BudDesign.swift`** — la couche de jetons dont toute l'interface hérite : espacement, rayons, rôles typographiques, durées et courbes, matières et élévations.

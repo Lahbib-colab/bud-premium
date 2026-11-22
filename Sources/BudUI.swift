@@ -1309,14 +1309,35 @@ final class ShortcutsWindow: NSWindowController {
     var onChipSet: ((Int, String) -> Void)?
     private var chipPops: [NSPopUpButton] = []
 
+    /// Largeur et hauteur fixes : la fenêtre n'est pas redimensionnable, et
+    /// toute la mise en page part de ces deux nombres.
+    private static let W: CGFloat = 560
+    private static var H: CGFloat { CGFloat(Shortcuts.actions.count) * 42 + 322 }
+
     init(current: @escaping (String) -> String) {
         self.current = current
-        let rows = Shortcuts.actions.count
-        let H: CGFloat = CGFloat(rows) * 42 + 132 + 96
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: H),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let H = ShortcutsWindow.H
+
+        // Un NSPanel, et non une fenêtre ordinaire.
+        //
+        //  Le panneau de BUD vit au niveau `.statusBar`, au-dessus de tout.
+        //  Une fenêtre de niveau normal passait donc derrière lui dès qu'on
+        //  le rouvrait, et devenait inatteignable sans replier BUD. Le
+        //  panneau se place juste au-dessus, et `isFloatingPanel` le garde
+        //  devant les autres fenêtres de l'application.
+        //
+        //  Il doit pouvoir devenir fenêtre clé : le capteur de raccourci
+        //  écoute par un moniteur local, qui ne reçoit les touches que si
+        //  la fenêtre a le focus.
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: ShortcutsWindow.W, height: H),
+                        styleMask: [.titled, .closable, .utilityWindow],
+                        backing: .buffered, defer: false)
         w.title = "Raccourcis et aperçu"
         w.isReleasedWhenClosed = false
+        w.isFloatingPanel = true
+        w.hidesOnDeactivate = false
+        w.becomesKeyOnlyIfNeeded = false
+        w.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         w.center()
         super.init(window: w)
         build(H)
@@ -1325,17 +1346,17 @@ final class ShortcutsWindow: NSWindowController {
 
     private func build(_ H: CGFloat) {
         guard let content = window?.contentView else { return }
-        let W: CGFloat = 520
+        let W = ShortcutsWindow.W
 
         let title = mkLabel("Choisissez vos raccourcis",
-                            NSRect(x: 22, y: H - 44, width: W - 44, height: 22), 15, .bold)
+                            NSRect(x: 22, y: H - 42, width: W - 44, height: 22), 15, .bold)
         content.addSubview(title)
         let sub = mkLabel("Cliquez un raccourci, puis tapez la combinaison. Échap annule.",
-                          NSRect(x: 22, y: H - 64, width: W - 44, height: 16), 11.5, .regular, alpha: 0.5)
+                          NSRect(x: 22, y: H - 66, width: W - 44, height: 16), 11.5, .regular, alpha: 0.5)
         content.addSubview(sub)
 
         for (i, a) in Shortcuts.actions.enumerated() {
-            let y = H - 96 - CGFloat(i) * 42
+            let y = H - 98 - CGFloat(i) * 42
             let lab = mkLabel(a.label, NSRect(x: 22, y: y, width: W - 190, height: 20), 12.5, .medium)
             content.addSubview(lab)
 
@@ -1363,19 +1384,24 @@ final class ShortcutsWindow: NSWindowController {
         }
 
         // ── Les quatre pastilles de l'aperçu ──
-        let chipTop = H - 96 - CGFloat(Shortcuts.actions.count) * 42 - 18
+        //
+        //  Deux rangées de deux, et non quatre de front. À quatre, chaque
+        //  menu recevait 113 points et tronquait ses intitulés — « Disques
+        //  ex… », « Focus en c… ». Deux par rangée en donnent 252, où
+        //  « Disques externes » tient en entier.
         let sec = mkLabel("Pastilles de l'aperçu",
-                          NSRect(x: 22, y: chipTop, width: W - 44, height: 18), 12.5, .bold)
+                          NSRect(x: 22, y: 194, width: W - 44, height: 18), 12.5, .bold)
         content.addSubview(sec)
         let hint2 = mkLabel("Ce que montrent les quatre capsules sous la salutation. Un clic dessus ouvre le panneau correspondant.",
-                            NSRect(x: 22, y: chipTop - 18, width: W - 44, height: 16), 10.5, .regular, alpha: 0.45)
+                            NSRect(x: 22, y: 170, width: W - 44, height: 16), 10.5, .regular, alpha: 0.45)
         content.addSubview(hint2)
 
         let keys = chipsNow()
-        let pw = (W - 44 - 24) / 4
+        let pw = (W - 44 - 12) / 2
         for slot in 0..<4 {
-            let pop = NSPopUpButton(frame: NSRect(x: 22 + CGFloat(slot) * (pw + 8),
-                                                  y: chipTop - 54, width: pw, height: 26))
+            let col = CGFloat(slot % 2), row = CGFloat(slot / 2)
+            let pop = NSPopUpButton(frame: NSRect(x: 22 + col * (pw + 12),
+                                                  y: 134 - row * 34, width: pw, height: 28))
             for c in PreviewChips.catalogue { pop.addItem(withTitle: c.label) }
             if slot < keys.count,
                let i = PreviewChips.catalogue.firstIndex(where: { $0.key == keys[slot] }) {
@@ -1388,14 +1414,23 @@ final class ShortcutsWindow: NSWindowController {
             chipPops.append(pop)
         }
 
-        note = mkLabel("", NSRect(x: 22, y: 50, width: W - 44, height: 30), 11, .regular, alpha: 0.55)
+        // La note de statut vivait à 50..80 et les menus à 60..86 : elle les
+        // recouvrait de vingt points. Posée après eux, elle était au-dessus,
+        // et comme un NSTextField reste une cible de clic même non
+        // modifiable, elle avalait les clics destinés aux menus. C'est
+        // pourquoi ils paraissaient inertes : ils ne recevaient rien.
+        note = mkLabel("", NSRect(x: 22, y: 58, width: W - 44, height: 32), 11, .regular, alpha: 0.55)
         note.lineBreakMode = .byWordWrapping
         note.maximumNumberOfLines = 2
         note.cell?.usesSingleLineMode = false
         note.cell?.wraps = true
+        // Et par précaution, elle ne prend plus aucun clic : une étiquette
+        // de statut n'a rien à intercepter, quelle que soit sa position.
+        note.isSelectable = false
+        note.refusesFirstResponder = true
         content.addSubview(note)
 
-        let reset = GlassButton(frame: NSRect(x: 22, y: 12, width: 190, height: 34),
+        let reset = GlassButton(frame: NSRect(x: 22, y: 14, width: 210, height: 34),
                                 title: "Rendre les raccourcis d'usine", icon: "arrow.counterclockwise")
         reset.onClick = { [weak self] _ in
             guard let s = self else { return }
@@ -1406,7 +1441,7 @@ final class ShortcutsWindow: NSWindowController {
         }
         content.addSubview(reset)
 
-        let done = GlassButton(frame: NSRect(x: W - 122, y: 12, width: 100, height: 34),
+        let done = GlassButton(frame: NSRect(x: W - 122, y: 14, width: 100, height: 34),
                                title: "Terminé", icon: "checkmark", prominent: true)
         done.onClick = { [weak self] _ in self?.window?.close() }
         content.addSubview(done)

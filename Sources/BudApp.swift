@@ -614,9 +614,17 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         cleanPanel.onCleaned = { [weak self] in self?.storagePanel.refresh(animated: true) }
         chatPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         mailPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
+        // La boîte se tient à jour d'elle-même : sondage toutes les
+        // quatre-vingt-dix secondes, relevé complet seulement si le serveur
+        // dit que quelque chose a changé.
+        mailPanel.followBackgroundSync()
+        MailSync.shared.warmUp()
+        if MailRouter.gmailReady { MailSync.shared.startPolling() }
         mailPanel.fromAddress = { [weak self] in self?.state.mailFrom ?? "" }
         mailPanel.onAccountChange = { [weak self] addr in
             guard let s = self else { return }
+            MailSync.shared.forget()
+            MailSync.shared.startPolling()
             if GmailAuth.shared.isConnected {
                 s.state.oauthEmail = GmailAuth.shared.email
                 s.state.gmailAccount = ""

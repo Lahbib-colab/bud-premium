@@ -41,7 +41,7 @@ enum ThreatLevel: Int {
     }
 }
 
-struct MailThreat {
+struct MailThreat: Codable {
     var score: Int = 0
     var reasons: [String] = []
 

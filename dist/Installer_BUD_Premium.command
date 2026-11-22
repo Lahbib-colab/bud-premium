@@ -6,7 +6,7 @@ SRC_DIR="$SUPPORT_DIR/src"
 TOOLS_DIR="$SUPPORT_DIR/tools"
 
 echo "============================================================"
-echo "   BUD Premium 23.9 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 24.0 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents"
@@ -889,9 +889,17 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         cleanPanel.onCleaned = { [weak self] in self?.storagePanel.refresh(animated: true) }
         chatPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         mailPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
+        // La boîte se tient à jour d'elle-même : sondage toutes les
+        // quatre-vingt-dix secondes, relevé complet seulement si le serveur
+        // dit que quelque chose a changé.
+        mailPanel.followBackgroundSync()
+        MailSync.shared.warmUp()
+        if MailRouter.gmailReady { MailSync.shared.startPolling() }
         mailPanel.fromAddress = { [weak self] in self?.state.mailFrom ?? "" }
         mailPanel.onAccountChange = { [weak self] addr in
             guard let s = self else { return }
+            MailSync.shared.forget()
+            MailSync.shared.startPolling()
             if GmailAuth.shared.isConnected {
                 s.state.oauthEmail = GmailAuth.shared.email
                 s.state.gmailAccount = ""
@@ -4764,7 +4772,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "23.9"
+let budVersion = "24.0"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -6401,6 +6409,10 @@ struct GmailSnapshot {
     var unread = 0
     var messages: [MailMessage] = []
     var error: String?
+    /// Le prochain identifiant que le serveur attribuera. C'est ce qui
+    /// permet de savoir qu'il n'y a rien de neuf sans rapatrier un seul
+    /// message : si UIDNEXT n'a pas bougé, aucun message n'est arrivé.
+    var uidNext: String = ""
     var ok: Bool { error == nil }
 }
 
@@ -6493,6 +6505,13 @@ enum GmailClient {
             if l.hasPrefix("a4 ") { break }
         }
         if all.isEmpty { all = Array(unseen) }
+
+        // Le prochain identifiant se déduit du plus grand rencontré. On
+        // l'enregistre pour que le sondage de fond puisse comparer sans
+        // refaire ce travail.
+        if let maxUID = all.compactMap({ Int($0) }).max() {
+            snap.uidNext = String(maxUID + 1)
+        }
 
         for (i, uid) in all.suffix(limit).reversed().enumerated() {
             let tag = "f\(i)"
@@ -6597,8 +6616,33 @@ enum GmailClient {
         s.write("\(tag) UID FETCH \(uid) (BODY.PEEK[1]<0.8192>)")
         var lines: [String] = []
         var total = 0
+        var first = true
         while let l = s.readLine() {
             if l.hasPrefix("\(tag) ") { break }
+
+            // La réponse d'un FETCH n'est pas que le corps. Elle s'ouvre sur
+            // une ligne non étiquetée — « * 9284 FETCH (UID 9284 BODY[1]<0>
+            // {2048} » — et se referme sur une parenthèse seule. Les garder
+            // revenait à afficher la commande IMAP en tête du message, ce
+            // qu'on voyait dans le lecteur, et à la donner à l'analyse de
+            // hameçonnage comme si c'était du texte de l'expéditeur.
+            if first {
+                first = false
+                if l.hasPrefix("*") && l.uppercased().contains("FETCH") {
+                    // Corps court : certains serveurs le renvoient entre
+                    // guillemets sur cette même ligne plutôt qu'en littéral.
+                    if let q = l.range(of: "BODY[", options: .caseInsensitive),
+                       let open = l.range(of: "\"", range: q.upperBound..<l.endIndex),
+                       let close = l.range(of: "\"", options: .backwards),
+                       open.upperBound <= close.lowerBound {
+                        lines.append(String(l[open.upperBound..<close.lowerBound]))
+                    }
+                    continue
+                }
+            }
+            // La parenthèse de fermeture, seule sur sa ligne.
+            if l.trimmingCharacters(in: .whitespaces) == ")" { continue }
+
             if total < maxChars {
                 lines.append(l)
                 total += l.count
@@ -6629,6 +6673,51 @@ enum GmailClient {
 
     /// Déplace des messages vers le dossier indésirable du compte.
     /// Renvoie nil si tout s'est bien passé.
+    /// L'état de la boîte en une commande, sans rapatrier un seul message :
+    /// le prochain identifiant et le nombre de non-lus.
+    ///
+    /// C'est la clé du sondage de fond. Un relevé complet ouvre une session
+    /// TLS, s'authentifie, cherche, puis rapatrie soixante en-têtes et douze
+    /// corps : plusieurs secondes. Un STATUS, lui, coûte un aller-retour.
+    /// On sonde donc souvent avec STATUS, et on ne paie le relevé complet
+    /// que lorsqu'il a vraiment changé quelque chose.
+    ///
+    /// Ce que cela ne voit pas : une suppression faite ailleurs ne change ni
+    /// UIDNEXT ni le nombre de non-lus si le message était déjà lu. Le
+    /// bouton Actualiser reste donc utile, et il force le relevé complet.
+    static func status(user: String, auth: GmailAuthMode) -> (uidNext: String, unseen: Int)? {
+        guard let s = TLSLineSocket(host: imapHost, port: 993) else { return nil }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("s1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("s1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("s1 OK") { logged = true; break }
+            if l.hasPrefix("s1 NO") || l.hasPrefix("s1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return nil }
+
+        s.write("s2 STATUS INBOX (UIDNEXT UNSEEN)")
+        var next = "", unseen = -1
+        while let l = s.readLine() {
+            if l.hasPrefix("s2 ") { break }
+            if l.hasPrefix("*") && l.uppercased().contains("STATUS") {
+                if let r = l.range(of: "UIDNEXT ([0-9]+)", options: .regularExpression) {
+                    next = String(l[r]).components(separatedBy: " ").last ?? ""
+                }
+                if let r = l.range(of: "UNSEEN ([0-9]+)", options: .regularExpression) {
+                    unseen = Int(String(l[r]).components(separatedBy: " ").last ?? "") ?? -1
+                }
+            }
+        }
+        s.write("s9 LOGOUT")
+        return next.isEmpty ? nil : (next, unseen)
+    }
+
     /// Rapatrie le corps d'un seul message, pour ceux que le relevé n'a
     /// pas chargés. Une connexion pour un message : c'est le prix de ne
     /// pas faire attendre une minute à l'ouverture de la boîte.
@@ -6867,7 +6956,7 @@ enum ThreatLevel: Int {
     }
 }
 
-struct MailThreat {
+struct MailThreat: Codable {
     var score: Int = 0
     var reasons: [String] = []
 
@@ -7292,7 +7381,7 @@ import Cocoa
 //  d'API, aucune connexion sortante de notre fait.
 // ═══════════════════════════════════════════════════════════
 
-struct MailMessage {
+struct MailMessage: Codable {
     let subject: String
     let sender: String
     let date: String
@@ -7420,7 +7509,7 @@ struct MailMessage {
 //  Un message mal rangé reste visible dans « Tous ».
 // ═══════════════════════════════════════════════════════════
 
-enum MailCategory: Int, CaseIterable {
+enum MailCategory: Int, CaseIterable, Codable {
     case principal, transactions, updates, promotions
 
     var label: String {
@@ -7753,17 +7842,20 @@ enum MailRouter {
         return nil
     }
 
-    static func snapshot(_ limit: Int = 5) -> (unread: Int, msgs: [MailMessage], source: String, error: String?) {
+    static func snapshot(_ limit: Int = 5)
+        -> (unread: Int, msgs: [MailMessage], source: String, error: String?, uidNext: String) {
         if let (user, auth) = mode() {
             let s = GmailClient.fetchInbox(user: user, auth: auth, limit: limit)
-            return (s.unread, s.messages, sourceLabel, s.error)
+            return (s.unread, s.messages, sourceLabel, s.error, s.uidNext)
         }
-        guard MailBridge.mailRunning() else { return (-1, [], "Mail.app", "Mail est fermé.") }
+        guard MailBridge.mailRunning() else { return (-1, [], "Mail.app", "Mail est fermé.", "") }
         // La passerelle AppleScript n'a pas de chargement différé : chaque
         // message coûte son corps dans la même réponse. Au-delà d'une
         // vingtaine, l'attente devient sensible, donc on plafonne ici
         // plutôt que de laisser la boîte se figer.
-        return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil)
+        // La passerelle n'a pas d'identifiants : pas de sondage possible,
+        // donc pas de uidNext. Le relevé complet aura toujours lieu.
+        return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil, "")
     }
 
     static func send(to: String, subject: String, body: String, mailFrom: String,
@@ -7782,6 +7874,14 @@ enum MailRouter {
             return "Reliez un compte Gmail pour isoler des messages."
         }
         return GmailClient.quarantine(user: user, auth: auth, uids: uids)
+    }
+
+    /// L'état de la boîte en un aller-retour, pour le sondage de fond.
+    /// `nil` quand le compte n'est pas relié ou que le serveur n'a pas
+    /// répondu : l'appelant fait alors le relevé complet.
+    static func status() -> (uidNext: String, unseen: Int)? {
+        guard let (user, auth) = mode() else { return nil }
+        return GmailClient.status(user: user, auth: auth)
     }
 
     /// Le corps d'un message que le relevé n'a pas chargé.
@@ -8127,6 +8227,10 @@ final class MailPanelView: NSView {
     /// 0 = tous, sinon `MailCategory(rawValue: filter - 1)`.
     private var filter = 0
     private var selecting = false
+    /// Posé par le bouton « Actualiser » : saute le sondage et impose le
+    /// relevé complet, car il doit aussi voir ce que le sondage ne détecte
+    /// pas — une suppression faite depuis un autre appareil, par exemple.
+    private var forceFullSync = false
     /// Les UID cochés. Un ensemble, parce que la liste se reconstruit à
     /// chaque filtre et que les coches doivent survivre au tri.
     private var checked: Set<String> = []
@@ -8145,6 +8249,16 @@ final class MailPanelView: NSView {
     var onStatus: ((String) -> Void)?
     var fromAddress: () -> String = { "" }
     var onAccountChange: ((String) -> Void)?
+
+    /// Branche le panneau sur la synchronisation de fond : quand du
+    /// courrier arrive pendant qu'on fait autre chose, la liste se met à
+    /// jour toute seule au lieu d'attendre un clic sur « Actualiser ».
+    func followBackgroundSync() {
+        MailSync.shared.onUpdate = { [weak self] c in
+            guard let s = self, !s.selecting else { return }   // pas pendant un tri
+            s.apply(c, pending: false)
+        }
+    }
 
     override init(frame: NSRect) {
         hero = HeroHeader(frame: NSRect(x: 0, y: frame.height - 92, width: frame.width, height: 92),
@@ -8333,7 +8447,11 @@ final class MailPanelView: NSView {
             ("Supprimer", "trash.fill", false, { [weak self] in self?.deleteSelected() }),
             ("Analyser", "shield.lefthalf.filled", false, { [weak self] in self?.analyzeAll() }),
             ("Compte", "person.crop.circle", false, { [weak self] in self?.accountDialog() }),
-            ("Actualiser", "arrow.clockwise", false, { [weak self] in self?.refresh() })
+            ("Actualiser", "arrow.clockwise", false, { [weak self] in
+                self?.forceFullSync = true
+                self?.statusLabel.stringValue = "Relevé complet…"
+                self?.refresh()
+            })
         ]
         var made: [GlassButton] = []
         for (i, sp) in specs.enumerated() {
@@ -8882,27 +9000,49 @@ final class MailPanelView: NSView {
             return
         }
 
-        unreadTile.set("…", hint: "lecture en cours")
-        riskTile.set("…", hint: "analyse")
-        DispatchQueue.global(qos: .userInitiated).async {
-            let snap = MailRouter.snapshot(60)
-            DispatchQueue.main.async { [weak self] in
-                guard let s = self else { return }
-                let n = snap.unread
-                s.unreadTile.set(n < 0 ? "—" : "\(n)",
-                                 hint: n < 0 ? (snap.error ?? "indisponible")
-                                             : (n == 0 ? "boîte à jour" : "à lire"))
-                s.hero.set(subtitle: n <= 0 ? "Rien à lire pour l'instant · \(snap.source)"
-                                            : "\(n) message(s) non lus · \(snap.source)",
-                           trailing: n > 0 ? "\(n) non lus" : "")
-                let danger = snap.msgs.filter { $0.threat.level == .dangerous }.count
-                let suspect = snap.msgs.filter { $0.threat.level == .suspect }.count
-                s.riskTile.set(danger > 0 ? "\(danger)" : "\(suspect)",
-                               hint: danger > 0 ? "dangereux" : (suspect > 0 ? "suspects" : "rien à signaler"))
-                s.rebuildList(snap.msgs)
-                if let e = snap.error { s.statusLabel.stringValue = e }
-            }
+        // D'abord ce qu'on sait déjà. La boîte s'affiche instantanément
+        // avec le dernier état connu, au lieu d'une liste vide pendant que
+        // le serveur répond. C'est le changement qui se remarque le plus.
+        let known = MailSync.shared.warmUp()
+        if !known.messages.isEmpty {
+            apply(known, pending: true)
+        } else {
+            unreadTile.set("…", hint: "lecture en cours")
+            riskTile.set("…", hint: "analyse")
         }
+
+        // Puis la mise à jour, hors du fil principal. Le sondage décide
+        // s'il faut un relevé complet ; si rien n'a bougé, rien n'est
+        // redessiné et l'affichage ne scintille pas.
+        MailSync.shared.sync(force: forceFullSync) { [weak self] c, err in
+            guard let s = self else { return }
+            s.forceFullSync = false
+            if let e = err { s.statusLabel.stringValue = e }
+            s.apply(c, pending: false)
+        }
+    }
+
+    /// Peint la boîte à partir d'un état connu.
+    ///
+    /// `pending` dit que cet état vient du cache et qu'une vérification est
+    /// en cours : les tuiles le signalent, sans faire disparaître la liste.
+    private func apply(_ c: MailSync.Cached, pending: Bool) {
+        let n = c.unread
+        unreadTile.set("\(n)", hint: pending ? "vérification…"
+                                            : (n == 0 ? "boîte à jour" : "à lire"))
+        hero.set(subtitle: n <= 0 ? "Rien à lire pour l'instant · \(c.source)"
+                                  : "\(n) message(s) non lus · \(c.source)",
+                 trailing: n > 0 ? "\(n) non lus" : "")
+        let danger = c.messages.filter { $0.threat.level == .dangerous }.count
+        let suspect = c.messages.filter { $0.threat.level == .suspect }.count
+        riskTile.set(danger > 0 ? "\(danger)" : "\(suspect)",
+                     hint: danger > 0 ? "dangereux" : (suspect > 0 ? "suspects" : "rien à signaler"))
+        // On ne reconstruit la liste que si elle a changé : redessiner
+        // soixante cartes identiques ferait sauter le défilement et
+        // perdrait la sélection pour rien.
+        let sameSet = c.messages.count == lastMessages.count
+            && zip(c.messages, lastMessages).allSatisfy { $0.uid == $1.uid && $0.unread == $1.unread }
+        if !sameSet || lastMessages.isEmpty { rebuildList(c.messages) }
     }
 
     /// Reconstruit avec les messages déjà en mémoire — pour un changement
@@ -9034,6 +9174,180 @@ final class MailPanelView: NSView {
     }
 }
 EOF_BUDMAIL_SWIFT
+
+cat << 'EOF_BUDMAILSYNC_SWIFT' > "$SRC_DIR/BudMailSync.swift"
+import Cocoa
+
+// ═══════════════════════════════════════════════════════════
+//  Synchronisation du courrier
+//
+//  Le défaut auquel ce fichier répond : ouvrir l'onglet Courrier
+//  lançait un relevé complet et affichait une liste vide en
+//  attendant. Session TLS, authentification, recherche, soixante
+//  en-têtes, douze corps — plusieurs secondes de page blanche, à
+//  chaque ouverture, pour des messages qui n'avaient pas changé
+//  depuis la précédente.
+//
+//  Trois mesures, dans cet ordre d'importance :
+//
+//  1. Un cache sur disque. La boîte s'affiche instantanément avec
+//     ce qu'on savait d'elle, puis se met à jour si besoin. On ne
+//     regarde plus jamais une liste vide.
+//
+//  2. Un sondage qui coûte un aller-retour. `STATUS INBOX
+//     (UIDNEXT UNSEEN)` dit si quelque chose a bougé sans
+//     rapatrier un seul message. Le relevé complet n'a lieu que
+//     si la réponse a changé.
+//
+//  3. Un relevé de fond, à intervalle régulier et hors du fil
+//     principal. L'utilisateur n'a plus à cliquer « Actualiser »
+//     pour voir arriver son courrier.
+//
+//  Ce que ce fichier ne prétend pas être : du push. IMAP IDLE
+//  demanderait de tenir une connexion ouverte en permanence, de
+//  la rouvrir à chaque réveil de veille et de gérer son
+//  expiration toutes les vingt-neuf minutes. C'est faisable, ce
+//  n'est pas fait ici, et le sondage intelligent en donne
+//  l'essentiel pour une fraction du risque.
+// ═══════════════════════════════════════════════════════════
+
+final class MailSync {
+
+    static let shared = MailSync()
+
+    /// Ce qu'on garde d'un relevé, sur disque entre deux lancements.
+    struct Cached: Codable {
+        var savedAt: TimeInterval = 0
+        /// L'adresse du compte au moment de l'enregistrement. Changer de
+        /// compte doit vider la boîte affichée : montrer le courrier du
+        /// compte précédent serait une fuite, pas un cache.
+        var account: String = ""
+        var unread: Int = 0
+        var source: String = ""
+        var uidNext: String = ""
+        var messages: [MailMessage] = []
+    }
+
+    private(set) var cached = Cached()
+    private var loaded = false
+    private var syncing = false
+    private var timer: Timer?
+
+    /// Appelé sur le fil principal quand la boîte a changé.
+    var onUpdate: ((Cached) -> Void)?
+
+    private var url: URL { budSupportDir.appendingPathComponent("inbox-cache.json") }
+
+    private init() {}
+
+    // ─────────────────────────────────────────────────────────
+    //  Le cache
+    // ─────────────────────────────────────────────────────────
+
+    /// Rend ce qu'on sait de la boîte, tout de suite. Le fichier n'est lu
+    /// qu'une fois par session : les ouvertures suivantes sont servies
+    /// depuis la mémoire.
+    @discardableResult
+    func warmUp() -> Cached {
+        guard !loaded else { return cached }
+        loaded = true
+        if let d = try? Data(contentsOf: url),
+           let c = try? JSONDecoder().decode(Cached.self, from: d) {
+            // Un cache qui n'est pas celui du compte relié ne vaut rien.
+            if c.account == MailRouter.activeAddress { cached = c }
+        }
+        return cached
+    }
+
+    private func persist() {
+        let e = JSONEncoder()
+        guard let d = try? e.encode(cached) else { return }
+        try? d.write(to: url, options: .atomic)
+    }
+
+    /// Efface le cache. À appeler quand on change de compte.
+    func forget() {
+        cached = Cached()
+        loaded = true
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  La synchronisation
+    // ─────────────────────────────────────────────────────────
+
+    /// Met la boîte à jour hors du fil principal.
+    ///
+    /// `force` saute le sondage et fait le relevé complet : c'est ce que
+    /// demande le bouton « Actualiser », qui doit aussi voir ce que le
+    /// sondage ne détecte pas — une suppression faite ailleurs, par exemple.
+    func sync(force: Bool = false, done: ((Cached, String?) -> Void)? = nil) {
+        guard !syncing else { done?(cached, nil); return }
+        syncing = true
+        let account = MailRouter.activeAddress
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let s = self else { return }
+
+            // Étape 1 : sonder, sauf si l'on nous demande de ne pas le faire.
+            if !force, !s.cached.messages.isEmpty, s.cached.account == account,
+               let (next, unseen) = MailRouter.status(),
+               next == s.cached.uidNext, unseen == s.cached.unread {
+                DispatchQueue.main.async {
+                    s.syncing = false
+                    done?(s.cached, nil)          // rien de neuf, rien à redessiner
+                }
+                return
+            }
+
+            // Étape 2 : le relevé complet, puisqu'il a lieu d'être.
+            let snap = MailRouter.snapshot(60)
+            DispatchQueue.main.async {
+                s.syncing = false
+                guard snap.error == nil, snap.unread >= 0 || !snap.msgs.isEmpty else {
+                    done?(s.cached, snap.error)
+                    return
+                }
+                var c = Cached()
+                c.savedAt = Date().timeIntervalSince1970
+                c.account = account
+                c.unread = max(0, snap.unread)
+                c.source = snap.source
+                c.uidNext = snap.uidNext
+                c.messages = snap.msgs
+                s.cached = c
+                s.loaded = true
+                s.persist()
+                done?(c, nil)
+                s.onUpdate?(c)
+            }
+        }
+    }
+
+    /// Démarre le sondage de fond.
+    ///
+    /// Quatre-vingt-dix secondes : assez rapproché pour qu'un message
+    /// arrive de lui-même pendant qu'on travaille, assez espacé pour que
+    /// le coût reste un aller-retour par minute et demie. Le minuteur
+    /// tolère un décalage, pour se grouper avec les autres réveils du
+    /// système plutôt que d'en provoquer un pour lui seul.
+    func startPolling() {
+        timer?.invalidate()
+        let t = Timer(timeInterval: 90, repeats: true) { [weak self] _ in
+            guard MailRouter.gmailReady else { return }
+            self?.sync()
+        }
+        t.tolerance = 20
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func stopPolling() {
+        timer?.invalidate()
+        timer = nil
+    }
+}
+EOF_BUDMAILSYNC_SWIFT
 
 cat << 'EOF_BUDMUSIC_SWIFT' > "$SRC_DIR/BudMusic.swift"
 import Cocoa
@@ -13299,14 +13613,35 @@ final class ShortcutsWindow: NSWindowController {
     var onChipSet: ((Int, String) -> Void)?
     private var chipPops: [NSPopUpButton] = []
 
+    /// Largeur et hauteur fixes : la fenêtre n'est pas redimensionnable, et
+    /// toute la mise en page part de ces deux nombres.
+    private static let W: CGFloat = 560
+    private static var H: CGFloat { CGFloat(Shortcuts.actions.count) * 42 + 322 }
+
     init(current: @escaping (String) -> String) {
         self.current = current
-        let rows = Shortcuts.actions.count
-        let H: CGFloat = CGFloat(rows) * 42 + 132 + 96
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: H),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let H = ShortcutsWindow.H
+
+        // Un NSPanel, et non une fenêtre ordinaire.
+        //
+        //  Le panneau de BUD vit au niveau `.statusBar`, au-dessus de tout.
+        //  Une fenêtre de niveau normal passait donc derrière lui dès qu'on
+        //  le rouvrait, et devenait inatteignable sans replier BUD. Le
+        //  panneau se place juste au-dessus, et `isFloatingPanel` le garde
+        //  devant les autres fenêtres de l'application.
+        //
+        //  Il doit pouvoir devenir fenêtre clé : le capteur de raccourci
+        //  écoute par un moniteur local, qui ne reçoit les touches que si
+        //  la fenêtre a le focus.
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: ShortcutsWindow.W, height: H),
+                        styleMask: [.titled, .closable, .utilityWindow],
+                        backing: .buffered, defer: false)
         w.title = "Raccourcis et aperçu"
         w.isReleasedWhenClosed = false
+        w.isFloatingPanel = true
+        w.hidesOnDeactivate = false
+        w.becomesKeyOnlyIfNeeded = false
+        w.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         w.center()
         super.init(window: w)
         build(H)
@@ -13315,17 +13650,17 @@ final class ShortcutsWindow: NSWindowController {
 
     private func build(_ H: CGFloat) {
         guard let content = window?.contentView else { return }
-        let W: CGFloat = 520
+        let W = ShortcutsWindow.W
 
         let title = mkLabel("Choisissez vos raccourcis",
-                            NSRect(x: 22, y: H - 44, width: W - 44, height: 22), 15, .bold)
+                            NSRect(x: 22, y: H - 42, width: W - 44, height: 22), 15, .bold)
         content.addSubview(title)
         let sub = mkLabel("Cliquez un raccourci, puis tapez la combinaison. Échap annule.",
-                          NSRect(x: 22, y: H - 64, width: W - 44, height: 16), 11.5, .regular, alpha: 0.5)
+                          NSRect(x: 22, y: H - 66, width: W - 44, height: 16), 11.5, .regular, alpha: 0.5)
         content.addSubview(sub)
 
         for (i, a) in Shortcuts.actions.enumerated() {
-            let y = H - 96 - CGFloat(i) * 42
+            let y = H - 98 - CGFloat(i) * 42
             let lab = mkLabel(a.label, NSRect(x: 22, y: y, width: W - 190, height: 20), 12.5, .medium)
             content.addSubview(lab)
 
@@ -13353,19 +13688,24 @@ final class ShortcutsWindow: NSWindowController {
         }
 
         // ── Les quatre pastilles de l'aperçu ──
-        let chipTop = H - 96 - CGFloat(Shortcuts.actions.count) * 42 - 18
+        //
+        //  Deux rangées de deux, et non quatre de front. À quatre, chaque
+        //  menu recevait 113 points et tronquait ses intitulés — « Disques
+        //  ex… », « Focus en c… ». Deux par rangée en donnent 252, où
+        //  « Disques externes » tient en entier.
         let sec = mkLabel("Pastilles de l'aperçu",
-                          NSRect(x: 22, y: chipTop, width: W - 44, height: 18), 12.5, .bold)
+                          NSRect(x: 22, y: 194, width: W - 44, height: 18), 12.5, .bold)
         content.addSubview(sec)
         let hint2 = mkLabel("Ce que montrent les quatre capsules sous la salutation. Un clic dessus ouvre le panneau correspondant.",
-                            NSRect(x: 22, y: chipTop - 18, width: W - 44, height: 16), 10.5, .regular, alpha: 0.45)
+                            NSRect(x: 22, y: 170, width: W - 44, height: 16), 10.5, .regular, alpha: 0.45)
         content.addSubview(hint2)
 
         let keys = chipsNow()
-        let pw = (W - 44 - 24) / 4
+        let pw = (W - 44 - 12) / 2
         for slot in 0..<4 {
-            let pop = NSPopUpButton(frame: NSRect(x: 22 + CGFloat(slot) * (pw + 8),
-                                                  y: chipTop - 54, width: pw, height: 26))
+            let col = CGFloat(slot % 2), row = CGFloat(slot / 2)
+            let pop = NSPopUpButton(frame: NSRect(x: 22 + col * (pw + 12),
+                                                  y: 134 - row * 34, width: pw, height: 28))
             for c in PreviewChips.catalogue { pop.addItem(withTitle: c.label) }
             if slot < keys.count,
                let i = PreviewChips.catalogue.firstIndex(where: { $0.key == keys[slot] }) {
@@ -13378,14 +13718,23 @@ final class ShortcutsWindow: NSWindowController {
             chipPops.append(pop)
         }
 
-        note = mkLabel("", NSRect(x: 22, y: 50, width: W - 44, height: 30), 11, .regular, alpha: 0.55)
+        // La note de statut vivait à 50..80 et les menus à 60..86 : elle les
+        // recouvrait de vingt points. Posée après eux, elle était au-dessus,
+        // et comme un NSTextField reste une cible de clic même non
+        // modifiable, elle avalait les clics destinés aux menus. C'est
+        // pourquoi ils paraissaient inertes : ils ne recevaient rien.
+        note = mkLabel("", NSRect(x: 22, y: 58, width: W - 44, height: 32), 11, .regular, alpha: 0.55)
         note.lineBreakMode = .byWordWrapping
         note.maximumNumberOfLines = 2
         note.cell?.usesSingleLineMode = false
         note.cell?.wraps = true
+        // Et par précaution, elle ne prend plus aucun clic : une étiquette
+        // de statut n'a rien à intercepter, quelle que soit sa position.
+        note.isSelectable = false
+        note.refusesFirstResponder = true
         content.addSubview(note)
 
-        let reset = GlassButton(frame: NSRect(x: 22, y: 12, width: 190, height: 34),
+        let reset = GlassButton(frame: NSRect(x: 22, y: 14, width: 210, height: 34),
                                 title: "Rendre les raccourcis d'usine", icon: "arrow.counterclockwise")
         reset.onClick = { [weak self] _ in
             guard let s = self else { return }
@@ -13396,7 +13745,7 @@ final class ShortcutsWindow: NSWindowController {
         }
         content.addSubview(reset)
 
-        let done = GlassButton(frame: NSRect(x: W - 122, y: 12, width: 100, height: 34),
+        let done = GlassButton(frame: NSRect(x: W - 122, y: 14, width: 100, height: 34),
                                title: "Terminé", icon: "checkmark", prominent: true)
         done.onClick = { [weak self] _ in self?.window?.close() }
         content.addSubview(done)

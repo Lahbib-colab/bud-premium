@@ -167,6 +167,10 @@ struct GmailSnapshot {
     var unread = 0
     var messages: [MailMessage] = []
     var error: String?
+    /// Le prochain identifiant que le serveur attribuera. C'est ce qui
+    /// permet de savoir qu'il n'y a rien de neuf sans rapatrier un seul
+    /// message : si UIDNEXT n'a pas bougé, aucun message n'est arrivé.
+    var uidNext: String = ""
     var ok: Bool { error == nil }
 }
 
@@ -259,6 +263,13 @@ enum GmailClient {
             if l.hasPrefix("a4 ") { break }
         }
         if all.isEmpty { all = Array(unseen) }
+
+        // Le prochain identifiant se déduit du plus grand rencontré. On
+        // l'enregistre pour que le sondage de fond puisse comparer sans
+        // refaire ce travail.
+        if let maxUID = all.compactMap({ Int($0) }).max() {
+            snap.uidNext = String(maxUID + 1)
+        }
 
         for (i, uid) in all.suffix(limit).reversed().enumerated() {
             let tag = "f\(i)"
@@ -363,8 +374,33 @@ enum GmailClient {
         s.write("\(tag) UID FETCH \(uid) (BODY.PEEK[1]<0.8192>)")
         var lines: [String] = []
         var total = 0
+        var first = true
         while let l = s.readLine() {
             if l.hasPrefix("\(tag) ") { break }
+
+            // La réponse d'un FETCH n'est pas que le corps. Elle s'ouvre sur
+            // une ligne non étiquetée — « * 9284 FETCH (UID 9284 BODY[1]<0>
+            // {2048} » — et se referme sur une parenthèse seule. Les garder
+            // revenait à afficher la commande IMAP en tête du message, ce
+            // qu'on voyait dans le lecteur, et à la donner à l'analyse de
+            // hameçonnage comme si c'était du texte de l'expéditeur.
+            if first {
+                first = false
+                if l.hasPrefix("*") && l.uppercased().contains("FETCH") {
+                    // Corps court : certains serveurs le renvoient entre
+                    // guillemets sur cette même ligne plutôt qu'en littéral.
+                    if let q = l.range(of: "BODY[", options: .caseInsensitive),
+                       let open = l.range(of: "\"", range: q.upperBound..<l.endIndex),
+                       let close = l.range(of: "\"", options: .backwards),
+                       open.upperBound <= close.lowerBound {
+                        lines.append(String(l[open.upperBound..<close.lowerBound]))
+                    }
+                    continue
+                }
+            }
+            // La parenthèse de fermeture, seule sur sa ligne.
+            if l.trimmingCharacters(in: .whitespaces) == ")" { continue }
+
             if total < maxChars {
                 lines.append(l)
                 total += l.count
@@ -395,6 +431,51 @@ enum GmailClient {
 
     /// Déplace des messages vers le dossier indésirable du compte.
     /// Renvoie nil si tout s'est bien passé.
+    /// L'état de la boîte en une commande, sans rapatrier un seul message :
+    /// le prochain identifiant et le nombre de non-lus.
+    ///
+    /// C'est la clé du sondage de fond. Un relevé complet ouvre une session
+    /// TLS, s'authentifie, cherche, puis rapatrie soixante en-têtes et douze
+    /// corps : plusieurs secondes. Un STATUS, lui, coûte un aller-retour.
+    /// On sonde donc souvent avec STATUS, et on ne paie le relevé complet
+    /// que lorsqu'il a vraiment changé quelque chose.
+    ///
+    /// Ce que cela ne voit pas : une suppression faite ailleurs ne change ni
+    /// UIDNEXT ni le nombre de non-lus si le message était déjà lu. Le
+    /// bouton Actualiser reste donc utile, et il force le relevé complet.
+    static func status(user: String, auth: GmailAuthMode) -> (uidNext: String, unseen: Int)? {
+        guard let s = TLSLineSocket(host: imapHost, port: 993) else { return nil }
+        defer { s.close() }
+        _ = s.readLine()
+        switch auth {
+        case .appPassword(let p): s.write("s1 LOGIN \"\(user)\" \"\(normalizedPassword(p))\"")
+        case .oauth(let token):   s.write("s1 AUTHENTICATE XOAUTH2 \(token)")
+        }
+        var logged = false
+        while let l = s.readLine() {
+            if l.hasPrefix("s1 OK") { logged = true; break }
+            if l.hasPrefix("s1 NO") || l.hasPrefix("s1 BAD") { break }
+            if l.hasPrefix("+ ") { s.write("") }
+        }
+        guard logged else { return nil }
+
+        s.write("s2 STATUS INBOX (UIDNEXT UNSEEN)")
+        var next = "", unseen = -1
+        while let l = s.readLine() {
+            if l.hasPrefix("s2 ") { break }
+            if l.hasPrefix("*") && l.uppercased().contains("STATUS") {
+                if let r = l.range(of: "UIDNEXT ([0-9]+)", options: .regularExpression) {
+                    next = String(l[r]).components(separatedBy: " ").last ?? ""
+                }
+                if let r = l.range(of: "UNSEEN ([0-9]+)", options: .regularExpression) {
+                    unseen = Int(String(l[r]).components(separatedBy: " ").last ?? "") ?? -1
+                }
+            }
+        }
+        s.write("s9 LOGOUT")
+        return next.isEmpty ? nil : (next, unseen)
+    }
+
     /// Rapatrie le corps d'un seul message, pour ceux que le relevé n'a
     /// pas chargés. Une connexion pour un message : c'est le prix de ne
     /// pas faire attendre une minute à l'ouverture de la boîte.

@@ -7,7 +7,7 @@ import Cocoa
 //  d'API, aucune connexion sortante de notre fait.
 // ═══════════════════════════════════════════════════════════
 
-struct MailMessage {
+struct MailMessage: Codable {
     let subject: String
     let sender: String
     let date: String
@@ -135,7 +135,7 @@ struct MailMessage {
 //  Un message mal rangé reste visible dans « Tous ».
 // ═══════════════════════════════════════════════════════════
 
-enum MailCategory: Int, CaseIterable {
+enum MailCategory: Int, CaseIterable, Codable {
     case principal, transactions, updates, promotions
 
     var label: String {
@@ -468,17 +468,20 @@ enum MailRouter {
         return nil
     }
 
-    static func snapshot(_ limit: Int = 5) -> (unread: Int, msgs: [MailMessage], source: String, error: String?) {
+    static func snapshot(_ limit: Int = 5)
+        -> (unread: Int, msgs: [MailMessage], source: String, error: String?, uidNext: String) {
         if let (user, auth) = mode() {
             let s = GmailClient.fetchInbox(user: user, auth: auth, limit: limit)
-            return (s.unread, s.messages, sourceLabel, s.error)
+            return (s.unread, s.messages, sourceLabel, s.error, s.uidNext)
         }
-        guard MailBridge.mailRunning() else { return (-1, [], "Mail.app", "Mail est fermé.") }
+        guard MailBridge.mailRunning() else { return (-1, [], "Mail.app", "Mail est fermé.", "") }
         // La passerelle AppleScript n'a pas de chargement différé : chaque
         // message coûte son corps dans la même réponse. Au-delà d'une
         // vingtaine, l'attente devient sensible, donc on plafonne ici
         // plutôt que de laisser la boîte se figer.
-        return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil)
+        // La passerelle n'a pas d'identifiants : pas de sondage possible,
+        // donc pas de uidNext. Le relevé complet aura toujours lieu.
+        return (MailBridge.unreadCount(), MailBridge.latestUnread(min(limit, 20)), "Mail.app", nil, "")
     }
 
     static func send(to: String, subject: String, body: String, mailFrom: String,
@@ -497,6 +500,14 @@ enum MailRouter {
             return "Reliez un compte Gmail pour isoler des messages."
         }
         return GmailClient.quarantine(user: user, auth: auth, uids: uids)
+    }
+
+    /// L'état de la boîte en un aller-retour, pour le sondage de fond.
+    /// `nil` quand le compte n'est pas relié ou que le serveur n'a pas
+    /// répondu : l'appelant fait alors le relevé complet.
+    static func status() -> (uidNext: String, unseen: Int)? {
+        guard let (user, auth) = mode() else { return nil }
+        return GmailClient.status(user: user, auth: auth)
     }
 
     /// Le corps d'un message que le relevé n'a pas chargé.
@@ -842,6 +853,10 @@ final class MailPanelView: NSView {
     /// 0 = tous, sinon `MailCategory(rawValue: filter - 1)`.
     private var filter = 0
     private var selecting = false
+    /// Posé par le bouton « Actualiser » : saute le sondage et impose le
+    /// relevé complet, car il doit aussi voir ce que le sondage ne détecte
+    /// pas — une suppression faite depuis un autre appareil, par exemple.
+    private var forceFullSync = false
     /// Les UID cochés. Un ensemble, parce que la liste se reconstruit à
     /// chaque filtre et que les coches doivent survivre au tri.
     private var checked: Set<String> = []
@@ -860,6 +875,16 @@ final class MailPanelView: NSView {
     var onStatus: ((String) -> Void)?
     var fromAddress: () -> String = { "" }
     var onAccountChange: ((String) -> Void)?
+
+    /// Branche le panneau sur la synchronisation de fond : quand du
+    /// courrier arrive pendant qu'on fait autre chose, la liste se met à
+    /// jour toute seule au lieu d'attendre un clic sur « Actualiser ».
+    func followBackgroundSync() {
+        MailSync.shared.onUpdate = { [weak self] c in
+            guard let s = self, !s.selecting else { return }   // pas pendant un tri
+            s.apply(c, pending: false)
+        }
+    }
 
     override init(frame: NSRect) {
         hero = HeroHeader(frame: NSRect(x: 0, y: frame.height - 92, width: frame.width, height: 92),
@@ -1048,7 +1073,11 @@ final class MailPanelView: NSView {
             ("Supprimer", "trash.fill", false, { [weak self] in self?.deleteSelected() }),
             ("Analyser", "shield.lefthalf.filled", false, { [weak self] in self?.analyzeAll() }),
             ("Compte", "person.crop.circle", false, { [weak self] in self?.accountDialog() }),
-            ("Actualiser", "arrow.clockwise", false, { [weak self] in self?.refresh() })
+            ("Actualiser", "arrow.clockwise", false, { [weak self] in
+                self?.forceFullSync = true
+                self?.statusLabel.stringValue = "Relevé complet…"
+                self?.refresh()
+            })
         ]
         var made: [GlassButton] = []
         for (i, sp) in specs.enumerated() {
@@ -1597,27 +1626,49 @@ final class MailPanelView: NSView {
             return
         }
 
-        unreadTile.set("…", hint: "lecture en cours")
-        riskTile.set("…", hint: "analyse")
-        DispatchQueue.global(qos: .userInitiated).async {
-            let snap = MailRouter.snapshot(60)
-            DispatchQueue.main.async { [weak self] in
-                guard let s = self else { return }
-                let n = snap.unread
-                s.unreadTile.set(n < 0 ? "—" : "\(n)",
-                                 hint: n < 0 ? (snap.error ?? "indisponible")
-                                             : (n == 0 ? "boîte à jour" : "à lire"))
-                s.hero.set(subtitle: n <= 0 ? "Rien à lire pour l'instant · \(snap.source)"
-                                            : "\(n) message(s) non lus · \(snap.source)",
-                           trailing: n > 0 ? "\(n) non lus" : "")
-                let danger = snap.msgs.filter { $0.threat.level == .dangerous }.count
-                let suspect = snap.msgs.filter { $0.threat.level == .suspect }.count
-                s.riskTile.set(danger > 0 ? "\(danger)" : "\(suspect)",
-                               hint: danger > 0 ? "dangereux" : (suspect > 0 ? "suspects" : "rien à signaler"))
-                s.rebuildList(snap.msgs)
-                if let e = snap.error { s.statusLabel.stringValue = e }
-            }
+        // D'abord ce qu'on sait déjà. La boîte s'affiche instantanément
+        // avec le dernier état connu, au lieu d'une liste vide pendant que
+        // le serveur répond. C'est le changement qui se remarque le plus.
+        let known = MailSync.shared.warmUp()
+        if !known.messages.isEmpty {
+            apply(known, pending: true)
+        } else {
+            unreadTile.set("…", hint: "lecture en cours")
+            riskTile.set("…", hint: "analyse")
         }
+
+        // Puis la mise à jour, hors du fil principal. Le sondage décide
+        // s'il faut un relevé complet ; si rien n'a bougé, rien n'est
+        // redessiné et l'affichage ne scintille pas.
+        MailSync.shared.sync(force: forceFullSync) { [weak self] c, err in
+            guard let s = self else { return }
+            s.forceFullSync = false
+            if let e = err { s.statusLabel.stringValue = e }
+            s.apply(c, pending: false)
+        }
+    }
+
+    /// Peint la boîte à partir d'un état connu.
+    ///
+    /// `pending` dit que cet état vient du cache et qu'une vérification est
+    /// en cours : les tuiles le signalent, sans faire disparaître la liste.
+    private func apply(_ c: MailSync.Cached, pending: Bool) {
+        let n = c.unread
+        unreadTile.set("\(n)", hint: pending ? "vérification…"
+                                            : (n == 0 ? "boîte à jour" : "à lire"))
+        hero.set(subtitle: n <= 0 ? "Rien à lire pour l'instant · \(c.source)"
+                                  : "\(n) message(s) non lus · \(c.source)",
+                 trailing: n > 0 ? "\(n) non lus" : "")
+        let danger = c.messages.filter { $0.threat.level == .dangerous }.count
+        let suspect = c.messages.filter { $0.threat.level == .suspect }.count
+        riskTile.set(danger > 0 ? "\(danger)" : "\(suspect)",
+                     hint: danger > 0 ? "dangereux" : (suspect > 0 ? "suspects" : "rien à signaler"))
+        // On ne reconstruit la liste que si elle a changé : redessiner
+        // soixante cartes identiques ferait sauter le défilement et
+        // perdrait la sélection pour rien.
+        let sameSet = c.messages.count == lastMessages.count
+            && zip(c.messages, lastMessages).allSatisfy { $0.uid == $1.uid && $0.unread == $1.unread }
+        if !sameSet || lastMessages.isEmpty { rebuildList(c.messages) }
     }
 
     /// Reconstruit avec les messages déjà en mémoire — pour un changement
