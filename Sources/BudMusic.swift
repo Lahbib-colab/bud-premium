@@ -15,7 +15,6 @@ import Foundation
 //  complet : titre, artiste, album, position, durée, volume,
 //  lecture aléatoire et répétition.
 // ═══════════════════════════════════════════════════════════
-
 struct NowPlaying {
     var available = false          // Music.app est lancée
     var playing = false
@@ -32,20 +31,36 @@ struct NowPlaying {
     /// L'identifiant persistant de Music quand il existe ; sinon le
     /// couple titre/artiste, qui suffit pour une radio ou un flux.
     var trackKey = ""
-    /// Pourquoi Musique n'a rien dit, quand elle n'a rien dit. Affiché tel
-    /// quel sous les commandes : une liste vide sans explication laissait
-    /// croire à une panne de BUD.
+    /// Pourquoi Musique n'a rien dit, quand elle n'a rien dit. Une phrase
+    /// en clair, jamais un code : une liste vide sans explication laissait
+    /// croire à une panne, mais « erreur de syntaxe (-2741) » n'explique
+    /// rien à qui n'écrit pas d'AppleScript.
     var trouble = ""
+    /// L'autorisation Automatisation manque : le panneau propose alors
+    /// d'ouvrir le bon volet des réglages.
+    var needsAuth = false
+
+    /// Ce que BUD a vraiment pu lire. Ce qu'il ne sait pas, il ne
+    /// l'affiche pas comme valant zéro : un curseur de volume à 50 quand
+    /// la valeur est inconnue est un mensonge, et on cherche longtemps
+    /// pourquoi le son ne suit pas.
+    var volumeKnown = false
+    var modesKnown = false         // aléatoire et répétition
+    var positionKnown = false
+
+    enum Source { case none, script, core, feed }
+    var source: Source = .none
 
     var hasTrack: Bool { !title.isEmpty }
 
-    /// « 1:42 / 3:58 »
+    /// « 1:42 / 3:58 ». Vide si la position n'est pas connue : mieux vaut
+    /// pas de minuterie qu'une minuterie fausse.
     var timeText: String {
-        guard duration > 0 else { return "" }
+        guard duration > 0, positionKnown else { return "" }
         return "\(mmss(position)) / \(mmss(duration))"
     }
     var progress: Double {
-        guard duration > 0 else { return 0 }
+        guard duration > 0, positionKnown else { return 0 }
         return max(0, min(1, position / duration))
     }
     private func mmss(_ t: Double) -> String {
@@ -58,51 +73,150 @@ struct NowPlaying {
         if title.isEmpty { return "" }
         return artist.isEmpty ? title : "\(title) — \(artist)"
     }
+
+    /// Complète par ce que Musique a annoncé d'elle-même.
+    ///
+    /// Deux cas, et la différence compte. Quand le script a parlé, il fait
+    /// foi : s'il dit « rien en lecture », c'est qu'il n'y a rien, et une
+    /// annonce ancienne ne doit pas ressusciter le morceau précédent.
+    /// Quand le script n'a rien pu dire, l'annonce devient la seule source.
+    mutating func fill(from a: MusicAnnounce?, scriptSpoke: Bool, estimate: Double?) {
+        guard let a = a, a.hasTrack else { return }
+        if scriptSpoke {
+            if duration <= 0 { duration = a.duration }
+            if album.isEmpty { album = a.album }
+            return
+        }
+        source = .feed
+        title = a.title
+        artist = a.artist
+        album = a.album
+        playing = a.playing
+        duration = a.duration
+        trackKey = a.trackKey
+        if let p = estimate {
+            position = p
+            positionKnown = true
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Ce qui peut mal tourner
+//
+//  Trois familles, et elles ne se disent pas pareil.
+//
+//  L'autorisation manquante est l'affaire de l'utilisateur :
+//  on dit où cliquer. Musique fermée est un fait : on le dit.
+//
+//  Une erreur de syntaxe, en revanche, est une faute de BUD —
+//  il a mal formé sa demande. L'afficher revient à montrer la
+//  trace d'une pile à quelqu'un qui voulait écouter un disque.
+//  Elle part donc dans un journal, et l'interface se contente
+//  de dire ce qu'elle sait faire malgré tout.
+// ═══════════════════════════════════════════════════════════
+
+enum MusicFault {
+    case none
+    case notAuthorized
+    case notRunning
+    case malformed(String)
+    case other(String)
+
+    /// La phrase montrée. Vide quand il n'y a rien d'utile à dire.
+    var userText: String {
+        switch self {
+        case .none, .malformed:
+            return ""
+        case .notAuthorized:
+            return "Musique est ouverte mais BUD n'a pas le droit de la piloter. "
+                + "Réglages Système → Confidentialité et sécurité → Automatisation → BUD, "
+                + "puis cochez Musique. Une mise à jour de BUD peut retirer cette coche."
+        case .notRunning:
+            return "Musique s'est fermée."
+        case .other:
+            return "Musique n'a pas répondu."
+        }
+    }
+
+    var needsAuth: Bool { if case .notAuthorized = self { return true }; return false }
+
+    static func classify(_ err: String) -> MusicFault {
+        if err.isEmpty { return .none }
+        let low = err.lowercased()
+        if err.contains("-1743") || low.contains("not authorized") { return .notAuthorized }
+        if err.contains("-600") || err.contains("-609") || low.contains("isn't running") {
+            return .notRunning
+        }
+        // -2741 et -2740 : le script n'a pas compilé. -1708 : un terme que
+        // l'application ne connaît pas. Dans les deux cas BUD a tort.
+        if low.contains("syntax error") || err.contains("-2741")
+            || err.contains("-2740") || err.contains("-1708") {
+            return .malformed(err)
+        }
+        return .other(err)
+    }
 }
 
 enum MusicBridge {
     static let appName = "Music"
     static let bundleID = "com.apple.Music"
 
+    /// Toute demande à Musique passe par là. Une file série, pour deux
+    /// raisons : jamais deux osascript en vol en même temps — l'export de
+    /// pochette et la lecture d'état se chevauchaient et se volaient leurs
+    /// messages d'erreur — et jamais rien sur le fil principal.
+    private static let q = DispatchQueue(label: "fr.lahbib.bud.music.script",
+                                         qos: .userInitiated)
+
     /// Sans lancer de processus : la liste des applications actives
-    /// suffit, et un sondage toutes les cinq secondes doit rester gratuit
+    /// suffit, et un sondage toutes les quatre secondes doit rester gratuit
     /// quand Music est fermée.
     static func running() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID }
     }
 
-    /// La dernière raison pour laquelle Musique n'a pas répondu, en clair.
-    /// Vide quand tout va bien.
-    private(set) static var lastTrouble = ""
+    // ─────────────────────────────────────────────────────────
+    //  AppleScript
+    //
+    //  Les variables portent toutes un préfixe « bud ». Ce n'est
+    //  pas de la coquetterie : `st` est un mot réservé
+    //  d'AppleScript — un suffixe ordinal, comme dans « 1st
+    //  item » — et `set st to "stopped"` empêchait le script
+    //  **entier** de compiler. Les blocs `try` n'y pouvaient
+    //  rien : ils attrapent les erreurs d'exécution, et une
+    //  erreur de compilation arrive avant que la première ligne
+    //  ne s'exécute. Un seul mot de deux lettres rendait donc
+    //  muets à la fois l'état de lecture et la pochette.
+    //
+    //  Un identifiant préfixé ne peut collisionner ni avec un
+    //  mot du langage ni avec un terme du dictionnaire de
+    //  Musique, aujourd'hui ni dans la version d'après.
+    // ─────────────────────────────────────────────────────────
 
-    @discardableResult
-    private static func osa(_ s: String) -> String {
-        let r = runShellDetailed("/usr/bin/osascript", ["-e", s])
-        lastTrouble = r.status == 0 ? "" : explain(r.err)
-        return r.out
+    private struct Reply {
+        let out: String
+        let fault: MusicFault
+        var ok: Bool { if case .none = fault { return true }; return false }
     }
 
-    /// Traduit l'erreur d'AppleScript en une phrase qui dit quoi faire.
-    ///
-    /// -1743 est le cas qui compte. BUD est signé à la volée, et macOS
-    /// identifie une application autorisée par sa signature : chaque mise à
-    /// jour en produit une nouvelle, donc l'autorisation accordée à la
-    /// version précédente ne vaut plus pour celle-ci. Le système refuse
-    /// alors en silence, et sans lire stderr on ne voyait qu'une réponse
-    /// vide — indiscernable d'un lecteur à l'arrêt.
-    private static func explain(_ err: String) -> String {
-        if err.contains("-1743") || err.lowercased().contains("not authorized") {
-            return "Musique est ouverte mais BUD n'a pas le droit de la piloter. "
-                + "Réglages Système → Confidentialité et sécurité → Automatisation → BUD, "
-                + "puis cochez Musique. Une mise à jour de BUD peut retirer cette coche."
-        }
-        if err.contains("-600") || err.lowercased().contains("isn't running") {
-            return "Musique s'est fermée pendant la lecture."
-        }
-        if err.contains("-1728") {
-            return "Aucun morceau en cours dans Musique."
-        }
-        return err.isEmpty ? "" : "Musique n'a pas répondu : \(String(err.prefix(140)))"
+    private static func osa(_ script: String) -> Reply {
+        let r = runShellDetailed("/usr/bin/osascript", ["-e", script])
+        let fault = r.status == 0 ? MusicFault.none : MusicFault.classify(r.err)
+        if case .malformed(let detail) = fault { logFault(detail) }
+        return Reply(out: r.out, fault: fault)
+    }
+
+    /// Un script mal formé est un défaut à corriger, pas un message à
+    /// afficher. Il est donc écrit là où on peut le retrouver, et le
+    /// journal est borné pour ne pas grossir sans fin.
+    private static func logFault(_ detail: String) {
+        let url = budSupportDir.appendingPathComponent("music.log")
+        let line = "\(shortDateString()) \(detail.prefix(400))\n"
+        var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        text += line
+        if text.count > 32_768 { text = String(text.suffix(24_576)) }
+        try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 
     /// AppleScript peut rendre « 12,345 » selon la langue du système.
@@ -110,80 +224,179 @@ enum MusicBridge {
         Double(s.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)) ?? 0
     }
 
-    /// Un seul appel pour tout l'état. Chaque propriété est lue dans son
-    /// propre `try` : si une version de Music n'expose plus la répétition,
-    /// on perd cette seule information, pas la totalité.
-    static func nowPlaying() -> NowPlaying {
+    private static let sep = "|~|"
+
+    /// Le relevé complet. Chaque propriété dans son propre `try` : si une
+    /// version de Musique n'expose plus la répétition, on perd cette seule
+    /// information — mais seulement si le script compile, d'où le palier
+    /// suivant.
+    private static let fullScript = """
+    tell application "Music"
+        set budState to "stopped"
+        set budName to ""
+        set budArtist to ""
+        set budAlbum to ""
+        set budPos to -1
+        set budDur to 0
+        set budVol to -1
+        set budShuffle to "unknown"
+        set budRepeat to "unknown"
+        set budIdent to ""
+        try
+            set budState to (player state as text)
+        end try
+        try
+            set budVol to (sound volume as integer)
+        end try
+        try
+            set budShuffle to (shuffle enabled as text)
+        end try
+        try
+            set budRepeat to (song repeat as text)
+        end try
+        try
+            set budItem to current track
+            set budName to (name of budItem as text)
+            set budArtist to (artist of budItem as text)
+            set budAlbum to (album of budItem as text)
+            set budDur to (duration of budItem)
+            try
+                set budPos to (player position)
+                if budPos is missing value then set budPos to -1
+            end try
+            try
+                set budIdent to (persistent ID of budItem as text)
+            end try
+        end try
+        set budOut to budState & "|~|" & budName & "|~|" & budArtist & "|~|" & budAlbum
+        set budOut to budOut & "|~|" & (budPos as text) & "|~|" & (budDur as text)
+        set budOut to budOut & "|~|" & (budVol as text) & "|~|" & budShuffle & "|~|" & budRepeat
+        set budOut to budOut & "|~|" & budIdent
+        return budOut
+    end tell
+    """
+
+    /// Le noyau sûr : quatre termes, inchangés depuis iTunes. Il sert quand
+    /// le relevé complet ne compile pas, pour qu'un terme disparu du
+    /// dictionnaire coûte le volume et les modes, pas le titre du morceau.
+    private static let coreScript = """
+    tell application "Music"
+        set budState to "stopped"
+        set budName to ""
+        set budArtist to ""
+        set budAlbum to ""
+        try
+            set budState to (player state as text)
+        end try
+        try
+            set budItem to current track
+            set budName to (name of budItem as text)
+            set budArtist to (artist of budItem as text)
+            set budAlbum to (album of budItem as text)
+        end try
+        return budState & "|~|" & budName & "|~|" & budArtist & "|~|" & budAlbum
+    end tell
+    """
+
+    /// Vrai tant que le relevé complet compile. Mis à faux au premier
+    /// script mal formé pour ne pas relancer un processus condamné toutes
+    /// les quatre secondes.
+    private static var fullUsable = true
+
+    /// L'état, lu sur la file `q`. L'annonce et l'estimation arrivent en
+    /// paramètres : elles sont écrites sur le fil principal, et deux files
+    /// qui touchent la même variable, c'est une course.
+    private static func readState(feed: MusicAnnounce?, estimate: Double?) -> NowPlaying {
         var n = NowPlaying()
-        guard running() else { return n }
-        n.available = true
-
-        let out = osa("""
-        tell application "Music"
-            set st to "stopped"
-            set nm to ""
-            set ar to ""
-            set al to ""
-            set pp to 0
-            set du to 0
-            set vol to 50
-            set sh to "false"
-            set rp to "off"
-            set pid to ""
-            try
-                set st to (player state as string)
-            end try
-            try
-                set vol to (sound volume as integer)
-            end try
-            try
-                set sh to (shuffle enabled as string)
-            end try
-            try
-                set rp to (song repeat as string)
-            end try
-            try
-                set t to current track
-                set nm to (name of t)
-                set ar to (artist of t)
-                set al to (album of t)
-                set du to (duration of t)
-                set pp to (player position)
-                try
-                    set pid to (persistent ID of t as string)
-                end try
-            end try
-            set out to st & "|~|" & nm & "|~|" & ar & "|~|" & al
-            set out to out & "|~|" & (pp as string) & "|~|" & (du as string)
-            set out to out & "|~|" & (vol as string) & "|~|" & sh & "|~|" & rp
-            set out to out & "|~|" & pid
-            return out
-        end tell
-        """)
-
-        let p = out.components(separatedBy: "|~|")
-        guard p.count >= 9 else {
-            // Réponse inexploitable : on remonte la raison plutôt que de
-            // rendre un état vide qui ressemble à « rien en lecture ».
-            n.trouble = lastTrouble
+        guard running() else {
+            DispatchQueue.main.async { MusicFeed.forget() }
             return n
         }
-        n.playing = p[0].contains("playing")
-        n.title = p[1].trimmingCharacters(in: .whitespacesAndNewlines)
-        n.artist = p[2].trimmingCharacters(in: .whitespacesAndNewlines)
-        n.album = p[3].trimmingCharacters(in: .whitespacesAndNewlines)
-        n.position = num(p[4])
-        n.duration = num(p[5])
-        n.volume = Int(num(p[6]))
-        n.shuffle = p[7].lowercased().contains("true")
-        n.repeatMode = p[8].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        n.available = true
 
-        // L'identifiant persistant est lu à part : un champ manquant ne doit
-        // pas faire perdre les huit autres, d'où le test plutôt qu'un index.
-        let pid = p.count >= 10 ? p[9].trimmingCharacters(in: .whitespacesAndNewlines) : ""
-        n.trackKey = pid.isEmpty ? (n.title.isEmpty ? "" : "\(n.title)|\(n.artist)|\(n.album)")
-                                 : pid
+        if fullUsable {
+            let r = osa(fullScript)
+            let p = r.out.components(separatedBy: sep)
+            if r.ok && p.count >= 10 {
+                n.source = .script
+                n.playing = p[0].lowercased().contains("playing")
+                n.title = clean(p[1])
+                n.artist = clean(p[2])
+                n.album = clean(p[3])
+                let pos = num(p[4])
+                n.position = max(0, pos)
+                n.positionKnown = pos >= 0
+                n.duration = num(p[5])
+                let vol = Int(num(p[6]))
+                n.volume = vol < 0 ? 50 : min(100, vol)
+                n.volumeKnown = vol >= 0
+                let sh = clean(p[7]).lowercased()
+                let rp = clean(p[8]).lowercased()
+                n.modesKnown = sh != "unknown" && rp != "unknown"
+                n.shuffle = sh.contains("true")
+                n.repeatMode = n.modesKnown ? rp : "off"
+                let ident = clean(p[9])
+                n.trackKey = ident.isEmpty
+                    ? (n.title.isEmpty ? "" : "\(n.title)|\(n.artist)|\(n.album)")
+                    : ident
+                n.fill(from: feed, scriptSpoke: true, estimate: estimate)
+                return n
+            }
+            if case .malformed = r.fault { fullUsable = false }
+            else {
+                // Autorisation refusée, Musique partie : inutile d'essayer
+                // le noyau, il échouerait de la même façon.
+                n.trouble = r.fault.userText
+                n.needsAuth = r.fault.needsAuth
+                n.fill(from: feed, scriptSpoke: false, estimate: estimate)
+                return n
+            }
+        }
+
+        let r = osa(coreScript)
+        let p = r.out.components(separatedBy: sep)
+        if r.ok && p.count >= 4 {
+            n.source = .core
+            n.playing = p[0].lowercased().contains("playing")
+            n.title = clean(p[1])
+            n.artist = clean(p[2])
+            n.album = clean(p[3])
+            n.trackKey = n.title.isEmpty ? "" : "\(n.title)|\(n.artist)|\(n.album)"
+            n.fill(from: feed, scriptSpoke: true, estimate: estimate)
+            return n
+        }
+
+        // Plus rien du côté des scripts : il reste ce que Musique annonce
+        // d'elle-même. On le dit sans jargon, et sans prétendre que la
+        // liste est vide alors qu'on n'en sait rien.
+        n.trouble = r.fault.userText
+        n.needsAuth = r.fault.needsAuth
+        n.fill(from: feed, scriptSpoke: false, estimate: estimate)
+        if n.trouble.isEmpty && !n.hasTrack {
+            n.trouble = "BUD attend le prochain changement de morceau pour connaître le titre."
+        }
         return n
+    }
+
+    private static func clean(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Lit l'état hors du fil principal et rend le résultat sur le fil
+    /// principal. C'est la seule entrée publique : il n'existe plus de
+    /// version bloquante, donc plus de façon d'attendre osascript sous
+    /// l'animation.
+    static func read(_ done: @escaping (NowPlaying) -> Void) {
+        let snapshot = {
+            let feed = MusicFeed.last
+            let estimate = MusicFeed.estimatedPosition()
+            q.async {
+                let n = readState(feed: feed, estimate: estimate)
+                DispatchQueue.main.async { done(n) }
+            }
+        }
+        if Thread.isMainThread { snapshot() }
+        else { DispatchQueue.main.async(execute: snapshot) }
     }
 
     /// Exporte la pochette du morceau courant et la rend décodée, avec la
@@ -197,45 +410,56 @@ enum MusicBridge {
     /// Et le script renvoie la piste qu'il a lue, pas celle qu'on croyait
     /// lire : si le morceau change pendant l'export, la pochette doit être
     /// rangée sous la bonne clé, sinon elle resterait collée au suivant.
-    static func exportArtwork() -> (key: String, image: NSImage?)? {
-        guard running() else { return nil }
+    static func exportArtwork(_ done: @escaping ((key: String, image: NSImage?)?) -> Void) {
+        guard running() else { done(nil); return }
+        q.async {
+            let r = artworkNow()
+            DispatchQueue.main.async { done(r) }
+        }
+    }
+
+    private static func artworkNow() -> (key: String, image: NSImage?)? {
         let path = budSupportDir.appendingPathComponent("cover.dat").path
 
-        let out = osa("""
-        set k to ""
-        set st to "none"
-        set d to missing value
+        let r = osa("""
+        set budKey to ""
+        set budStatus to "none"
+        set budData to missing value
         tell application "Music"
             try
-                set t to current track
+                set budItem to current track
                 try
-                    set k to (persistent ID of t as string)
+                    set budKey to (persistent ID of budItem as text)
                 end try
-                if k is "" then set k to ((name of t) & "|" & (artist of t) & "|" & (album of t))
-                if (count of artworks of t) > 0 then set d to (raw data of artwork 1 of t)
+                if budKey is "" then
+                    set budKey to ((name of budItem as text) & "|" & (artist of budItem as text) & "|" & (album of budItem as text))
+                end if
+                if (count of artworks of budItem) > 0 then
+                    set budData to (raw data of artwork 1 of budItem)
+                end if
             end try
         end tell
-        if d is not missing value then
+        if budData is not missing value then
             try
-                set f to open for access (POSIX file "\(path)") with write permission
-                set eof f to 0
-                write d to f
-                close access f
-                set st to "ok"
+                set budFile to open for access (POSIX file "\(path)") with write permission
+                set eof budFile to 0
+                write budData to budFile
+                close access budFile
+                set budStatus to "ok"
             on error
                 try
                     close access (POSIX file "\(path)")
                 end try
-                set st to "err"
+                set budStatus to "err"
             end try
         end if
-        k & "|~|" & st
+        return budKey & "|~|" & budStatus
         """)
 
-        let p = out.components(separatedBy: "|~|")
+        let p = r.out.components(separatedBy: sep)
         guard p.count >= 2 else { return nil }
-        let key = p[0].trimmingCharacters(in: .whitespacesAndNewlines)
-        let status = p[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = clean(p[0])
+        let status = clean(p[1])
         guard status == "ok" else { return (key, nil) }
 
         // On relit les octets plutôt que de passer le chemin à NSImage :
@@ -250,9 +474,19 @@ enum MusicBridge {
         runShell("/usr/bin/open", ["-a", appName])
     }
 
+    // ─────────────────────────────────────────────────────────
+    //  Les commandes
+    //
+    //  Toutes rendent la main tout de suite. Le panneau n'attend
+    //  donc plus la réponse de Musique pour bouger : il change
+    //  son bouton au clic et la confirmation vient après. C'est
+    //  ce qui fait la différence entre un bouton vif et un
+    //  bouton qu'on reclique parce qu'on doute.
+    // ─────────────────────────────────────────────────────────
+
     private static func tell(_ cmd: String) {
         guard running() else { launch(); return }
-        osa("tell application \"\(appName)\" to \(cmd)")
+        q.async { _ = osa("tell application \"\(appName)\" to \(cmd)") }
     }
 
     static func playPause() { tell("playpause") }
@@ -261,28 +495,30 @@ enum MusicBridge {
     static func next()      { tell("next track") }
     static func previous()  { tell("previous track") }
 
-    /// Recule ou avance dans le morceau. Music accepte l'écriture
-    /// directe de la position, sans passer par les touches média.
-    static func seek(by delta: Double) {
-        guard running() else { return }
-        osa("""
-        tell application "Music"
-            try
-                set p to (player position)
-                set d to (duration of current track)
-                set np to p + (\(delta))
-                if np < 0 then set np to 0
-                if np > (d - 1) then set np to (d - 1)
-                set player position to np
-            end try
-        end tell
-        """)
-    }
-
     /// Arrêt, et non pause : Musique revient au début du morceau. Les deux
     /// ne font pas la même chose, et un lecteur qui n'offre que « pause »
     /// oblige à rouvrir Musique pour l'autre.
     static func stop() { tell("stop") }
+
+    /// Recule ou avance dans le morceau. Music accepte l'écriture
+    /// directe de la position, sans passer par les touches média.
+    static func seek(by delta: Double) {
+        guard running() else { return }
+        q.async {
+            _ = osa("""
+            tell application "Music"
+                try
+                    set budPos to (player position)
+                    set budDur to (duration of current track)
+                    set budTarget to budPos + (\(delta))
+                    if budTarget < 0 then set budTarget to 0
+                    if budTarget > (budDur - 1) then set budTarget to (budDur - 1)
+                    set player position to budTarget
+                end try
+            end tell
+            """)
+        }
+    }
 
     // ─────────────────────────────────────────────────────────
     //  Volume du Mac
@@ -298,76 +534,108 @@ enum MusicBridge {
 
     /// Volume de sortie du Mac, 0 à 100, et son état de coupure.
     ///
-    /// CoreAudio d'abord : c'est un appel direct au pilote, sans processus
-    /// ni événement Apple. AppleScript ne sert plus que de filet, pour les
-    /// rares sorties dont CoreAudio n'expose pas le volume.
+    /// CoreAudio seul : c'est un appel direct au pilote, qui revient en
+    /// quelques microsecondes. Il n'y a donc rien à sortir du fil
+    /// principal ici, et surtout plus d'osascript de secours — lancer un
+    /// processus pour lire un volume était la latence que vous sentiez.
     static func systemVolume() -> (level: Int, muted: Bool, settable: Bool) {
-        if let v = SystemAudio.volume() {
-            return (Int((v * 100).rounded()), SystemAudio.muted() ?? false, true)
-        }
-        let r = runShellDetailed("/usr/bin/osascript",
-                           ["-e", "set v to output volume of (get volume settings)",
-                            "-e", "set m to output muted of (get volume settings)",
-                            "-e", "return (v as string) & \"|\" & (m as string)"])
-        let p = r.out.components(separatedBy: "|")
-        guard p.count >= 2 else { return (50, false, false) }
-        // Une sortie sans volume réglable renvoie -1 : on n'en fait pas un
-        // 0, qui laisserait croire que le son est coupé.
-        let lvl = Int(p[0].trimmingCharacters(in: .whitespaces)) ?? 50
-        let muted = p[1].trimmingCharacters(in: .whitespaces).lowercased() == "true"
-        return (lvl < 0 ? 50 : min(100, lvl), muted, lvl >= 0)
+        guard let v = SystemAudio.volume() else { return (50, false, false) }
+        return (Int((v * 100).rounded()), SystemAudio.muted() ?? false, true)
     }
 
+    /// CoreAudio d'abord. Le filet AppleScript ne sert plus qu'aux rares
+    /// sorties dont CoreAudio n'expose pas le volume, et il part sur la
+    /// file série : écrire un volume ne doit pas retenir le fil principal.
     static func setSystemVolume(_ v: Int) {
         let n = max(0, min(100, v))
         if SystemAudio.setVolume(Float(n) / 100) { return }
-        runShell("/usr/bin/osascript", ["-e", "set volume output volume \(n)"])
+        q.async { _ = osa("set volume output volume \(n)") }
     }
 
     static func setSystemMuted(_ m: Bool) {
         if SystemAudio.setMuted(m) { return }
-        runShell("/usr/bin/osascript", ["-e", "set volume output muted \(m)"])
+        q.async { _ = osa("set volume output muted \(m)") }
     }
+
+    // ─────────────────────────────────────────────────────────
+    //  Volume de Musique
+    //
+    //  Le curseur est continu : un glissement produit des
+    //  dizaines de valeurs. Lancer un osascript par valeur
+    //  saturait la file et le son suivait le doigt avec une
+    //  seconde de retard. On n'en garde donc qu'une en attente,
+    //  la dernière, et une seule écriture en vol.
+    // ─────────────────────────────────────────────────────────
+
+    private static var pendingVolume: Int?
+    private static var volumeWriting = false
 
     static func setVolume(_ v: Int) {
-        guard running() else { return }
-        osa("tell application \"Music\" to set sound volume to \(max(0, min(100, v)))")
+        let n = max(0, min(100, v))
+        if Thread.isMainThread { pendingVolume = n; pumpVolume() }
+        else { DispatchQueue.main.async { pendingVolume = n; pumpVolume() } }
     }
 
+    /// Sur le fil principal, qui sérialise l'accès aux deux variables.
+    private static func pumpVolume() {
+        guard !volumeWriting, let n = pendingVolume else { return }
+        pendingVolume = nil
+        volumeWriting = true
+        q.async {
+            _ = osa("tell application \"Music\" to set sound volume to \(n)")
+            DispatchQueue.main.async {
+                volumeWriting = false
+                pumpVolume()
+            }
+        }
+    }
+
+    /// Monte ou baisse le volume de Musique d'un cran. La lecture et
+    /// l'écriture restent sur la même file série : sans cela, deux « monte
+    /// le son » rapprochés lisaient tous deux l'ancienne valeur et le
+    /// second annulait le premier.
     static func changeVolume(by delta: Int) {
         guard running() else { return }
-        let cur = Int(num(osa("tell application \"Music\" to get sound volume")))
-        setVolume(cur + delta)
+        q.async {
+            let r = osa("tell application \"Music\" to get sound volume")
+            guard r.ok else { return }
+            let target = max(0, min(100, Int(num(r.out)) + delta))
+            _ = osa("tell application \"Music\" to set sound volume to \(target)")
+        }
     }
 
     static func toggleShuffle() {
         guard running() else { return }
-        osa("""
-        tell application "Music"
-            try
-                set shuffle enabled to not (shuffle enabled)
-            end try
-        end tell
-        """)
+        q.async {
+            _ = osa("""
+            tell application "Music"
+                try
+                    set shuffle enabled to not (shuffle enabled)
+                end try
+            end tell
+            """)
+        }
     }
 
     /// off → all → one → off
     static func cycleRepeat() {
         guard running() else { return }
-        osa("""
-        tell application "Music"
-            try
-                set r to (song repeat as string)
-                if r is "off" then
-                    set song repeat to all
-                else if r is "all" then
-                    set song repeat to one
-                else
-                    set song repeat to off
-                end if
-            end try
-        end tell
-        """)
+        q.async {
+            _ = osa("""
+            tell application "Music"
+                try
+                    set budMode to (song repeat as text)
+                    if budMode is "off" then
+                        set song repeat to all
+                    else if budMode is "all" then
+                        set song repeat to one
+                    else
+                        set song repeat to off
+                    end if
+                end try
+            end tell
+            """)
+        }
     }
 }
 
@@ -406,18 +674,18 @@ enum ArtworkStore {
         guard !loading else { return nil }
         loading = true
 
-        DispatchQueue.global(qos: .utility).async {
-            let r = MusicBridge.exportArtwork()
-            DispatchQueue.main.async {
-                loading = false
-                // La clé rendue par le script prime : c'est le morceau
-                // réellement exporté, qui n'est pas forcément celui demandé.
-                if let got = r, !got.key.isEmpty { key = got.key } else { key = k }
-                image = r?.image
-                let served = waiting
-                waiting = []
-                served.forEach { $0(image) }
-            }
+        // L'export part sur la file série de la passerelle, celle qui porte
+        // déjà la lecture d'état : deux osascript en vol se gênaient, et le
+        // retour arrive sur le fil principal, où vit ce cache.
+        MusicBridge.exportArtwork { r in
+            loading = false
+            // La clé rendue par le script prime : c'est le morceau
+            // réellement exporté, qui n'est pas forcément celui demandé.
+            if let got = r, !got.key.isEmpty { key = got.key } else { key = k }
+            image = r?.image
+            let served = waiting
+            waiting = []
+            served.forEach { $0(image) }
         }
         return nil
     }
@@ -538,13 +806,24 @@ final class MusicPanelView: NSView {
         // ── Transport : reculer · précédent · lecture · suivant · avancer ──
         let ty = H - 326
         let tw = (W - 60) / 6
+        // Chaque bouton dit d'abord ce qu'il attend, puis le demande. Le
+        // saut de quinze secondes bouge la barre tout de suite ; la lecture
+        // retourne l'icône tout de suite ; l'arrêt éteint l'égaliseur tout
+        // de suite. Musique confirme quatre dixièmes plus tard, et corrige
+        // si elle a refusé.
         let specs: [(String, () -> Void)] = [
-            ("gobackward.15", { [weak self] in self?.run { MusicBridge.seek(by: -15) } }),
-            ("backward.fill", { [weak self] in self?.run { MusicBridge.previous() } }),
-            ("play.fill", { [weak self] in self?.run { MusicBridge.playPause() } }),
-            ("stop.fill", { [weak self] in self?.run { MusicBridge.stop() } }),
-            ("forward.fill", { [weak self] in self?.run { MusicBridge.next() } }),
-            ("goforward.15", { [weak self] in self?.run { MusicBridge.seek(by: 15) } })
+            ("gobackward.15", { [weak self] in
+                self?.act({ $0.position = max(0, $0.position - 15) }) { MusicBridge.seek(by: -15) } }),
+            ("backward.fill", { [weak self] in
+                self?.act({ _ in }) { MusicBridge.previous() } }),
+            ("play.fill", { [weak self] in
+                self?.act({ $0.playing.toggle() }) { MusicBridge.playPause() } }),
+            ("stop.fill", { [weak self] in
+                self?.act({ $0.playing = false; $0.position = 0 }) { MusicBridge.stop() } }),
+            ("forward.fill", { [weak self] in
+                self?.act({ _ in }) { MusicBridge.next() } }),
+            ("goforward.15", { [weak self] in
+                self?.act({ $0.position = min($0.duration, $0.position + 15) }) { MusicBridge.seek(by: 15) } })
         ]
         var made: [GlassButton] = []
         for (i, sp) in specs.enumerated() {
@@ -562,10 +841,17 @@ final class MusicPanelView: NSView {
         let mw = (W - 12) / 2
         shuffleBtn = GlassButton(frame: NSRect(x: 0, y: my, width: mw, height: 46),
                                  title: "Aléatoire", icon: "shuffle")
-        shuffleBtn.onClick = { [weak self] _ in self?.run { MusicBridge.toggleShuffle() } }
+        shuffleBtn.onClick = { [weak self] _ in
+            self?.act({ $0.shuffle.toggle() }) { MusicBridge.toggleShuffle() }
+        }
         repeatBtn = GlassButton(frame: NSRect(x: mw + 12, y: my, width: mw, height: 46),
                                 title: "Répétition", icon: "repeat")
-        repeatBtn.onClick = { [weak self] _ in self?.run { MusicBridge.cycleRepeat() } }
+        repeatBtn.onClick = { [weak self] _ in
+            self?.act({ n in
+                n.repeatMode = n.repeatMode == "off" ? "all"
+                             : (n.repeatMode == "all" ? "one" : "off")
+            }) { MusicBridge.cycleRepeat() }
+        }
         [shuffleBtn, repeatBtn].forEach { addSubview($0) }
 
         // ── Les deux volumes ──
@@ -718,27 +1004,79 @@ final class MusicPanelView: NSView {
 
     @objc private func releaseVolume() { volumeHeld = false }
 
-    /// Exécute une commande puis relit l'état : Music met un instant
-    /// à répondre, d'où le léger délai avant le rafraîchissement.
-    private func run(_ body: @escaping () -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            body()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.refresh()
-            }
+    /// Exécute une commande, et montre tout de suite ce qu'elle va faire.
+    ///
+    /// L'ordre compte. Avant, le bouton attendait la réponse de Musique
+    /// pour changer d'aspect : trois dixièmes de seconde pendant lesquels
+    /// rien ne bougeait, assez pour qu'on reclique. Maintenant l'affichage
+    /// part devant — `expect` applique l'effet attendu localement — et la
+    /// relecture ne sert plus qu'à corriger si Musique a refusé.
+    private func act(_ expect: (inout NowPlaying) -> Void, _ body: @escaping () -> Void) {
+        var guess = last
+        expect(&guess)
+        apply(guess, confirmed: false)
+        body()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.refresh()
         }
     }
 
     func refresh() {
-        DispatchQueue.global(qos: .utility).async {
-            let n = MusicBridge.nowPlaying()
-            DispatchQueue.main.async { [weak self] in self?.apply(n) }
-        }
+        MusicBridge.read { [weak self] n in self?.apply(n) }
     }
 
-    func apply(_ n: NowPlaying) {
+    // ─────────────────────────────────────────────────────────
+    //  L'horloge de lecture
+    //
+    //  L'état est relu toutes les quatre secondes. Avec ça
+    //  seul, le compteur avançait par bonds de quatre et la
+    //  barre sautait. Le temps, lui, passe tout seul : il
+    //  suffit de l'ajouter entre deux relectures, et de se
+    //  recaler sur la vérité quand elle arrive.
+    // ─────────────────────────────────────────────────────────
+
+    private var clockTimer: Timer?
+    private var clockBase: Double = 0
+    private var clockAt = Date()
+
+    private func startClock() {
+        guard clockTimer == nil else { return }
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.tickClock() }
+        RunLoop.main.add(t, forMode: .common)
+        clockTimer = t
+    }
+
+    private func stopClock() {
+        clockTimer?.invalidate()
+        clockTimer = nil
+    }
+
+    private func tickClock() {
+        guard last.playing, last.positionKnown, last.duration > 0 else { return }
+        guard window != nil, !isHiddenOrHasHiddenAncestor else { return }
+        let p = min(last.duration, clockBase + Date().timeIntervalSince(clockAt))
+        last.position = p
+        timeLabel.stringValue = last.timeText
+        bar.value = CGFloat(last.progress)
+    }
+
+    func apply(_ n: NowPlaying) { apply(n, confirmed: true) }
+
+    /// `confirmed` distingue l'état relu de l'état supposé. Un état supposé
+    /// bouge les boutons mais ne touche ni la pochette ni l'horloge : on
+    /// n'a pas de raison de croire que le morceau a changé parce qu'on
+    /// vient d'appuyer sur « aléatoire ».
+    func apply(_ n: NowPlaying, confirmed: Bool) {
+        let trackChanged = n.trackKey != last.trackKey
+        let positionMoved = abs(n.position - last.position) > 1.5
         last = n
         onNowPlaying?(n)
+
+        if confirmed && (trackChanged || positionMoved || !n.playing) {
+            clockBase = n.position
+            clockAt = Date()
+        }
+        if n.playing && n.positionKnown { startClock() } else { stopClock() }
 
         if !n.available {
             titleLabel.stringValue = "Musique est fermée"
@@ -770,15 +1108,21 @@ final class MusicPanelView: NSView {
         bar.value = CGFloat(n.progress)
         eq.playing = n.playing
 
+        // Un volume inconnu n'est pas un volume à 50 : le curseur se
+        // désactive au lieu de montrer un chiffre inventé, et c'est le
+        // volume du Mac juste au-dessus qui reste la vraie poignée.
         if !volumeHeld {
+            volSlider.isEnabled = n.volumeKnown
             volSlider.doubleValue = Double(n.volume)
-            volLabel.stringValue = "\(n.volume)"
+            volLabel.stringValue = n.volumeKnown ? "\(n.volume)" : "n/d"
         }
         // L'icône dit l'action à venir, pas l'état présent : pendant la
         // lecture on offre la pause, à l'arrêt on offre la lecture.
         playBtn.iconName = n.playing ? "pause.fill" : "play.fill"
         stopBtn.enabledFlag = n.playing || n.hasTrack
 
+        shuffleBtn.enabledFlag = n.modesKnown
+        repeatBtn.enabledFlag = n.modesKnown
         shuffleBtn.prominent = n.shuffle
         repeatBtn.prominent = n.repeatMode != "off"
         repeatBtn.title = n.repeatMode == "one" ? "Répéter ce titre"
@@ -787,10 +1131,14 @@ final class MusicPanelView: NSView {
 
         // Un obstacle l'emporte sur tout le reste : tant qu'on ne dit pas
         // pourquoi rien ne s'affiche, l'utilisateur croit à une panne.
+        // Mais la phrase est toujours en clair, et le bouton d'autorisation
+        // n'apparaît que si c'est bien l'autorisation qui manque — le
+        // proposer pour n'importe quel ennui envoyait cocher une case déjà
+        // cochée.
         if !n.trouble.isEmpty {
             hint.stringValue = n.trouble
             hint.textColor = warnColor
-            authBtn.isHidden = false
+            authBtn.isHidden = !n.needsAuth
         } else {
             hint.textColor = TH.dim(0.42)
             authBtn.isHidden = true
@@ -810,16 +1158,22 @@ final class MusicPanelView: NSView {
     }
 
     /// Intentions du chat. Renvoie la phrase que BUD répondra.
+    ///
+    /// Le chat répond depuis le dernier état connu, jamais en interrogeant
+    /// Musique sur-le-champ : cette fonction est appelée sur le fil
+    /// principal, et un osascript synchrone y gelait la frappe le temps
+    /// d'un aller-retour. L'état a au plus quatre secondes, et l'annonce de
+    /// Musique le corrige dès qu'un morceau change.
     func command(_ what: String) -> String {
         switch what {
         case "play", "pause", "playpause", "toggle":
-            MusicBridge.playPause(); refresh()
+            act({ $0.playing.toggle() }) { MusicBridge.playPause() }
             return "C'est fait."
         case "next":
-            MusicBridge.next(); refresh()
+            act({ _ in }) { MusicBridge.next() }
             return "Morceau suivant."
         case "previous", "prev":
-            MusicBridge.previous(); refresh()
+            act({ _ in }) { MusicBridge.previous() }
             return "Morceau précédent."
         case "volup", "up":
             MusicBridge.changeVolume(by: 10); refresh()
@@ -828,14 +1182,17 @@ final class MusicPanelView: NSView {
             MusicBridge.changeVolume(by: -10); refresh()
             return "Volume baissé."
         case "shuffle", "aleatoire":
-            MusicBridge.toggleShuffle(); refresh()
+            act({ $0.shuffle.toggle() }) { MusicBridge.toggleShuffle() }
             return "Lecture aléatoire basculée."
         case "open":
             MusicBridge.launch()
             return "J'ouvre Musique."
         default:
-            let n = MusicBridge.nowPlaying()
-            if !n.available { return "Musique est fermée." }
+            refresh()
+            if !MusicBridge.running() { return "Musique est fermée." }
+            var n = last
+            n.fill(from: MusicFeed.last, scriptSpoke: n.hasTrack,
+                   estimate: MusicFeed.estimatedPosition())
             return n.hasTrack
                 ? (n.playing ? "En lecture : \(n.oneLine)." : "En pause sur \(n.oneLine).")
                 : "Rien en lecture."

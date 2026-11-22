@@ -167,6 +167,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
         panel.orderFrontRegardless()
 
+        // Musique parle d'elle-même : on l'écoute avant de commencer à
+        // l'interroger. C'est la source qui ne demande aucune autorisation
+        // et qui ne coûte aucun processus.
+        MusicFeed.onChange = { [weak self] in self?.musicAnnounced() }
+        MusicFeed.start()
+
         animTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.animate() }
         RunLoop.main.add(animTimer!, forMode: .common)
         tickTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
@@ -429,6 +435,11 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     /// Relit l'état de Music hors du fil principal : osascript coûte
     /// une centaine de millisecondes, ce qui se verrait sur l'animation.
+    ///
+    /// Ce sondage n'est plus la source principale. Musique annonce ses
+    /// changements d'elle-même, et `MusicFeed` fait suivre le notch dans
+    /// la seconde ; le sondage vient derrière, confirmer la position, le
+    /// volume et les modes, que l'annonce ne porte pas.
     private func pollMusic() {
         guard MusicBridge.running() else {
             if nowPlayingTitle != "" || chrome.musicPlaying { applyNowPlaying(NowPlaying()) }
@@ -436,15 +447,36 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
         guard !musicPollInFlight else { return }
         musicPollInFlight = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let n = MusicBridge.nowPlaying()
-            DispatchQueue.main.async {
-                guard let s = self else { return }
-                s.musicPollInFlight = false
-                s.applyNowPlaying(n)
-                if s.currentTab == s.tabMusic { s.musicPanel.apply(n) }
-            }
+        MusicBridge.read { [weak self] n in
+            guard let s = self else { return }
+            s.musicPollInFlight = false
+            s.applyNowPlaying(n)
+            if s.currentTab == s.tabMusic { s.musicPanel.apply(n) }
         }
+    }
+
+    /// Ce que Musique vient d'annoncer, répercuté sans attendre le sondage.
+    ///
+    /// Le titre et l'état suffisent au notch et à la danse de BUD, et ils
+    /// arrivent entiers dans la notification. Le reste — position, volume,
+    /// modes — attend la relecture, qu'on déclenche aussitôt puisqu'on sait
+    /// maintenant qu'il y a du nouveau.
+    private func musicAnnounced() {
+        guard let a = MusicFeed.last else {
+            applyNowPlaying(NowPlaying())
+            return
+        }
+        var n = NowPlaying()
+        n.available = true
+        n.source = .feed
+        n.title = a.title
+        n.artist = a.artist
+        n.album = a.album
+        n.playing = a.playing
+        n.duration = a.duration
+        n.trackKey = a.trackKey
+        applyNowPlaying(n)
+        pollMusic()
     }
 
     /// Répercute la lecture sur le notch et sur le personnage.

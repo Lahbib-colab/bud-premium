@@ -2,6 +2,28 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.4 — un mot de deux lettres
+
+**`st` est un mot réservé d'AppleScript.** C'est un suffixe ordinal, de la famille de `st`/`nd`/`rd`/`th`, comme dans `1st item`. Les deux scripts de BUD commençaient par `set st to "stopped"` : aucun des deux ne compilait.
+
+Deux conséquences, qui semblaient sans rapport. L'onglet Musique affichait « Rien en lecture » pendant que le son jouait, avec une erreur de syntaxe sous les boutons. Et la pochette ne s'était jamais affichée depuis le jour où je l'avais écrite — c'était le même mot.
+
+**Les blocs `try` ne protégeaient rien.** Ils attrapent les erreurs d'exécution ; une erreur de compilation arrive avant que la première ligne ne s'exécute. Vingt lignes prudemment protégées ne valent rien si le script ne compile pas. Toutes les variables portent désormais un préfixe `bud`, qui ne peut collisionner ni avec un mot du langage ni avec un terme du dictionnaire de Musique — ni aujourd'hui ni dans la version d'après. Un contrôle automatique le vérifie.
+
+**Musique annonce ses changements : BUD l'écoute.** `Sources/BudMusicFeed.swift` observe la notification distribuée `com.apple.Music.playerInfo`. Elle porte le titre, l'artiste, l'album, l'état et la durée, et elle a trois propriétés qu'AppleScript n'a pas : aucune autorisation à accorder, aucun processus à lancer, et une arrivée au moment du changement plutôt qu'au sondage suivant. Elle ne dit rien tant que rien ne change — c'est pourquoi AppleScript reste là, non plus comme source unique mais comme second témoin.
+
+**La position n'est pas inventée.** La notification ne la porte pas. Elle n'est estimée que depuis un début de morceau, où elle vaut zéro ; une reprise après pause ne l'est pas, et là BUD préfère n'afficher aucune minuterie qu'une minuterie fausse. Entre deux relectures, une horloge locale fait avancer la barre une demi-seconde à la fois, au lieu de la faire sauter de quatre secondes.
+
+**Ce que BUD ne sait pas, il ne l'affiche plus comme valant zéro.** Un volume de Musique illisible désactive le curseur au lieu d'afficher 50 ; des modes illisibles désactivent les deux boutons. Un curseur qui montre un chiffre inventé fait chercher longtemps pourquoi le son ne suit pas.
+
+**Les erreurs techniques quittent l'interface.** Une autorisation manquante dit où cliquer ; Musique fermée se dit en trois mots. Une erreur de syntaxe, elle, est une faute de BUD : elle part dans `music.log` et l'interface se contente de dire ce qu'elle sait faire malgré tout.
+
+**Les boutons répondent au clic, non à Musique.** Chaque commande applique d'abord l'effet attendu — l'icône se retourne, l'égaliseur s'éteint, la barre saute de quinze secondes — puis demande. La confirmation arrive quatre dixièmes plus tard et corrige si Musique a refusé. Plus rien ne traverse le fil principal : tout AppleScript passe par une file série, qui empêche aussi deux scripts de se voler leurs messages d'erreur. Le curseur de volume de Musique ne garde qu'une écriture en attente, la dernière, au lieu d'un processus par cran.
+
+## 24.3 — le lecteur quitte les onglets pour un panneau
+
+Un `NSPanel` rétractable remplace l'onglet Lecture, les pièces jointes s'ouvrent, et `setMode` ne masque plus les vues une à une — un mode qui en cache une par une est un mode qui en oubliera une.
+
 ## 24.2 — un système de sous-agents
 
 **[`AGENTS.md`](AGENTS.md)** décrit le contrat ; `Sources/BudScripts.swift` l'exécute.
