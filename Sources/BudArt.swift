@@ -33,17 +33,35 @@ enum BudArt {
     /// installation par les sources d'une version antérieure, par
     /// exemple : l'habillage retombe alors sur le dessin vectoriel plutôt
     /// que d'afficher un carré vide.
-    static let dots = load("bud-dots")
-    static let body = load("bud-body")
+    // ─────────────────────────────────────────────────────────
+    //  Deux encres, choisies par le thème
+    //
+    //  Jusqu'ici BUD n'avait que l'illustration blanche, qui
+    //  s'évanouit sur un fond clair — on voyait les billes et
+    //  plus rien du corps. Les deux polarités du même dessin
+    //  règlent cela sans compromis : la blanche sur les thèmes
+    //  sombres, la noire sur les clairs.
+    //
+    //  Le suffixe dit la couleur de l'encre, pas celle du fond :
+    //  « light » est l'illustration claire, celle qu'on pose sur
+    //  du sombre.
+    // ─────────────────────────────────────────────────────────
+
+    /// Le suffixe des fichiers pour le thème courant.
+    static var ink: String { TH.dark ? "light" : "dark" }
+
+    /// La couleur dont BUD repeint le visage : celle du corps, sinon
+    /// les traits flotteraient dans une teinte étrangère au dessin.
+    static var faceInk: NSColor {
+        TH.dark ? NSColor(calibratedWhite: 0.97, alpha: 1)
+                : NSColor(calibratedWhite: 0.07, alpha: 1)
+    }
+
+    static var dots: NSImage? { letter("bud-dots-\(ink)") }
+    static var body: NSImage? { letter("bud-body-\(ink)") }
 
     /// Vrai quand le paquet porte de quoi dessiner le compagnon.
     static var hasCompanion: Bool { dots != nil && body != nil }
-
-    private static func load(_ name: String) -> NSImage? {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
-              let img = NSImage(contentsOf: url) else { return nil }
-        return img
-    }
 
     // ─────────────────────────────────────────────────────────
     //  La boîte du visage, relevée sur l'illustration
@@ -54,10 +72,12 @@ enum BudArt {
     //  posent exactement où le visage était.
     // ─────────────────────────────────────────────────────────
 
-    private static let faceX: CGFloat = 0.2750
-    private static let faceY: CGFloat = 0.3020     // 1 − (0.4723 + 0.2257)
-    private static let faceW: CGFloat = 0.4322
-    private static let faceH: CGFloat = 0.2258
+    //  Relevés sur les deux rendus et moyennés : ils diffèrent de trois
+    //  pour mille, et trancher pour l'un aurait décalé l'autre.
+    private static let faceX: CGFloat = 0.28278
+    private static let faceY: CGFloat = 0.30103     // 1 − (0.47248 + 0.22649)
+    private static let faceW: CGFloat = 0.42140
+    private static let faceH: CGFloat = 0.22649
 
     /// Dessine le Ü dans un cadre, billes animées et visage peint.
     ///
@@ -130,7 +150,9 @@ enum BudArt {
     private static let mouthW: CGFloat = 0.365
     private static let mouthH: CGFloat = 0.427
 
-    static func drawFace(in box: NSRect, mood: BudMood, clock: CGFloat) {
+    static func drawFace(in box: NSRect, mood: BudMood, clock: CGFloat,
+                         ink: NSColor? = nil) {
+        inkColor = ink ?? faceInk
         guard box.width > 6, box.height > 4 else { return }
         let fine = box.width >= 44          // assez grand pour du détail
 
@@ -231,9 +253,17 @@ enum BudArt {
     //  aux traits l'air d'appartenir à la même matière que le U.
     // ─────────────────────────────────────────────────────────
 
+    /// L'encre du visage, posée par `drawFace` avant de tracer.
+    private static var inkColor = NSColor.white
+
     private static func paint(_ path: NSBezierPath, in bounds: NSRect) {
-        let g = NSGradient(colors: [NSColor(calibratedWhite: 1.00, alpha: 1),
-                                    NSColor(calibratedWhite: 0.84, alpha: 1)])
+        // Le même léger poids vers le bas dans les deux encres : sur la
+        // noire, c'est un éclaircissement, pas un assombrissement — un
+        // dégradé qui va vers le noir sur du noir ne se voit pas.
+        let c = inkColor
+        let shade = TH.dark ? c.blended(withFraction: 0.16, of: .black)
+                            : c.blended(withFraction: 0.22, of: .white)
+        let g = NSGradient(colors: [c, shade ?? c])
         NSGraphicsContext.current?.saveGraphicsState()
         path.addClip()
         g?.draw(in: bounds, angle: -90)
@@ -417,34 +447,31 @@ extension BudArt {
     }
 
     static let wordPieces: [Piece] = [
-        Piece(name: "bud-w-B",    rect: NSRect(x: 0.00000, y: 0.17195,
-                                               width: 0.30531, height: 0.82805),
+        Piece(name: "bud-w-B",    rect: NSRect(x: 0.00000, y: 0.14822,
+                                               width: 0.32233, height: 0.84091),
               delay: 0.00, fromAbove: false),
-        Piece(name: "bud-w-U",    rect: NSRect(x: 0.31755, y: 0.30090,
-                                               width: 0.34082, height: 0.68100),
+        Piece(name: "bud-w-U",    rect: NSRect(x: 0.31147, y: 0.25791,
+                                               width: 0.35855, height: 0.74209),
               delay: 0.10, fromAbove: false),
-        Piece(name: "bud-w-D",    rect: NSRect(x: 0.68286, y: 0.18665,
-                                               width: 0.31714, height: 0.80204),
+        Piece(name: "bud-w-D",    rect: NSRect(x: 0.67485, y: 0.16008,
+                                               width: 0.32515, height: 0.83004),
               delay: 0.20, fromAbove: false),
-        Piece(name: "bud-w-dotL", rect: NSRect(x: 0.35184, y: 0.00000,
-                                               width: 0.11143, height: 0.29864),
+        Piece(name: "bud-w-dotL", rect: NSRect(x: 0.35332, y: 0.00000,
+                                               width: 0.11066, height: 0.26285),
               delay: 0.44, fromAbove: true),
-        Piece(name: "bud-w-dotR", rect: NSRect(x: 0.51184, y: 0.00000,
-                                               width: 0.11265, height: 0.29864),
+        Piece(name: "bud-w-dotR", rect: NSRect(x: 0.51187, y: 0.00000,
+                                               width: 0.11147, height: 0.26285),
               delay: 0.52, fromAbove: true)
     ]
 
-    /// Le visage du U, en fractions de la toile du mot. Mesuré sur les
-    /// traits de l'illustration, puis peint par le même pinceau que le
-    /// compagnon : c'est ce qui fait que le démarrage et le notch
-    /// montrent exactement la même tête.
-    static let wordFace = NSRect(x: 0.4176, y: 0.5407, width: 0.1469, height: 0.2500)
-
     /// Rapport largeur / hauteur de la toile du mot.
-    static let wordRatio: CGFloat = 900.0 / 325.0
+    static let wordRatio: CGFloat = 900.0 / 367.0
 
     private static var letterCache: [String: NSImage?] = [:]
 
+    /// Charge une illustration, une fois. Le cache est indexé par le nom
+    /// complet, suffixe compris : changer de thème en cours de route
+    /// change le suffixe, pas le cache, et les deux jeux coexistent.
     static func letter(_ name: String) -> NSImage? {
         if let hit = letterCache[name] { return hit }
         let img = Bundle.main.url(forResource: name, withExtension: "png")
@@ -453,9 +480,12 @@ extension BudArt {
         return img
     }
 
+    /// La pièce du mot dans l'encre du thème courant.
+    static func wordLetter(_ base: String) -> NSImage? { letter("\(base)-\(ink)") }
+
     /// Vrai quand le paquet porte de quoi animer le mot.
     static var hasWordmark: Bool {
-        wordPieces.allSatisfy { letter($0.name) != nil }
+        wordPieces.allSatisfy { wordLetter($0.name) != nil }
     }
 }
 
@@ -583,11 +613,23 @@ final class SplashView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let b = bounds
 
+        // ── La carte ──
+        //  La fenêtre est transparente : sans fond, le mot flottait sur
+        //  le papier peint, lisible ou non selon ce qu'il y avait
+        //  dessous. Une carte règle la question, et le choix de l'encre
+        //  avec : BUD pose son illustration claire sur une carte sombre,
+        //  la noire sur une carte claire, et le contraste est garanti.
+        let card = b.insetBy(dx: 10, dy: 10)
+        TH.base.withAlphaComponent(TH.dark ? 0.90 : 0.94).setFill()
+        NSBezierPath(roundedRect: card.insetBy(dx: 0.5, dy: 0.5),
+                     xRadius: Radius.xl, yRadius: Radius.xl).fill()
+        drawGlass(in: card, radius: Radius.xl, level: 1)
+
         // La toile du mot, centrée et un peu haute : les deux lignes de
         // texte occupent le bas.
-        let ww = b.width * 0.80
+        let ww = b.width * 0.76
         let wh = ww / BudArt.wordRatio
-        let canvas = NSRect(x: b.midX - ww / 2, y: b.midY - wh / 2 + 34,
+        let canvas = NSRect(x: b.midX - ww / 2, y: b.midY - wh / 2 + 30,
                             width: ww, height: wh)
 
         // ── La lueur, derrière ──
@@ -607,7 +649,7 @@ final class SplashView: NSView {
 
         var allIn = true
         for p in BudArt.wordPieces {
-            guard let img = BudArt.letter(p.name) else { continue }
+            guard let img = BudArt.wordLetter(p.name) else { continue }
             let local = phase - p.delay
             if local <= 0 { allIn = false; continue }
             let prog = min(1, local / 0.52)
@@ -629,20 +671,6 @@ final class SplashView: NSView {
             let w = dest.width * grow, h = dest.height * grow
             img.draw(in: NSRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h),
                      from: .zero, operation: .sourceOver, fraction: Double(min(1, a)))
-        }
-
-        // ── Le visage, une fois le mot assemblé ──
-        if phase > 0.92 {
-            let fa = ease((phase - 0.92) / 0.30)
-            let f = BudArt.wordFace
-            let face = NSRect(x: canvas.minX + canvas.width * f.minX,
-                              y: canvas.maxY - canvas.height * (f.minY + f.height),
-                              width: canvas.width * f.width,
-                              height: canvas.height * f.height)
-            ctx.saveGState()
-            ctx.setAlpha(fa)
-            BudArt.drawFace(in: face, mood: .calm, clock: phase)
-            ctx.restoreGState()
         }
 
         // ── Le reflet ──

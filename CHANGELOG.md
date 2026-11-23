@@ -2,6 +2,22 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.9 — deux encres, et un fond
+
+**Votre logo existe maintenant en noir et en blanc, et BUD choisit.** L'illustration claire sur les thèmes sombres, la noire sur les clairs. Jusqu'ici il n'avait que la blanche : sur un fond clair on voyait les deux billes et plus rien du corps. Le suffixe des fichiers dit la couleur de l'encre, pas celle du fond.
+
+**Le visage se repeint dans l'encre du corps.** Un compagnon noir avec des yeux blancs ne serait pas le même dessin. Le léger poids vers le bas des traits est conservé dans les deux cas, mais inversé : sur l'encre noire c'est un éclaircissement, parce qu'un dégradé qui va vers le noir sur du noir ne se voit pas.
+
+**Le splash a un fond.** Sa fenêtre est transparente : sans carte, le mot flottait sur le papier peint, lisible ou non selon ce qu'il y avait dessous. Une carte règle la question et le choix de l'encre avec — illustration claire sur carte sombre, noire sur carte claire, contraste garanti quel que soit l'écran.
+
+**Le mot retrouve son visage dessiné.** En 24.8 il fallait le repeindre : les traits de l'image au damier étaient des lignes fines qui n'auraient pas survécu au détourage. Les nouveaux fonds unis les rendent extractibles, et l'original est plus fin que tout ce qu'on repeindrait. Le compagnon, lui, garde son visage peint en code — sans quoi il sourirait même en colère.
+
+**Le détourage est devenu exact.** Fonds unis, plus de damier à soustraire. Un piège demeurait, et il n'était pas symétrique : sur la version noire, les reflets spéculaires sont presque blancs, donc presque de la couleur du fond, et un alpha tiré de la seule luminance les aurait percés — la lettre trouée là où elle brille le plus. D'où deux canaux combinés, la couverture pour le bord lissé et une silhouette érodée pour forcer l'opacité à l'intérieur.
+
+**Le B et le U se touchent dans la version noire.** Les deux rendus du mot se recouvrent à 98,5 % : ce sont les mêmes formes. La géométrie est donc relevée une seule fois, sur la version blanche où les lettres sont séparées, et les deux sont découpées aux mêmes rectangles — les calques se superposent exactement et le code n'a qu'une table de positions à connaître.
+
+**Les deux rendus du Ü diffèrent de trois pour mille** sur la position du visage. BUD prend la moyenne : trancher pour l'un aurait décalé l'autre.
+
 ## 24.8 — un démarrage qui s'annonce
 
 **Le mot est découpé en cinq calques** — B, U, D et les deux billes — et chacun entre à son tour. C'est le décalage qui fait l'effet : un mot qui apparaît d'un bloc n'a pas de mouvement, il a une transition.
