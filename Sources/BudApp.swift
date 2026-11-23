@@ -488,12 +488,16 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     /// demande pas deux fois vaut mieux qu'un écran de réglages de plus.
     private func demoMoods() {
         let show: [(BudMood, String)] = [
-            (.calm, "Normal"), (.angry, "Colère"),
-            (.dizzy, "Étourdi"), (.thinking, "Réfléchi")
+            (.calm, "Normal"), (.speaking, "Parle"), (.listening, "Écoute"),
+            (.proud, "Fier"), (.confused, "Perplexe"), (.thinking, "Réfléchi"),
+            (.sad, "Déçu"), (.angry, "Colère"), (.dizzy, "Étourdi")
         ]
+        // Onze dixièmes chacune : assez pour voir la posture s'installer,
+        // pas assez pour que la démonstration devienne une attente. Elle
+        // se rejoue en recliquant sur l'habillage.
         for (i, s) in show.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.6) { [weak self] in
-                self?.mood(s.0, 1.7)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.1) { [weak self] in
+                self?.mood(s.0, 1.2)
                 self?.setStatus("Humeur : \(s.1)")
             }
         }
@@ -517,6 +521,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             // On montre qu'on écoute avant d'avoir compris : sans ce
             // signe, on répète la phrase en croyant n'avoir pas été
             // entendu, et les deux se mélangent.
+            s.mood(.listening, 3.4)
             s.coucou("Je vous écoute", "", hold: 3)
             s.avatar?.needsDisplay = true
         }
@@ -644,6 +649,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                     s.coucou("Capture enregistrée", u.lastPathComponent, hold: 5, push: false)
                 }
             } else {
+                s.mood(.sad, 3)
                 s.setStatus(r.message)
             }
         }
@@ -763,6 +769,13 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         cleanPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         cleanPanel.onCleaned = { [weak self] in self?.storagePanel.refresh(animated: true) }
         chatPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
+        chatPanel.onSpoke = { [weak self] understood in
+            // Parler quand il a compris, être perplexe sinon. C'est la
+            // seule humeur qui soit déclenchée par une absence de
+            // résultat, et elle vaut mieux qu'un sourire poli devant un
+            // « je n'ai pas saisi ».
+            self?.mood(understood ? .speaking : .confused, understood ? 2.2 : 3.2)
+        }
         mailPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         mailPanel.onDanger = { [weak self] n in
             // La colère est réservée à ça : un message dangereux arrivé
@@ -1486,8 +1499,13 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             return "J'ouvre une recherche sur « \(q) »."
         }
         a.runAgent = { name, payload, reply in
-            ScriptAgents.shared.run(name, payload: payload) { out in
-                guard out.ok else { reply(out.error ?? "Le sous-agent a échoué."); return }
+            ScriptAgents.shared.run(name, payload: payload) { [weak self] out in
+                guard out.ok else {
+                    self?.mood(.sad, 3)
+                    reply(out.error ?? "Le sous-agent a échoué.")
+                    return
+                }
+                self?.mood(.proud, 2.6)
                 var lines = [out.summary]
                 for i in out.items.prefix(12) {
                     let mark = i.level == "warning" ? "⚠︎" : (i.level == "action" ? "▸" : "·")

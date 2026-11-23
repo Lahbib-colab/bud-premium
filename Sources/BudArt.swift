@@ -101,11 +101,26 @@ enum BudArt {
         // Le visage suit le corps et non le cadre : quand BUD se tasse,
         // ses yeux se tassent avec lui. Peint après le corps, avant les
         // billes, comme dans l'illustration.
-        let face = NSRect(x: bodyRect.minX + bodyRect.width * faceX,
-                          y: bodyRect.minY + bodyRect.height * faceY,
-                          width: bodyRect.width * faceW,
-                          height: bodyRect.height * faceH)
-        drawFace(in: face, mood: mood, clock: clock)
+        // Le visage grandit quand le compagnon rétrécit.
+        //
+        // Dans le notch replié, BUD tient dans 34 × 32 points : la cavité
+        // du U n'y fait que douze points sur sept, et toutes les humeurs
+        // s'y ressemblaient. Les réduire fidèlement, c'est les perdre.
+        //
+        // C'est le principe de l'icône : on la redessine, on ne la
+        // rétrécit pas. Le visage est donc agrandi d'un peu plus d'un
+        // cinquième en dessous de soixante points, autour du même
+        // centre. Pas davantage : à une fois et demie, les arches
+        // débordaient de l'anneau du U. Au-delà de soixante points, il
+        // reprend les proportions exactes relevées sur l'illustration.
+        let small = max(0, min(1, (60 - bodyRect.width) / 26))
+        let grow = 1 + 0.22 * small
+        let fw = bodyRect.width * faceW * grow
+        let fh = bodyRect.height * faceH * grow
+        let fcx = bodyRect.minX + bodyRect.width * (faceX + faceW / 2)
+        let fcy = bodyRect.minY + bodyRect.height * (faceY + faceH / 2)
+        drawFace(in: NSRect(x: fcx - fw / 2, y: fcy - fh / 2, width: fw, height: fh),
+                 mood: mood, clock: clock)
 
         // Les billes montent, et penchent autour du centre du cadre.
         let lift = beat * rect.height * 0.055
@@ -242,6 +257,52 @@ enum BudArt {
             // et le contre.
             bar(at: CGPoint(x: mc.x - mw * 0.14, y: mc.y),
                 w: mw * 0.74, thick: mh * 0.28, angle: -6)
+
+        case .listening:
+            // L'écoute, ce sont des yeux ouverts et immobiles. Les
+            // pupilles ne bougent pas : un regard qui balaie dit qu'on
+            // cherche, pas qu'on écoute. La vie est dans la pulsation,
+            // qui suit la même horloge que les billes au-dessus.
+            let beat = 1 + 0.10 * sin(clock * 5.2)
+            blob(at: lc, w: ew * 0.56 * beat, h: eh * 1.02 * beat)
+            blob(at: rc, w: ew * 0.56 * beat, h: eh * 1.02 * beat)
+            bar(at: mc, w: mw * 0.52, thick: mh * 0.26, angle: 0)
+
+        case .speaking:
+            // Les yeux de toujours, et la bouche qui s'ouvre et se ferme.
+            // Deux fréquences superposées, parce qu'une bouche qui bat à
+            // intervalle régulier mâche au lieu de parler.
+            arch(at: lc, w: ew, h: eh); arch(at: rc, w: ew, h: eh)
+            let talk = 0.40 + 0.60 * abs(sin(clock * 7.4) * 0.7 + sin(clock * 11.3) * 0.3)
+            smile(at: mc, w: mw * (0.92 + 0.10 * talk), h: mh * (0.45 + 0.85 * talk))
+
+        case .proud:
+            // La fierté se distingue de la simple joie par l'ouverture :
+            // des arches plus hautes, une bouche plus large. Même visage,
+            // poussé — si c'était un autre dessin, on ne lirait plus BUD.
+            arch(at: CGPoint(x: lc.x, y: lc.y + eh * 0.06), w: ew * 1.10, h: eh * 1.12)
+            arch(at: CGPoint(x: rc.x, y: rc.y + eh * 0.06), w: ew * 1.10, h: eh * 1.12)
+            smile(at: mc, w: mw * 1.30, h: mh * 1.22)
+
+        case .sad:
+            // Les arches retournées. C'est le seul changement nécessaire :
+            // une arche vers le haut sourit, vers le bas elle s'attriste,
+            // et l'œil le lit avant toute autre chose.
+            valley(at: CGPoint(x: lc.x, y: lc.y - eh * 0.10), w: ew * 0.94, h: eh * 0.90)
+            valley(at: CGPoint(x: rc.x, y: rc.y - eh * 0.10), w: ew * 0.94, h: eh * 0.90)
+            frown(at: CGPoint(x: mc.x, y: mc.y - mh * 0.06), w: mw * 0.96, h: mh * 0.62)
+
+        case .confused:
+            // Perplexe : un œil grand ouvert, l'autre plissé, et les
+            // sourcils en désaccord. L'asymétrie est tout le message —
+            // deux yeux traités pareil ne disent jamais le doute.
+            blob(at: lc, w: ew * 0.52, h: eh * 0.96)
+            bar(at: rc, w: ew * 0.80, thick: eh * 0.30, angle: 0)
+            if fine {
+                bar(at: CGPoint(x: lc.x, y: lc.y + eh * 0.82),
+                    w: ew * 0.76, thick: eh * 0.20, angle: 13)
+            }
+            wavy(at: mc, w: mw * 0.92, h: mh * 0.34, width: max(1.4, mh * 0.26), phase: 0)
         }
     }
 
@@ -291,6 +352,24 @@ enum BudArt {
         p.appendArc(withCenter: base, radius: r, startAngle: 0, endAngle: 180)
         p.appendArc(withCenter: base, radius: max(0.5, r - th),
                     startAngle: 180, endAngle: 0, clockwise: true)
+        p.close()
+        fill(p)
+    }
+
+    /// Une arche retournée « ⌄ » : l'œil triste.
+    ///
+    /// Le même tracé que `arch`, au signe près. C'est voulu : l'œil
+    /// reconnaît la parenté des deux formes avant d'en lire le sens, et
+    /// la tristesse se lit comme une joie renversée plutôt que comme un
+    /// autre dessin.
+    private static func valley(at c: CGPoint, w: CGFloat, h: CGFloat) {
+        let r = w / 2
+        let th = max(1.2, h * 0.52)
+        let p = NSBezierPath()
+        let base = CGPoint(x: c.x, y: c.y + h * 0.18)
+        p.appendArc(withCenter: base, radius: r, startAngle: 180, endAngle: 360)
+        p.appendArc(withCenter: base, radius: max(0.5, r - th),
+                    startAngle: 360, endAngle: 180, clockwise: true)
         p.close()
         fill(p)
     }

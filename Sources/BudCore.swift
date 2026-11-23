@@ -59,7 +59,16 @@ struct BudState: Codable {
     /// après coup.
     var wakeWord: Bool = false
     var budPremium: Bool = false      // v17 : conservé pour la migration
-    var budSkin: Int = 0              // 0 à plat · 1 nacré-or · 2 métal
+    /// 0 à plat · 1 nacré-or · 2 métal · 3 logo.
+    ///
+    /// Le logo par défaut depuis la 25.0 : c'est votre illustration, et
+    /// l'application doit ressembler à sa marque sans qu'on ait à le
+    /// demander. Les trois dessins vectoriels restent au choix.
+    var budSkin: Int = 3
+    /// Vrai une fois que l'habillage logo a été proposé à une
+    /// installation qui existait avant lui. Sans ce témoin, on ne saurait
+    /// pas distinguer « il a choisi À plat » de « il n'a jamais choisi ».
+    var sawLogoSkin: Bool = false
 
     // — Nouveau en v23.6 —
     //
@@ -121,9 +130,22 @@ struct BudState: Codable {
         shortcuts = try c.decodeIfPresent([String: String].self, forKey: .shortcuts) ?? z.shortcuts
         voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? z.voiceEnabled
         previewChips = try c.decodeIfPresent([String].self, forKey: .previewChips) ?? z.previewChips
+        sawLogoSkin = try c.decodeIfPresent(Bool.self, forKey: .sawLogoSkin) ?? false
         // Un état écrit par la v17 ne connaît que budPremium : on le reporte.
         if budSkin == 0 && budPremium { budSkin = 1 }
-        if budSkin < 0 || budSkin > 2 { budSkin = 0 }
+        // La borne était à 2, héritée d'avant le logo : elle ramenait
+        // l'habillage 3 à 0 à chaque relecture, et le choix ne survivait
+        // donc pas au redémarrage. Un défaut à corriger, pas seulement à
+        // élargir — une borne qu'on oublie d'étendre est le genre de bug
+        // qui ne se voit qu'au deuxième lancement.
+        if budSkin < 0 || budSkin > 3 { budSkin = 0 }
+        // Une installation d'avant le logo garde son habillage si elle en
+        // avait choisi un ; celle qui n'avait jamais touché au réglage
+        // reçoit le logo. On ne remplace pas un choix, on comble un vide.
+        if !sawLogoSkin {
+            if budSkin == 0 && !budPremium { budSkin = 3 }
+            sawLogoSkin = true
+        }
     }
 }
 
@@ -618,7 +640,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.9"
+let budVersion = "25.0"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult

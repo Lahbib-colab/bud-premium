@@ -55,6 +55,13 @@ struct ChatActions {
 
 enum BudBrain {
 
+    /// L'aveu d'incompréhension, écrit une seule fois. Le panneau le
+    /// compare au début de la réponse pour savoir s'il faut prendre l'air
+    /// perplexe : une phrase dupliquée aurait fini par diverger, et le
+    /// visage aurait souri en disant « je n'ai pas saisi ».
+    static let lostReply = "Je n'ai pas saisi."
+
+
     private static func norm(_ s: String) -> String {
         let lowered = s.lowercased()
         let folded = lowered.folding(options: [.diacriticInsensitive], locale: Locale(identifier: "fr_FR"))
@@ -315,8 +322,8 @@ enum BudBrain {
         //  calcul.
         if let r = Calc.answer(raw) { return r }
 
-        return """
-        Je n'ai pas saisi. Essaie par exemple « combien d'espace me reste-t-il ? », \
+        return lostReply + """
+         Essaie par exemple « combien d'espace me reste-t-il ? », \
         « vide la corbeille », « lance un focus de 25 minutes » ou « que sais-tu faire ? ».
         """
     }
@@ -547,6 +554,10 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
 
     var actions = ChatActions()
     var onStatus: ((String) -> Void)?
+    /// BUD vient de répondre. `understood` est faux quand la réponse est
+    /// l'aveu d'incompréhension : c'est ce qui permet au compagnon de
+    /// prendre l'air perplexe plutôt que de sourire en disant non.
+    var onSpoke: ((_ understood: Bool) -> Void)?
 
     override init(frame: NSRect) {
         hero = HeroHeader(frame: NSRect(x: 0, y: frame.height - 92, width: frame.width, height: 92),
@@ -653,8 +664,14 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         let answer = BudBrain.reply(to: text, actions: actions) { [weak self] late in
             self?.append(ChatMsg(fromBud: true, text: late, date: Date()))
         }
+        // L'aveu d'incompréhension se reconnaît à sa première phrase, et
+        // non au texte entier : elle est écrite une fois, au seul endroit
+        // qui la produit, et comparer le début évite qu'un ajout d'exemple
+        // à la fin fasse mentir le test.
+        let lost = answer.hasPrefix(BudBrain.lostReply)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.append(ChatMsg(fromBud: true, text: answer, date: Date()))
+            self?.onSpoke?(!lost)
         }
         onStatus?("BUD réfléchit…")
     }

@@ -7,7 +7,7 @@ TOOLS_DIR="$SUPPORT_DIR/tools"
 ART_DIR="$SUPPORT_DIR/art"
 
 echo "============================================================"
-echo "   BUD Premium 24.9 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 25.0 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents" "$ART_DIR"
@@ -764,12 +764,16 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     /// demande pas deux fois vaut mieux qu'un écran de réglages de plus.
     private func demoMoods() {
         let show: [(BudMood, String)] = [
-            (.calm, "Normal"), (.angry, "Colère"),
-            (.dizzy, "Étourdi"), (.thinking, "Réfléchi")
+            (.calm, "Normal"), (.speaking, "Parle"), (.listening, "Écoute"),
+            (.proud, "Fier"), (.confused, "Perplexe"), (.thinking, "Réfléchi"),
+            (.sad, "Déçu"), (.angry, "Colère"), (.dizzy, "Étourdi")
         ]
+        // Onze dixièmes chacune : assez pour voir la posture s'installer,
+        // pas assez pour que la démonstration devienne une attente. Elle
+        // se rejoue en recliquant sur l'habillage.
         for (i, s) in show.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.6) { [weak self] in
-                self?.mood(s.0, 1.7)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.1) { [weak self] in
+                self?.mood(s.0, 1.2)
                 self?.setStatus("Humeur : \(s.1)")
             }
         }
@@ -793,6 +797,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             // On montre qu'on écoute avant d'avoir compris : sans ce
             // signe, on répète la phrase en croyant n'avoir pas été
             // entendu, et les deux se mélangent.
+            s.mood(.listening, 3.4)
             s.coucou("Je vous écoute", "", hold: 3)
             s.avatar?.needsDisplay = true
         }
@@ -920,6 +925,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                     s.coucou("Capture enregistrée", u.lastPathComponent, hold: 5, push: false)
                 }
             } else {
+                s.mood(.sad, 3)
                 s.setStatus(r.message)
             }
         }
@@ -1039,6 +1045,13 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         cleanPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         cleanPanel.onCleaned = { [weak self] in self?.storagePanel.refresh(animated: true) }
         chatPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
+        chatPanel.onSpoke = { [weak self] understood in
+            // Parler quand il a compris, être perplexe sinon. C'est la
+            // seule humeur qui soit déclenchée par une absence de
+            // résultat, et elle vaut mieux qu'un sourire poli devant un
+            // « je n'ai pas saisi ».
+            self?.mood(understood ? .speaking : .confused, understood ? 2.2 : 3.2)
+        }
         mailPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         mailPanel.onDanger = { [weak self] n in
             // La colère est réservée à ça : un message dangereux arrivé
@@ -1762,8 +1775,13 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             return "J'ouvre une recherche sur « \(q) »."
         }
         a.runAgent = { name, payload, reply in
-            ScriptAgents.shared.run(name, payload: payload) { out in
-                guard out.ok else { reply(out.error ?? "Le sous-agent a échoué."); return }
+            ScriptAgents.shared.run(name, payload: payload) { [weak self] out in
+                guard out.ok else {
+                    self?.mood(.sad, 3)
+                    reply(out.error ?? "Le sous-agent a échoué.")
+                    return
+                }
+                self?.mood(.proud, 2.6)
                 var lines = [out.summary]
                 for i in out.items.prefix(12) {
                     let mark = i.level == "warning" ? "⚠︎" : (i.level == "action" ? "▸" : "·")
@@ -3033,11 +3051,26 @@ enum BudArt {
         // Le visage suit le corps et non le cadre : quand BUD se tasse,
         // ses yeux se tassent avec lui. Peint après le corps, avant les
         // billes, comme dans l'illustration.
-        let face = NSRect(x: bodyRect.minX + bodyRect.width * faceX,
-                          y: bodyRect.minY + bodyRect.height * faceY,
-                          width: bodyRect.width * faceW,
-                          height: bodyRect.height * faceH)
-        drawFace(in: face, mood: mood, clock: clock)
+        // Le visage grandit quand le compagnon rétrécit.
+        //
+        // Dans le notch replié, BUD tient dans 34 × 32 points : la cavité
+        // du U n'y fait que douze points sur sept, et toutes les humeurs
+        // s'y ressemblaient. Les réduire fidèlement, c'est les perdre.
+        //
+        // C'est le principe de l'icône : on la redessine, on ne la
+        // rétrécit pas. Le visage est donc agrandi d'un peu plus d'un
+        // cinquième en dessous de soixante points, autour du même
+        // centre. Pas davantage : à une fois et demie, les arches
+        // débordaient de l'anneau du U. Au-delà de soixante points, il
+        // reprend les proportions exactes relevées sur l'illustration.
+        let small = max(0, min(1, (60 - bodyRect.width) / 26))
+        let grow = 1 + 0.22 * small
+        let fw = bodyRect.width * faceW * grow
+        let fh = bodyRect.height * faceH * grow
+        let fcx = bodyRect.minX + bodyRect.width * (faceX + faceW / 2)
+        let fcy = bodyRect.minY + bodyRect.height * (faceY + faceH / 2)
+        drawFace(in: NSRect(x: fcx - fw / 2, y: fcy - fh / 2, width: fw, height: fh),
+                 mood: mood, clock: clock)
 
         // Les billes montent, et penchent autour du centre du cadre.
         let lift = beat * rect.height * 0.055
@@ -3174,6 +3207,52 @@ enum BudArt {
             // et le contre.
             bar(at: CGPoint(x: mc.x - mw * 0.14, y: mc.y),
                 w: mw * 0.74, thick: mh * 0.28, angle: -6)
+
+        case .listening:
+            // L'écoute, ce sont des yeux ouverts et immobiles. Les
+            // pupilles ne bougent pas : un regard qui balaie dit qu'on
+            // cherche, pas qu'on écoute. La vie est dans la pulsation,
+            // qui suit la même horloge que les billes au-dessus.
+            let beat = 1 + 0.10 * sin(clock * 5.2)
+            blob(at: lc, w: ew * 0.56 * beat, h: eh * 1.02 * beat)
+            blob(at: rc, w: ew * 0.56 * beat, h: eh * 1.02 * beat)
+            bar(at: mc, w: mw * 0.52, thick: mh * 0.26, angle: 0)
+
+        case .speaking:
+            // Les yeux de toujours, et la bouche qui s'ouvre et se ferme.
+            // Deux fréquences superposées, parce qu'une bouche qui bat à
+            // intervalle régulier mâche au lieu de parler.
+            arch(at: lc, w: ew, h: eh); arch(at: rc, w: ew, h: eh)
+            let talk = 0.40 + 0.60 * abs(sin(clock * 7.4) * 0.7 + sin(clock * 11.3) * 0.3)
+            smile(at: mc, w: mw * (0.92 + 0.10 * talk), h: mh * (0.45 + 0.85 * talk))
+
+        case .proud:
+            // La fierté se distingue de la simple joie par l'ouverture :
+            // des arches plus hautes, une bouche plus large. Même visage,
+            // poussé — si c'était un autre dessin, on ne lirait plus BUD.
+            arch(at: CGPoint(x: lc.x, y: lc.y + eh * 0.06), w: ew * 1.10, h: eh * 1.12)
+            arch(at: CGPoint(x: rc.x, y: rc.y + eh * 0.06), w: ew * 1.10, h: eh * 1.12)
+            smile(at: mc, w: mw * 1.30, h: mh * 1.22)
+
+        case .sad:
+            // Les arches retournées. C'est le seul changement nécessaire :
+            // une arche vers le haut sourit, vers le bas elle s'attriste,
+            // et l'œil le lit avant toute autre chose.
+            valley(at: CGPoint(x: lc.x, y: lc.y - eh * 0.10), w: ew * 0.94, h: eh * 0.90)
+            valley(at: CGPoint(x: rc.x, y: rc.y - eh * 0.10), w: ew * 0.94, h: eh * 0.90)
+            frown(at: CGPoint(x: mc.x, y: mc.y - mh * 0.06), w: mw * 0.96, h: mh * 0.62)
+
+        case .confused:
+            // Perplexe : un œil grand ouvert, l'autre plissé, et les
+            // sourcils en désaccord. L'asymétrie est tout le message —
+            // deux yeux traités pareil ne disent jamais le doute.
+            blob(at: lc, w: ew * 0.52, h: eh * 0.96)
+            bar(at: rc, w: ew * 0.80, thick: eh * 0.30, angle: 0)
+            if fine {
+                bar(at: CGPoint(x: lc.x, y: lc.y + eh * 0.82),
+                    w: ew * 0.76, thick: eh * 0.20, angle: 13)
+            }
+            wavy(at: mc, w: mw * 0.92, h: mh * 0.34, width: max(1.4, mh * 0.26), phase: 0)
         }
     }
 
@@ -3223,6 +3302,24 @@ enum BudArt {
         p.appendArc(withCenter: base, radius: r, startAngle: 0, endAngle: 180)
         p.appendArc(withCenter: base, radius: max(0.5, r - th),
                     startAngle: 180, endAngle: 0, clockwise: true)
+        p.close()
+        fill(p)
+    }
+
+    /// Une arche retournée « ⌄ » : l'œil triste.
+    ///
+    /// Le même tracé que `arch`, au signe près. C'est voulu : l'œil
+    /// reconnaît la parenté des deux formes avant d'en lire le sens, et
+    /// la tristesse se lit comme une joie renversée plutôt que comme un
+    /// autre dessin.
+    private static func valley(at c: CGPoint, w: CGFloat, h: CGFloat) {
+        let r = w / 2
+        let th = max(1.2, h * 0.52)
+        let p = NSBezierPath()
+        let base = CGPoint(x: c.x, y: c.y + h * 0.18)
+        p.appendArc(withCenter: base, radius: r, startAngle: 180, endAngle: 360)
+        p.appendArc(withCenter: base, radius: max(0.5, r - th),
+                    startAngle: 360, endAngle: 180, clockwise: true)
         p.close()
         fill(p)
     }
@@ -4085,6 +4182,13 @@ struct ChatActions {
 
 enum BudBrain {
 
+    /// L'aveu d'incompréhension, écrit une seule fois. Le panneau le
+    /// compare au début de la réponse pour savoir s'il faut prendre l'air
+    /// perplexe : une phrase dupliquée aurait fini par diverger, et le
+    /// visage aurait souri en disant « je n'ai pas saisi ».
+    static let lostReply = "Je n'ai pas saisi."
+
+
     private static func norm(_ s: String) -> String {
         let lowered = s.lowercased()
         let folded = lowered.folding(options: [.diacriticInsensitive], locale: Locale(identifier: "fr_FR"))
@@ -4345,8 +4449,8 @@ enum BudBrain {
         //  calcul.
         if let r = Calc.answer(raw) { return r }
 
-        return """
-        Je n'ai pas saisi. Essaie par exemple « combien d'espace me reste-t-il ? », \
+        return lostReply + """
+         Essaie par exemple « combien d'espace me reste-t-il ? », \
         « vide la corbeille », « lance un focus de 25 minutes » ou « que sais-tu faire ? ».
         """
     }
@@ -4577,6 +4681,10 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
 
     var actions = ChatActions()
     var onStatus: ((String) -> Void)?
+    /// BUD vient de répondre. `understood` est faux quand la réponse est
+    /// l'aveu d'incompréhension : c'est ce qui permet au compagnon de
+    /// prendre l'air perplexe plutôt que de sourire en disant non.
+    var onSpoke: ((_ understood: Bool) -> Void)?
 
     override init(frame: NSRect) {
         hero = HeroHeader(frame: NSRect(x: 0, y: frame.height - 92, width: frame.width, height: 92),
@@ -4683,8 +4791,14 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         let answer = BudBrain.reply(to: text, actions: actions) { [weak self] late in
             self?.append(ChatMsg(fromBud: true, text: late, date: Date()))
         }
+        // L'aveu d'incompréhension se reconnaît à sa première phrase, et
+        // non au texte entier : elle est écrite une fois, au seul endroit
+        // qui la produit, et comparer le début évite qu'un ajout d'exemple
+        // à la fin fasse mentir le test.
+        let lost = answer.hasPrefix(BudBrain.lostReply)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.append(ChatMsg(fromBud: true, text: answer, date: Date()))
+            self?.onSpoke?(!lost)
         }
         onStatus?("BUD réfléchit…")
     }
@@ -5394,7 +5508,16 @@ struct BudState: Codable {
     /// après coup.
     var wakeWord: Bool = false
     var budPremium: Bool = false      // v17 : conservé pour la migration
-    var budSkin: Int = 0              // 0 à plat · 1 nacré-or · 2 métal
+    /// 0 à plat · 1 nacré-or · 2 métal · 3 logo.
+    ///
+    /// Le logo par défaut depuis la 25.0 : c'est votre illustration, et
+    /// l'application doit ressembler à sa marque sans qu'on ait à le
+    /// demander. Les trois dessins vectoriels restent au choix.
+    var budSkin: Int = 3
+    /// Vrai une fois que l'habillage logo a été proposé à une
+    /// installation qui existait avant lui. Sans ce témoin, on ne saurait
+    /// pas distinguer « il a choisi À plat » de « il n'a jamais choisi ».
+    var sawLogoSkin: Bool = false
 
     // — Nouveau en v23.6 —
     //
@@ -5456,9 +5579,22 @@ struct BudState: Codable {
         shortcuts = try c.decodeIfPresent([String: String].self, forKey: .shortcuts) ?? z.shortcuts
         voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? z.voiceEnabled
         previewChips = try c.decodeIfPresent([String].self, forKey: .previewChips) ?? z.previewChips
+        sawLogoSkin = try c.decodeIfPresent(Bool.self, forKey: .sawLogoSkin) ?? false
         // Un état écrit par la v17 ne connaît que budPremium : on le reporte.
         if budSkin == 0 && budPremium { budSkin = 1 }
-        if budSkin < 0 || budSkin > 2 { budSkin = 0 }
+        // La borne était à 2, héritée d'avant le logo : elle ramenait
+        // l'habillage 3 à 0 à chaque relecture, et le choix ne survivait
+        // donc pas au redémarrage. Un défaut à corriger, pas seulement à
+        // élargir — une borne qu'on oublie d'étendre est le genre de bug
+        // qui ne se voit qu'au deuxième lancement.
+        if budSkin < 0 || budSkin > 3 { budSkin = 0 }
+        // Une installation d'avant le logo garde son habillage si elle en
+        // avait choisi un ; celle qui n'avait jamais touché au réglage
+        // reçoit le logo. On ne remplace pas un choix, on comble un vide.
+        if !sawLogoSkin {
+            if budSkin == 0 && !budPremium { budSkin = 3 }
+            sawLogoSkin = true
+        }
     }
 }
 
@@ -5953,7 +6089,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "24.9"
+let budVersion = "25.0"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -6339,7 +6475,17 @@ import Cocoa
 //  devient ici 200° → 340°.
 // ═══════════════════════════════════════════════════════════
 
-enum BudMood { case calm, happy, alert, sleepy, wink, dizzy, angry, thinking }
+/// Les humeurs de BUD.
+///
+/// Chacune est attachée à un fait, jamais décorative : il écoute quand
+/// la veille l'a entendu, parle quand il répond, est fier quand une
+/// tâche a abouti, déçu quand elle a échoué, perplexe quand il n'a pas
+/// compris. Une humeur qui ne correspond à rien finit par être ignorée,
+/// et c'est alors toute l'expressivité qui ne veut plus rien dire.
+enum BudMood {
+    case calm, happy, alert, sleepy, wink, dizzy, angry, thinking
+    case listening, speaking, proud, sad, confused
+}
 
 /// Trois habillages : à plat, nacré-or, et métal.
 enum BudStyle { case flat, premium, metal, logo }
@@ -6633,6 +6779,21 @@ final class BudSprite {
     /// Les billes montent et penchent, le corps se tasse. Pendant la
     /// lecture, le rebond est franc et la tête penche en mesure — c'est
     /// là que la séparation en deux calques paie.
+    /// La seule entrée de dessin du compagnon.
+    ///
+    /// Avant, chaque vue choisissait : le panneau savait traiter
+    /// l'habillage Logo, le notch non — il appelait `draw` directement et
+    /// montrait donc toujours le personnage vectoriel, quel que soit le
+    /// réglage. Un aiguillage dupliqué est un aiguillage qu'on oublie
+    /// quelque part ; il n'y en a plus qu'un.
+    func render(in rect: NSRect, detail: Bool, glowColor: NSColor) {
+        if BudSprite.style == .logo && BudArt.hasCompanion {
+            drawLogo(in: rect)
+        } else {
+            draw(in: rect, detail: detail, glowColor: glowColor)
+        }
+    }
+
     func drawLogo(in rect: NSRect) {
         let t = clock
         // Respiration au repos : un sixième du rebond de la danse, assez
@@ -6688,6 +6849,38 @@ final class BudSprite {
             bounce = 0.05 + breath * 0.05
             tilt = -6.5 + sin(t * 0.45) * 1.6
             squash = breath * 0.01
+        case .listening:
+            // Dressé et droit. Les billes montent au rythme du visage,
+            // comme deux antennes qui captent : c'est le seul mouvement,
+            // et il suffit parce qu'il est régulier.
+            bounce = 0.30 + (sin(t * 5.2) + 1) / 2 * 0.30
+            tilt = 0
+            squash = 0
+        case .speaking:
+            // Un léger balancement, de l'amplitude d'une conversation.
+            // Le corps accompagne la bouche sans la concurrencer.
+            bounce = 0.10 + (sin(t * 7.4) + 1) / 2 * 0.14
+            tilt = sin(t * 2.6) * 2.2
+            squash = 0.01 + breath * 0.012
+        case .proud:
+            // Haut sur ses appuis, et un rebond lent. La fierté se tient
+            // droite ; elle ne saute pas, elle se redresse.
+            bounce = 0.55 + (sin(t * 2.4) + 1) / 2 * 0.45
+            tilt = sin(t * 1.1) * 1.4
+            squash = 0
+        case .sad:
+            // Tassé, penché, immobile. C'est la posture qui porte la
+            // tristesse — le visage seul, sur un corps qui respire
+            // normalement, se lirait comme une grimace passagère.
+            bounce = 0
+            tilt = -4.0 + sin(t * 0.5) * 0.8
+            squash = 0.09 + breath * 0.008
+        case .confused:
+            // La tête penche d'un côté puis de l'autre, lentement, sans
+            // jamais s'arrêter au milieu : c'est l'hésitation.
+            bounce = 0.08 + breath * 0.06
+            tilt = sin(t * 1.3) * 7.5
+            squash = breath * 0.012
         default:
             break
         }
@@ -6877,14 +7070,14 @@ final class BudSprite {
         let open = max(0.08, 1 - blink * 0.92)
 
         switch m {
-        case .calm, .sleepy, .thinking:
+        case .calm, .sleepy, .thinking, .speaking, .confused, .sad:
             let h = m == .sleepy ? eyeS * 0.18 : eyeS * open
             metalEye(NSPoint(x: -eyeX, y: eyeY), w: eyeS, h: h, r: corner, c: eye, detail: detail)
             metalEye(NSPoint(x: eyeX * 1.04, y: eyeY + r * 0.01),
                      w: eyeS * 1.12, h: eyeS * 1.08 * (m == .sleepy ? 0.17 : open),
                      r: corner * 1.06, c: eye, detail: detail)
 
-        case .happy:
+        case .happy, .proud:
             // Les yeux deviennent deux arcs relevés
             for (x, w) in [(-eyeX, eyeS), (eyeX * 1.04, eyeS * 1.12)] {
                 let a = NSBezierPath()
@@ -6913,7 +7106,7 @@ final class BudSprite {
                        radius: r * 0.14, from: 207, to: 328,
                        width: max(2.5, r * 0.052), c: eye)
 
-        case .alert, .angry:
+        case .alert, .angry, .listening:
             // Yeux écrasés et inclinés, sourcils rouges
             for side in [CGFloat(-1), CGFloat(1)] {
                 let w = side < 0 ? eyeS : eyeS * 1.12
@@ -7192,13 +7385,13 @@ final class BudSprite {
         let eyeR = s * 0.044
 
         switch m {
-        case .calm, .thinking:
+        case .calm, .thinking, .speaking, .confused, .sad:
             drawRoundEye(at: NSPoint(x: -eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawRoundEye(at: NSPoint(x: eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawOMouth(size: s, y: -s * 0.125, w: s * 0.042, h: s * 0.056,
                        ink: ink, premium: premium)
 
-        case .happy:
+        case .happy, .proud:
             drawRoundEye(at: NSPoint(x: -eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawRoundEye(at: NSPoint(x: eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawBigSmile(size: s, premium: premium, ink: ink)
@@ -7222,7 +7415,7 @@ final class BudSprite {
             (premium ? BudSkin.smileGold : ink).setStroke()
             sm.stroke()
 
-        case .alert, .angry:
+        case .alert, .angry, .listening:
             drawAngryEyes(size: s, eyeX: eyeX, eyeY: eyeY, r: eyeR,
                           ink: ink, premium: premium)
             // Bouche en moue : arc qui bombe vers le haut
@@ -17131,16 +17324,8 @@ final class CompanionView: NSView {
     }
 
     override func draw(_ dirty: NSRect) {
-        // L'habillage « Logo » dessine votre illustration plutôt que le
-        // personnage vectoriel. Si le paquet ne la porte pas — une
-        // installation par les sources d'une version antérieure — on
-        // retombe sur le dessin, sans case vide.
-        if BudSprite.style == .logo && BudArt.hasCompanion {
-            sprite.drawLogo(in: bounds.insetBy(dx: 1, dy: 1))
-        } else {
-            sprite.draw(in: bounds.insetBy(dx: 1, dy: 1), detail: bounds.width >= 40,
-                        glowColor: alertCount > 0 ? warnColor : TH.accent)
-        }
+        sprite.render(in: bounds.insetBy(dx: 1, dy: 1), detail: bounds.width >= 40,
+                      glowColor: alertCount > 0 ? warnColor : TH.accent)
         if alertCount > 0 {
             let txt = alertCount > 9 ? "9+" : "\(alertCount)"
             let d: CGFloat = 18
@@ -17367,8 +17552,8 @@ final class NotchChrome: NSView {
         if state == .open { return }
 
         if state == .collapsed {
-            sprite.draw(in: budRect(), detail: false,
-                        glowColor: alertCount > 0 ? warnColor : TH.accent)
+            sprite.render(in: budRect(), detail: false,
+                          glowColor: alertCount > 0 ? warnColor : TH.accent)
             // Pendant la lecture, le titre prend la place de l'heure :
             // 214 pt ne suffisent pas pour les deux, et savoir ce qui joue
             // vaut mieux qu'une horloge présente partout ailleurs.
@@ -17436,7 +17621,7 @@ final class NotchChrome: NSView {
         }
 
         // ── Aperçu et carte d'approbation ──
-        sprite.draw(in: budRect(), detail: true,
+        sprite.render(in: budRect(), detail: true,
                     glowColor: alertCount > 0 ? warnColor : TH.accent)
 
         let top = b.maxY

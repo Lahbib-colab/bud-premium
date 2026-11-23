@@ -15,7 +15,17 @@ import Cocoa
 //  devient ici 200° → 340°.
 // ═══════════════════════════════════════════════════════════
 
-enum BudMood { case calm, happy, alert, sleepy, wink, dizzy, angry, thinking }
+/// Les humeurs de BUD.
+///
+/// Chacune est attachée à un fait, jamais décorative : il écoute quand
+/// la veille l'a entendu, parle quand il répond, est fier quand une
+/// tâche a abouti, déçu quand elle a échoué, perplexe quand il n'a pas
+/// compris. Une humeur qui ne correspond à rien finit par être ignorée,
+/// et c'est alors toute l'expressivité qui ne veut plus rien dire.
+enum BudMood {
+    case calm, happy, alert, sleepy, wink, dizzy, angry, thinking
+    case listening, speaking, proud, sad, confused
+}
 
 /// Trois habillages : à plat, nacré-or, et métal.
 enum BudStyle { case flat, premium, metal, logo }
@@ -309,6 +319,21 @@ final class BudSprite {
     /// Les billes montent et penchent, le corps se tasse. Pendant la
     /// lecture, le rebond est franc et la tête penche en mesure — c'est
     /// là que la séparation en deux calques paie.
+    /// La seule entrée de dessin du compagnon.
+    ///
+    /// Avant, chaque vue choisissait : le panneau savait traiter
+    /// l'habillage Logo, le notch non — il appelait `draw` directement et
+    /// montrait donc toujours le personnage vectoriel, quel que soit le
+    /// réglage. Un aiguillage dupliqué est un aiguillage qu'on oublie
+    /// quelque part ; il n'y en a plus qu'un.
+    func render(in rect: NSRect, detail: Bool, glowColor: NSColor) {
+        if BudSprite.style == .logo && BudArt.hasCompanion {
+            drawLogo(in: rect)
+        } else {
+            draw(in: rect, detail: detail, glowColor: glowColor)
+        }
+    }
+
     func drawLogo(in rect: NSRect) {
         let t = clock
         // Respiration au repos : un sixième du rebond de la danse, assez
@@ -364,6 +389,38 @@ final class BudSprite {
             bounce = 0.05 + breath * 0.05
             tilt = -6.5 + sin(t * 0.45) * 1.6
             squash = breath * 0.01
+        case .listening:
+            // Dressé et droit. Les billes montent au rythme du visage,
+            // comme deux antennes qui captent : c'est le seul mouvement,
+            // et il suffit parce qu'il est régulier.
+            bounce = 0.30 + (sin(t * 5.2) + 1) / 2 * 0.30
+            tilt = 0
+            squash = 0
+        case .speaking:
+            // Un léger balancement, de l'amplitude d'une conversation.
+            // Le corps accompagne la bouche sans la concurrencer.
+            bounce = 0.10 + (sin(t * 7.4) + 1) / 2 * 0.14
+            tilt = sin(t * 2.6) * 2.2
+            squash = 0.01 + breath * 0.012
+        case .proud:
+            // Haut sur ses appuis, et un rebond lent. La fierté se tient
+            // droite ; elle ne saute pas, elle se redresse.
+            bounce = 0.55 + (sin(t * 2.4) + 1) / 2 * 0.45
+            tilt = sin(t * 1.1) * 1.4
+            squash = 0
+        case .sad:
+            // Tassé, penché, immobile. C'est la posture qui porte la
+            // tristesse — le visage seul, sur un corps qui respire
+            // normalement, se lirait comme une grimace passagère.
+            bounce = 0
+            tilt = -4.0 + sin(t * 0.5) * 0.8
+            squash = 0.09 + breath * 0.008
+        case .confused:
+            // La tête penche d'un côté puis de l'autre, lentement, sans
+            // jamais s'arrêter au milieu : c'est l'hésitation.
+            bounce = 0.08 + breath * 0.06
+            tilt = sin(t * 1.3) * 7.5
+            squash = breath * 0.012
         default:
             break
         }
@@ -553,14 +610,14 @@ final class BudSprite {
         let open = max(0.08, 1 - blink * 0.92)
 
         switch m {
-        case .calm, .sleepy, .thinking:
+        case .calm, .sleepy, .thinking, .speaking, .confused, .sad:
             let h = m == .sleepy ? eyeS * 0.18 : eyeS * open
             metalEye(NSPoint(x: -eyeX, y: eyeY), w: eyeS, h: h, r: corner, c: eye, detail: detail)
             metalEye(NSPoint(x: eyeX * 1.04, y: eyeY + r * 0.01),
                      w: eyeS * 1.12, h: eyeS * 1.08 * (m == .sleepy ? 0.17 : open),
                      r: corner * 1.06, c: eye, detail: detail)
 
-        case .happy:
+        case .happy, .proud:
             // Les yeux deviennent deux arcs relevés
             for (x, w) in [(-eyeX, eyeS), (eyeX * 1.04, eyeS * 1.12)] {
                 let a = NSBezierPath()
@@ -589,7 +646,7 @@ final class BudSprite {
                        radius: r * 0.14, from: 207, to: 328,
                        width: max(2.5, r * 0.052), c: eye)
 
-        case .alert, .angry:
+        case .alert, .angry, .listening:
             // Yeux écrasés et inclinés, sourcils rouges
             for side in [CGFloat(-1), CGFloat(1)] {
                 let w = side < 0 ? eyeS : eyeS * 1.12
@@ -868,13 +925,13 @@ final class BudSprite {
         let eyeR = s * 0.044
 
         switch m {
-        case .calm, .thinking:
+        case .calm, .thinking, .speaking, .confused, .sad:
             drawRoundEye(at: NSPoint(x: -eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawRoundEye(at: NSPoint(x: eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawOMouth(size: s, y: -s * 0.125, w: s * 0.042, h: s * 0.056,
                        ink: ink, premium: premium)
 
-        case .happy:
+        case .happy, .proud:
             drawRoundEye(at: NSPoint(x: -eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawRoundEye(at: NSPoint(x: eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawBigSmile(size: s, premium: premium, ink: ink)
@@ -898,7 +955,7 @@ final class BudSprite {
             (premium ? BudSkin.smileGold : ink).setStroke()
             sm.stroke()
 
-        case .alert, .angry:
+        case .alert, .angry, .listening:
             drawAngryEyes(size: s, eyeX: eyeX, eyeY: eyeY, r: eyeR,
                           ink: ink, premium: premium)
             // Bouche en moue : arc qui bombe vers le haut

@@ -2,6 +2,28 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.0 — BUD partout, et neuf humeurs
+
+**Le notch ne connaissait pas le logo.** Le panneau savait traiter l'habillage Logo, le notch appelait `draw` directement et montrait donc toujours le personnage vectoriel, quel que soit votre réglage. Un aiguillage dupliqué est un aiguillage qu'on oublie quelque part : il n'y en a plus qu'un, `render`, par lequel passent les trois vues.
+
+**Et votre choix ne survivait pas au redémarrage.** L'état relu bornait l'habillage à 2, une limite héritée d'avant le logo : elle ramenait le 3 à 0 à chaque relecture. Le genre de défaut qui ne se voit qu'au deuxième lancement, et qui explique peut-être pourquoi vous retrouviez le dessin vectoriel.
+
+**Le logo devient l'habillage par défaut.** Une installation qui n'avait jamais touché au réglage le reçoit ; celle qui avait choisi un dessin vectoriel le garde. On ne remplace pas un choix, on comble un vide — et un témoin distingue désormais « il a choisi À plat » de « il n'a jamais choisi ».
+
+**Cinq humeurs de plus, neuf en tout.** Chacune reste attachée à un fait.
+
+- **Écoute** — la veille a entendu « Hey Bud ». Yeux ouverts et immobiles : un regard qui balaie dit qu'on cherche, pas qu'on écoute. La vie est dans la pulsation, et les billes montent au même rythme, comme deux antennes.
+- **Parle** — BUD répond. La bouche s'ouvre sur deux fréquences superposées, parce qu'une bouche qui bat à intervalle régulier mâche au lieu de parler.
+- **Fier** — une tâche a abouti. Le même visage que la joie, poussé : des arches plus hautes, une bouche plus large. Si c'était un autre dessin, on ne lirait plus BUD. Le corps se redresse — la fierté se tient droite, elle ne saute pas.
+- **Déçu** — une opération a échoué. Les arches retournées, et c'est le seul changement nécessaire : l'œil lit une joie renversée avant toute autre chose. Le corps se tasse, parce qu'un visage triste sur un corps qui respire normalement se lirait comme une grimace passagère.
+- **Perplexe** — BUD n'a pas compris. Un œil grand ouvert, l'autre plissé, les sourcils en désaccord. L'asymétrie est tout le message : deux yeux traités pareil ne disent jamais le doute.
+
+**Le visage grandit quand le compagnon rétrécit.** Dans le notch replié, BUD tient dans 34 × 32 points et la cavité du U n'y fait que douze points sur sept — toutes les humeurs s'y ressemblaient. C'est le principe de l'icône : on la redessine, on ne la rétrécit pas. Le visage est agrandi d'un peu plus d'un cinquième en dessous de soixante points. Pas davantage : à une fois et demie, les arches débordaient de l'anneau.
+
+**L'aveu d'incompréhension n'est plus écrit deux fois.** Pour savoir s'il faut prendre l'air perplexe, le panneau compare le début de la réponse à une phrase nommée, définie au seul endroit qui la produit. Une phrase dupliquée aurait fini par diverger, et le visage aurait souri en disant « je n'ai pas saisi ».
+
+**La démonstration montre les neuf**, à onze dixièmes de seconde chacune, et se rejoue en recliquant sur l'habillage.
+
 ## 24.9 — deux encres, et un fond
 
 **Votre logo existe maintenant en noir et en blanc, et BUD choisit.** L'illustration claire sur les thèmes sombres, la noire sur les clairs. Jusqu'ici il n'avait que la blanche : sur un fond clair on voyait les deux billes et plus rien du corps. Le suffixe des fichiers dit la couleur de l'encre, pas celle du fond.
