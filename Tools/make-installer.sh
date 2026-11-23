@@ -2,6 +2,15 @@
 #
 #  Fabrique l'installeur en un seul fichier à partir du dépôt.
 #
+#  LC_ALL=C d'abord, et ce n'est pas une précaution de style.
+#  L'ordre d'expansion d'un motif comme Art/*.png suit la collation de
+#  la locale : en C, les majuscules passent avant les minuscules, et
+#  « bud-w-U.png » précède « bud-w-dotL.png ». En en_US.UTF-8, qui est
+#  la locale par défaut de macOS, le tri ignore la casse et l'ordre
+#  s'inverse. L'installeur régénéré sur le CI ne correspondait donc plus
+#  à celui engagé depuis Linux, alors que son contenu était identique —
+#  seules les sections avaient changé de place.
+#
 #    ./Tools/make-installer.sh              → dist/Installer_BUD_Premium.command
 #    ./Tools/make-installer.sh /autre/chemin.command
 #
@@ -11,6 +20,7 @@
 #  ne fait que de l'emballage.
 #
 set -euo pipefail
+export LC_ALL=C
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(sed -n 's/^let budVersion = "\(.*\)"/\1/p' "$REPO/Sources/BudCore.swift" | head -1)"
@@ -86,7 +96,7 @@ for a in "$REPO"/Art/*.png "$REPO"/Art/*.wav; do
   # La substitution mange les sauts de ligne de fin, printf en remet
   # exactement un : sans cela le délimiteur se collait à la dernière
   # ligne de base64 et le heredoc ne se fermait jamais.
-  printf '%s\n' "$(base64 < "$a" | tr -d '\n' | fold -w 76)"
+  printf '%s\n' "$(openssl base64 -A < "$a" | fold -w 76)"
   printf 'EOF_BUDART_9X4\n'
 done
 
