@@ -280,8 +280,8 @@ fi
 #  Le logo et ses deux calques. Copiés tels quels : ce sont les images
 #  d'origine, pas une reconstitution.
 if [ -d "$ART_DIR" ]; then
-  cp -f "$ART_DIR"/*.png "$APP_DIR/Contents/Resources/" 2>/dev/null \
-    && echo "Illustrations copiées." || echo "Aucune illustration à copier."
+  cp -f "$ART_DIR"/*.png "$ART_DIR"/*.wav "$APP_DIR/Contents/Resources/" 2>/dev/null \
+    && echo "Illustrations et son copiés." || echo "Rien à copier depuis Art." 
 else
   # Sans illustrations, l'habillage « Logo » retombe sur le dessin
   # vectoriel et le démarrage se passe du splash. Rien ne casse.

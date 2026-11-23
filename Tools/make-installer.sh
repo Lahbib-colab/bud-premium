@@ -74,7 +74,7 @@ emit "$REPO/build.sh" "\$SUPPORT_DIR/build.sh" "EOF_BUDBUILD_7K2"
 # « base64 -D » et non « -d » : Monterey embarque la version BSD, qui ne
 # connaît que -D ; les macOS récents acceptent les deux. -D est donc la
 # seule option qui décode de Monterey à Sequoia.
-for a in "$REPO"/Art/*.png; do
+for a in "$REPO"/Art/*.png "$REPO"/Art/*.wav; do
   [ -f "$a" ] || continue
   n="$(basename "$a")"
   printf '\nbase64 -D > "%s" << %s\n' "\$ART_DIR/$n" "'EOF_BUDART_9X4'"

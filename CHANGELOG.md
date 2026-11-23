@@ -2,6 +2,24 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 24.8 — un démarrage qui s'annonce
+
+**Le mot est découpé en cinq calques** — B, U, D et les deux billes — et chacun entre à son tour. C'est le décalage qui fait l'effet : un mot qui apparaît d'un bloc n'a pas de mouvement, il a une transition.
+
+**L'entrée est élastique, pas freinée.** Chaque pièce dépasse sa place de quelques points puis y revient. Une courbe qui s'arrête pile à l'arrivée a l'air retenue ; un léger dépassement a l'air d'avoir du poids. C'est une sinusoïde amortie, dont l'amortissement se règle d'un seul nombre, et non une approximation en trois segments. Les lettres montent, les billes tombent — ce sont des billes.
+
+**Un reflet traverse le mot une fois posé.** Il est composé en « sourceAtop » : il ne marque que ce qui est déjà dessiné, donc les lettres, et jamais le fond entre elles. Il s'atténue à ses deux bouts, sans quoi on verrait passer un rectangle, et il est incliné — un reflet vertical a l'air d'un essuie-glace.
+
+**Le visage du U est peint par le même pinceau que le compagnon.** Ses traits d'origine sont des lignes fines qui ne tiennent à rien et n'auraient pas survécu au détourage. Les repeindre règle du même coup l'écart que je vous signalais : le démarrage et le notch montrent maintenant exactement la même tête.
+
+**Le carillon est calculé, pas téléchargé.** Un arpège de do majeur sur quatre notes, chacune avec ses partiels et sa décroissance — une cloche n'est pas une sinusoïde. L'attaque est adoucie sur huit millisecondes : sans elle, le saut à pleine amplitude produit un clic que l'oreille entend avant la note. Mono 32 kHz, 1,55 s, crête à −3 dB : on ne sursaute pas au lancement. Il se tait quand vos sons sont coupés.
+
+**La version et « by Lahbib.AI »** montent de six points en apparaissant, le même geste que les lettres en plus discret, pour que le bas de l'écran appartienne au même mouvement.
+
+**Ce que le détourage a demandé.** L'image reçue est un aplat : le damier de transparence y est peint, et il n'est pas régulier — redimensionné sans respecter les proportions, ses carreaux font 40 px de large pour 49 de haut. Le modéliser pour le soustraire a échoué deux fois. Ce qui a marché tient à une observation plus simple : un carreau clair fait deux mille pixels, l'intérieur d'une lettre en fait trois cent mille, et la taille des amas suffit à les séparer. Les deux billes, plus grises que les carreaux clairs, ont été prises par leur contour sombre.
+
+**Les contre-formes restent creuses.** Boucher tous les trous bouchait aussi les deux creux du B et celui du D, et le damier d'origine réapparaissait à l'intérieur des lettres. Seules les piqûres d'anticrénelage sont bouchées ; un creux de plus de deux mille cinq cents pixels est une contre-forme et reste transparent.
+
 ## 24.7 — le compagnon a des humeurs
 
 **Nouvelle illustration, et un découpage qui change tout.** Dans la précédente, le visage était fondu dans le dégradé du corps : impossible de le modifier sans repeindre votre dessin. Dans celle-ci, les yeux et la bouche sont des îlots clairs qui flottent dans l'ouverture du U, sans toucher l'anneau. Ils ont donc pu être retirés proprement et repeints en code — c'est la différence entre un compagnon qui bouge et un compagnon qui a des humeurs.

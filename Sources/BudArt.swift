@@ -35,7 +35,6 @@ enum BudArt {
     /// que d'afficher un carré vide.
     static let dots = load("bud-dots")
     static let body = load("bud-body")
-    static let wordmark = load("bud-wordmark")
 
     /// Vrai quand le paquet porte de quoi dessiner le compagnon.
     static var hasCompanion: Bool { dots != nil && body != nil }
@@ -386,43 +385,113 @@ extension NSBezierPath {
         return out
     }
 }
-
 // ═══════════════════════════════════════════════════════════
 //  L'écran de démarrage
 //
-//  Il a une seule justification : la première compilation des
-//  vues et le chargement des réglages prennent un instant, et
-//  sans rien à l'écran on clique deux fois sur l'icône.
+//  Il a une seule justification : la première construction des
+//  vues prend un instant, et sans rien à l'écran on clique deux
+//  fois sur l'icône.
 //
-//  Donc il est court — une seconde et demie — et il ne retient
-//  jamais l'application : BUD finit de se construire derrière
-//  lui, et le splash s'efface tout seul. Il ne prend pas le
-//  clavier non plus. Un écran de démarrage qui fait attendre
-//  est pire que pas d'écran du tout.
+//  Il ne retient donc jamais l'application. BUD se construit
+//  derrière lui, le splash s'efface seul, et il ne prend ni le
+//  clic ni le clavier. Un écran de démarrage qui fait attendre
+//  est pire que pas d'écran du tout — c'est pourquoi celui-ci
+//  tient en deux secondes et demie, musique comprise.
+//
+//  Le mot est découpé en cinq calques : B, U, D et les deux
+//  billes. Chacun entre à son tour, et c'est le décalage qui
+//  fait l'effet — un mot qui apparaît d'un bloc n'a pas de
+//  mouvement, il a une transition.
 // ═══════════════════════════════════════════════════════════
+
+extension BudArt {
+
+    /// Les cinq morceaux du mot, et leur place sur la toile commune.
+    /// Les rectangles sont en fractions, `y` compté depuis le haut :
+    /// relevés sur l'illustration, ils tiennent à n'importe quelle taille.
+    struct Piece {
+        let name: String
+        let rect: NSRect          // x, y (depuis le haut), largeur, hauteur
+        let delay: CGFloat        // quand il entre
+        let fromAbove: Bool       // les billes tombent, les lettres montent
+    }
+
+    static let wordPieces: [Piece] = [
+        Piece(name: "bud-w-B",    rect: NSRect(x: 0.00000, y: 0.17195,
+                                               width: 0.30531, height: 0.82805),
+              delay: 0.00, fromAbove: false),
+        Piece(name: "bud-w-U",    rect: NSRect(x: 0.31755, y: 0.30090,
+                                               width: 0.34082, height: 0.68100),
+              delay: 0.10, fromAbove: false),
+        Piece(name: "bud-w-D",    rect: NSRect(x: 0.68286, y: 0.18665,
+                                               width: 0.31714, height: 0.80204),
+              delay: 0.20, fromAbove: false),
+        Piece(name: "bud-w-dotL", rect: NSRect(x: 0.35184, y: 0.00000,
+                                               width: 0.11143, height: 0.29864),
+              delay: 0.44, fromAbove: true),
+        Piece(name: "bud-w-dotR", rect: NSRect(x: 0.51184, y: 0.00000,
+                                               width: 0.11265, height: 0.29864),
+              delay: 0.52, fromAbove: true)
+    ]
+
+    /// Le visage du U, en fractions de la toile du mot. Mesuré sur les
+    /// traits de l'illustration, puis peint par le même pinceau que le
+    /// compagnon : c'est ce qui fait que le démarrage et le notch
+    /// montrent exactement la même tête.
+    static let wordFace = NSRect(x: 0.4176, y: 0.5407, width: 0.1469, height: 0.2500)
+
+    /// Rapport largeur / hauteur de la toile du mot.
+    static let wordRatio: CGFloat = 900.0 / 325.0
+
+    private static var letterCache: [String: NSImage?] = [:]
+
+    static func letter(_ name: String) -> NSImage? {
+        if let hit = letterCache[name] { return hit }
+        let img = Bundle.main.url(forResource: name, withExtension: "png")
+            .flatMap { NSImage(contentsOf: $0) }
+        letterCache[name] = img
+        return img
+    }
+
+    /// Vrai quand le paquet porte de quoi animer le mot.
+    static var hasWordmark: Bool {
+        wordPieces.allSatisfy { letter($0.name) != nil }
+    }
+}
 
 final class SplashWindow: NSWindowController {
 
     private var art: SplashView!
     private var timer: Timer?
+    private var chime: NSSound?
     private var t: CGFloat = 0
 
-    static func present() {
-        guard BudArt.wordmark != nil else { return }
-        let s = SplashWindow()
+    /// Durées, en un seul endroit : la musique a été taillée pour elles.
+    private static let fadeIn: CGFloat = 0.26
+    private static let hold: CGFloat = 1.74
+    private static let fadeOut: CGFloat = 0.46
+    static var total: CGFloat { fadeIn + hold + fadeOut }
+
+    private static var keep: SplashWindow?
+
+    /// `sound` suit votre réglage : le carillon se tait quand les sons de
+    /// BUD sont coupés. Un son de démarrage qu'un réglage « sons » ne
+    /// coupe pas est un son qu'on cherche à faire taire dans le noir.
+    static func present(sound: Bool) {
+        guard BudArt.hasWordmark else { return }
+        let s = SplashWindow(sound: sound)
         keep = s
         s.run()
     }
 
-    init() {
-        let size = NSSize(width: 420, height: 260)
+    init(sound: Bool) {
+        let size = NSSize(width: 460, height: 300)
         let w = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                          styleMask: [.borderless], backing: .buffered, defer: false)
         w.isOpaque = false
         w.backgroundColor = .clear
         w.hasShadow = false
         w.level = .floating
-        // Ni clic ni clavier : le splash est une image, pas une étape.
         w.ignoresMouseEvents = true
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         super.init(window: w)
@@ -434,43 +503,48 @@ final class SplashWindow: NSWindowController {
             w.setFrameOrigin(NSPoint(x: f.midX - size.width / 2,
                                      y: f.midY - size.height / 2 + 40))
         }
+
+        if sound, let u = Bundle.main.url(forResource: "bud-chime", withExtension: "wav") {
+            chime = NSSound(contentsOf: u, byReference: false)
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
 
     private func run() {
         window?.alphaValue = 0
         window?.orderFrontRegardless()
+        chime?.play()
         let tm = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.step() }
         RunLoop.main.add(tm, forMode: .common)
         timer = tm
     }
 
-    /// Trois temps : l'apparition, la respiration, l'effacement. La
-    /// progression est portée par une horloge et non par des animations
-    /// enchaînées, pour que le splash sache toujours où il en est si une
-    /// trame saute.
+    /// La progression est portée par une horloge et non par des
+    /// animations enchaînées : si une trame saute — et la première
+    /// seconde d'un lancement en saute — le splash sait toujours où il
+    /// en est, au lieu de prendre du retard.
     private func step() {
         t += 1.0 / 60.0
         art.phase = t
         art.needsDisplay = true
 
-        let fadeIn: CGFloat = 0.32, hold: CGFloat = 1.05, fadeOut: CGFloat = 0.40
-        if t < fadeIn {
-            window?.alphaValue = Double(ease(t / fadeIn))
-        } else if t < fadeIn + hold {
+        let fi = SplashWindow.fadeIn, hd = SplashWindow.hold, fo = SplashWindow.fadeOut
+        if t < fi {
+            window?.alphaValue = Double(ease(t / fi))
+        } else if t < fi + hd {
             window?.alphaValue = 1
-        } else if t < fadeIn + hold + fadeOut {
-            window?.alphaValue = Double(1 - ease((t - fadeIn - hold) / fadeOut))
+        } else if t < fi + hd + fo {
+            window?.alphaValue = Double(1 - ease((t - fi - hd) / fo))
         } else {
             timer?.invalidate(); timer = nil
+            // Le carillon dure moins que l'animation : il est fini. On
+            // l'arrête quand même, au cas où le réglage audio du système
+            // l'aurait ralenti.
+            chime?.stop()
             window?.orderOut(nil)
             SplashWindow.keep = nil
         }
     }
-
-    /// Une fenêtre sans propriétaire disparaît avec sa dernière référence.
-    /// Celle-ci se tient elle-même le temps de l'animation.
-    private static var keep: SplashWindow?
 
     private func ease(_ x: CGFloat) -> CGFloat {
         let c = max(0, min(1, x))
@@ -478,8 +552,7 @@ final class SplashWindow: NSWindowController {
     }
 }
 
-/// Le dessin du splash : le mot monte de quelques points en s'ouvrant,
-/// et une lueur passe derrière lui.
+/// Le dessin du splash.
 final class SplashView: NSView {
     var phase: CGFloat = 0
 
@@ -489,34 +562,142 @@ final class SplashView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Entrée élastique : la pièce dépasse sa place puis y revient.
+    ///
+    /// Une courbe qui s'arrête pile à l'arrivée a l'air freinée ; un
+    /// léger dépassement a l'air d'avoir du poids. C'est une sinusoïde
+    /// amortie, pas une approximation en trois segments — l'amortissement
+    /// se règle d'un seul nombre.
+    private func spring(_ x: CGFloat) -> CGFloat {
+        if x <= 0 { return 0 }
+        if x >= 1 { return 1 }
+        return 1 - exp(-6.2 * x) * cos(8.6 * x)
+    }
+
+    private func ease(_ x: CGFloat) -> CGFloat {
+        let c = max(0, min(1, x))
+        return c * c * (3 - 2 * c)
+    }
+
     override func draw(_ dirty: NSRect) {
-        guard let img = BudArt.wordmark else { return }
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let b = bounds
 
-        // La lueur, derrière : un disque qui respire. Elle donne au mot
-        // l'air d'être allumé plutôt que posé sur du vide.
+        // La toile du mot, centrée et un peu haute : les deux lignes de
+        // texte occupent le bas.
+        let ww = b.width * 0.80
+        let wh = ww / BudArt.wordRatio
+        let canvas = NSRect(x: b.midX - ww / 2, y: b.midY - wh / 2 + 34,
+                            width: ww, height: wh)
+
+        // ── La lueur, derrière ──
         let pulse = 0.5 + 0.5 * sin(phase * 2.6)
-        let r = b.width * (0.42 + 0.05 * pulse)
-        let glow = NSGradient(colors: [TH.accent.withAlphaComponent(0.22 + 0.10 * pulse),
+        let r = b.width * (0.40 + 0.05 * pulse)
+        let glow = NSGradient(colors: [TH.accent.withAlphaComponent(0.20 + 0.10 * pulse),
                                        TH.accent.withAlphaComponent(0)])
-        glow?.draw(in: NSRect(x: b.midX - r, y: b.midY - r * 0.62,
-                              width: r * 2, height: r * 1.24), relativeCenterPosition: .zero)
+        glow?.draw(in: NSRect(x: canvas.midX - r, y: canvas.midY - r * 0.60,
+                              width: r * 2, height: r * 1.20),
+                   relativeCenterPosition: .zero)
 
-        // Le mot : il monte de douze points et grandit d'un centième
-        // pendant l'apparition. Au-delà, il est posé.
-        let p = min(1, phase / 0.42)
-        let e = p * p * (3 - 2 * p)
-        let w = b.width * 0.78 * (0.99 + 0.01 * e)
-        let h = w * (img.size.height / max(1, img.size.width))
-        let rect = NSRect(x: b.midX - w / 2,
-                          y: b.midY - h / 2 + 16 - 12 * (1 - e),
-                          width: w, height: h)
-        img.draw(in: rect, from: .zero, operation: .sourceOver, fraction: Double(e))
+        // ── Le mot, pièce par pièce, dans un calque ──
+        //  Le calque de transparence sert au reflet : il lui donne une
+        //  surface à laquelle s'accrocher. Sans lui, la bande de lumière
+        //  passerait aussi sur le fond.
+        ctx.beginTransparencyLayer(auxiliaryInfo: nil)
 
-        // La version, discrète, sous le mot.
-        drawString("Premium \(budVersion)",
-                   in: NSRect(x: 0, y: rect.minY - 22, width: b.width, height: 16),
-                   size: 11, weight: .medium,
-                   color: TH.dim(0.45).withAlphaComponent(0.45 * e), align: .center)
+        var allIn = true
+        for p in BudArt.wordPieces {
+            guard let img = BudArt.letter(p.name) else { continue }
+            let local = phase - p.delay
+            if local <= 0 { allIn = false; continue }
+            let prog = min(1, local / 0.52)
+            if prog < 1 { allIn = false }
+            let s = spring(prog)
+            let a = ease(local / 0.34)
+
+            // Place finale sur la toile, `y` de la pièce comptée depuis
+            // le haut : il faut la retourner pour AppKit.
+            let dest = NSRect(x: canvas.minX + canvas.width * p.rect.minX,
+                              y: canvas.maxY - canvas.height * (p.rect.minY + p.rect.height),
+                              width: canvas.width * p.rect.width,
+                              height: canvas.height * p.rect.height)
+
+            // Elle arrive de vingt-deux points, et d'un peu plus petit.
+            let travel: CGFloat = (p.fromAbove ? 1 : -1) * 22 * (1 - s)
+            let grow = 0.86 + 0.14 * s
+            let cx = dest.midX, cy = dest.midY + travel
+            let w = dest.width * grow, h = dest.height * grow
+            img.draw(in: NSRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h),
+                     from: .zero, operation: .sourceOver, fraction: Double(min(1, a)))
+        }
+
+        // ── Le visage, une fois le mot assemblé ──
+        if phase > 0.92 {
+            let fa = ease((phase - 0.92) / 0.30)
+            let f = BudArt.wordFace
+            let face = NSRect(x: canvas.minX + canvas.width * f.minX,
+                              y: canvas.maxY - canvas.height * (f.minY + f.height),
+                              width: canvas.width * f.width,
+                              height: canvas.height * f.height)
+            ctx.saveGState()
+            ctx.setAlpha(fa)
+            BudArt.drawFace(in: face, mood: .calm, clock: phase)
+            ctx.restoreGState()
+        }
+
+        // ── Le reflet ──
+        //  Une bande claire qui traverse le mot une fois posé. Elle est
+        //  composée en « sourceAtop » : elle ne marque que ce qui est
+        //  déjà dessiné, donc les lettres, et jamais le fond entre elles.
+        let sweepStart: CGFloat = 0.78
+        if allIn || phase > sweepStart {
+            let sp = (phase - sweepStart) / 0.62
+            if sp > 0 && sp < 1 {
+                let bandW = canvas.width * 0.30
+                let x = canvas.minX - bandW + (canvas.width + bandW * 2) * sp
+                // Elle s'atténue aux deux bouts : une bande qui apparaît
+                // et disparaît d'un coup se voit comme un rectangle.
+                let edge = sin(sp * .pi)
+                ctx.saveGState()
+                ctx.setBlendMode(.sourceAtop)
+                let g = NSGradient(colors: [NSColor(white: 1, alpha: 0),
+                                            NSColor(white: 1, alpha: 0.55 * edge),
+                                            NSColor(white: 1, alpha: 0)])
+                // Inclinée : un reflet vertical a l'air d'un essuie-glace.
+                let band = NSBezierPath()
+                let lean = canvas.height * 0.42
+                band.move(to: CGPoint(x: x - lean, y: canvas.minY - 10))
+                band.line(to: CGPoint(x: x + bandW - lean, y: canvas.minY - 10))
+                band.line(to: CGPoint(x: x + bandW + lean, y: canvas.maxY + 10))
+                band.line(to: CGPoint(x: x + lean, y: canvas.maxY + 10))
+                band.close()
+                band.addClip()
+                g?.draw(in: NSRect(x: x - lean, y: canvas.minY - 10,
+                                   width: bandW + lean * 2,
+                                   height: canvas.height + 20), angle: 0)
+                ctx.restoreGState()
+            }
+        }
+
+        ctx.endTransparencyLayer()
+
+        // ── Les deux lignes ──
+        //  Elles montent de six points en apparaissant : le même geste
+        //  que les lettres, en plus discret, pour que le bas de l'écran
+        //  appartienne au même mouvement.
+        let tl = ease((phase - 1.18) / 0.40)
+        if tl > 0 {
+            let lift = 6 * (1 - tl)
+            drawString("Premium \(budVersion)",
+                       in: NSRect(x: 0, y: canvas.minY - 30 - lift,
+                                  width: b.width, height: 17),
+                       size: 12, weight: .semibold,
+                       color: TH.text.withAlphaComponent(0.72 * tl), align: .center)
+            drawString("by Lahbib.AI",
+                       in: NSRect(x: 0, y: canvas.minY - 50 - lift,
+                                  width: b.width, height: 15),
+                       size: 11, weight: .medium,
+                       color: TH.accent.withAlphaComponent(0.78 * tl), align: .center)
+        }
     }
 }

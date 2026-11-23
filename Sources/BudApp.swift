@@ -140,7 +140,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         // Le splash en premier, avant la construction des vues : c'est
         // précisément ce temps-là qu'il couvre. Il ne retient rien — la
         // construction continue derrière lui et il s'efface seul.
-        SplashWindow.present()
+        SplashWindow.present(sound: state.soundEnabled)
         normalizeSessions()
         buildWindow()
         buildStatusItem()
