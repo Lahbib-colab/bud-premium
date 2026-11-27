@@ -58,6 +58,12 @@ struct BudState: Codable {
     /// en marche se paie en batterie, et personne ne doit le découvrir
     /// après coup.
     var wakeWord: Bool = false
+    /// La ville de la météo. Une ville plutôt que la position : la
+    /// localisation demanderait une autorisation de plus, et la météo
+    /// d'une ville suffit à savoir s'il faut un parapluie.
+    var weatherCity: String = "Paris"
+    /// Le dossier de Raccourcis où BUD cherche les commandes de la maison.
+    var homeFolder: String = "BUD Maison"
     var budPremium: Bool = false      // v17 : conservé pour la migration
     /// 0 à plat · 1 nacré-or · 2 métal · 3 logo.
     ///
@@ -131,6 +137,12 @@ struct BudState: Codable {
         voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? z.voiceEnabled
         previewChips = try c.decodeIfPresent([String].self, forKey: .previewChips) ?? z.previewChips
         sawLogoSkin = try c.decodeIfPresent(Bool.self, forKey: .sawLogoSkin) ?? false
+        // L'écoute « Hey Bud » n'était jamais relue depuis la 24.5 :
+        // l'interrupteur se remettait à zéro à chaque lancement. Un champ
+        // ajouté sans sa ligne ici est un réglage qui ne survit pas.
+        wakeWord = try c.decodeIfPresent(Bool.self, forKey: .wakeWord) ?? z.wakeWord
+        weatherCity = try c.decodeIfPresent(String.self, forKey: .weatherCity) ?? z.weatherCity
+        homeFolder = try c.decodeIfPresent(String.self, forKey: .homeFolder) ?? z.homeFolder
         // Un état écrit par la v17 ne connaît que budPremium : on le reporte.
         if budSkin == 0 && budPremium { budSkin = 1 }
         // La borne était à 2, héritée d'avant le logo : elle ramenait
@@ -376,7 +388,11 @@ enum PreviewChips {
                     target: "music"),
         PreviewChip(key: "memory", label: "Mémoire libre", icon: "memorychip",
                     color: NSColor(calibratedRed: 0.74, green: 0.47, blue: 1.00, alpha: 1),
-                    target: "")
+                    target: ""),
+        // L'icône réelle suit le ciel du moment ; celle-ci sert au menu.
+        PreviewChip(key: "weather", label: "Météo", icon: "cloud.sun.fill",
+                    color: NSColor(calibratedRed: 0.45, green: 0.72, blue: 1.00, alpha: 1),
+                    target: "weather")
     ]
 
     static let fallback = ["disk", "external", "focus", "clock"]
@@ -640,7 +656,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "25.2"
+let budVersion = "25.3"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult

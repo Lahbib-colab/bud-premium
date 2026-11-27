@@ -51,6 +51,12 @@ struct ChatActions {
     /// Lance un sous-agent. Le résultat arrive plus tard, par `late`.
     var runAgent: (String, [String: String], @escaping (String) -> Void) -> Void = { _, _, _ in }
     var listAgents: () -> String = { "" }
+    // ── Météo et maison (25.3) ──
+    /// La météo en une phrase ; `late` reçoit le relevé s'il faut l'attendre.
+    var weather: (@escaping (String) -> Void) -> String = { _ in "" }
+    /// Lance la commande de la maison qui correspond à la phrase, ou rend
+    /// `nil` si aucune ne correspond — la phrase suit alors son chemin.
+    var home: (String, @escaping (String) -> Void) -> String? = { _, _ in nil }
 }
 
 enum BudBrain {
@@ -89,6 +95,16 @@ enum BudBrain {
         let t = norm(raw)
         guard !t.isEmpty else { return "Je t'écoute." }
 
+        // La maison d'abord : seule une commande du dossier qui correspond
+        // nettement à la phrase la déclenche. « Bonjour » peut être une
+        // scène, et doit alors l'emporter sur la salutation.
+        if let r = actions.home(raw, late) { return r }
+        if has(t, ["meteo", "quel temps", "temps fait", "temps fera", "temps qu il fait",
+                   "pleut", "pleuvoir", "pluie", "parapluie", "va neiger", "il neige",
+                   "fait chaud", "fait froid", "fait il chaud", "fait il froid", "temperature dehors"]) {
+            return actions.weather(late)
+        }
+
         if has(t, ["bonjour", "salut", "coucou", "hello", "bonsoir", "hey"]) {
             let g = timeGreeting()
             return "\(g.0) ! \(g.1)"
@@ -113,6 +129,8 @@ enum BudBrain {
             • « batterie », « mon adresse IP », « verrouille l'écran »
             • « passe en mode sombre », « capture la fenêtre »
             • « préviens-moi dans 15 minutes »
+            • « quel temps fait-il ? », « va-t-il pleuvoir ? » — la météo
+            • « lumière salon », « bonne nuit » — vos commandes Maison
             • « cherche la recette du pain perdu » — ouvre une recherche web
             • « 23 × 7 », « (120 + 80) / 4 », « 20 % de 480 » — je calcule
             Et le micro, à côté du champ : je transcris sur votre Mac, \

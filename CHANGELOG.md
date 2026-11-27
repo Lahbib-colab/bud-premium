@@ -2,6 +2,30 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.3 — Météo et Maison
+
+**Une section Maison, avec la météo et vos objets connectés.** Elle prend place dans la barre latérale, entre Communication et Travail.
+
+**La météo, comme dans l'application d'Apple.** Le fond n'est pas une image : c'est un ciel qui bouge. Soleil qui respire, rayons qui tournent à peine, nuages sur trois plans qui dérivent chacun à sa vitesse — c'est la différence de vitesse qui donne la profondeur —, pluie oblique plus ou moins dense selon l'intensité, neige qui tombe en se balançant, brouillard en bandes, et l'orage qui illumine tout le ciel à intervalles irréguliers. La nuit, la lune et des étoiles qui scintillent. Huit ciels, chacun de jour et de nuit.
+
+**La disposition est celle de Météo** : la ville, la température en grand et en fin, le ciel en mots, maximum et minimum. Puis douze heures en bande, avec le ressenti, le vent et l'humidité. Puis sept jours, chacun avec une barre qui situe ses températures dans celles de toute la semaine, colorée du bleu froid à l'orange chaud ; un point blanc marque la température actuelle sur celle d'aujourd'hui. La probabilité de pluie s'affiche sous le symbole quand elle dépasse 20 % — à 10 %, elle inquiéterait pour rien.
+
+**La source : Open-Meteo, pas WeatherKit.** WeatherKit exige un compte développeur payant ; Open-Meteo est gratuit et sans clé pour un usage personnel, sous licence CC BY 4.0 — d'où la mention de la source en bas du panneau, qui est une condition et pas une politesse. Seules partent de la machine les coordonnées de la ville choisie, arrondies au centième. BUD ne demande pas la position du Mac. Le relevé a lieu toutes les trente minutes au plus et le dernier est gardé : la météo s'affiche dès l'ouverture.
+
+**La scène ne s'anime que si on la voit.** Panneau caché, fenêtre repliée ou masquée : l'horloge s'arrête ou ne dessine plus. Les gouttes et les étoiles sont tirées une fois, d'une graine fixe, et recommencent leur course au lieu d'être recréées.
+
+**Une pastille Météo pour l'aperçu**, dont l'icône suit le ciel du moment. Et dans le chat ou à la voix : « quel temps fait-il ? », « va-t-il pleuvoir ? ».
+
+**La Maison, par Raccourcis.** HomeKit n'est pas ouvert aux applications AppKit : Apple le réserve sur Mac aux applications Catalyst munies d'un droit délivré à un compte payant. Raccourcis, lui, sait « Contrôler la maison », et macOS permet de lancer un raccourci depuis n'importe quel programme. Créez dans Raccourcis un dossier « BUD Maison », un raccourci par commande — « Lumière salon », « Bonne nuit » —, et BUD les présente en tuiles, comme l'application Maison. Le panneau explique la marche à suivre tant que le dossier est vide.
+
+**BUD ne voit jamais vos appareils.** Il ne reçoit aucun accès à HomeKit et ne peut lancer que ce que vous avez mis dans ce dossier. Le nom du dossier se change dans le panneau.
+
+**Les tuiles s'allument comme des accessoires** : une pastille de couleur et un symbole devinés d'après le nom — ampoule, lune, prise, thermomètre, serrure, volets… —, un anneau qui tourne pendant l'exécution, puis une coche ou un point d'exclamation avec le message rendu par le raccourci. Un raccourci qui se termine par « Afficher le résultat » peut ainsi répondre « Salon allumé ». Au-delà de vingt secondes, il est arrêté.
+
+**À la voix aussi** : « Hey Bud, lumière salon ». BUD compare des mots, pas des phrases : « allume le salon » trouve « Lumière salon », mais un mot vague partagé par trois commandes ne déclenche rien. BUDs est fier quand ça marche, perplexe sinon.
+
+**Correction : l'écoute « Hey Bud » est enfin retenue.** Le réglage était enregistré mais jamais relu depuis 24.5 ; il revenait éteint à chaque lancement.
+
 ## 25.2 — le lecteur réduit
 
 **La pastille Musique se déplie en lecteur, sur place.** Un clic dessus ne quitte plus l'aperçu pour le grand panneau : elle s'étire en un petit lecteur — pochette, titre, artiste, avancement, précédent, lecture, suivant. On change de morceau sans perdre ce qu'on faisait.

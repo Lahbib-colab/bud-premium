@@ -39,6 +39,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                            NavEntry(icon: "iphone", title: "Téléphone"),
                            NavEntry(icon: "alarm.fill", title: "Rappels"),
                            NavEntry(icon: "music.note", title: "Musique")]),
+        ("Maison",        [NavEntry(icon: "cloud.sun.fill", title: "Météo"),
+                           NavEntry(icon: "house.fill", title: "Maison")]),
         ("Travail",       [NavEntry(icon: "internaldrive.fill", title: "Stockage"),
                            NavEntry(icon: "sparkles", title: "Nettoyage"),
                            NavEntry(icon: "timer", title: "Focus"),
@@ -50,9 +52,10 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                            NavEntry(icon: "slider.horizontal.3", title: "Réglages")])
     ]
     private let tabCompanion = 0, tabChat = 1, tabAgents = 2, tabMail = 3,
-                tabPhone = 4, tabReminders = 5, tabMusic = 6, tabStorage = 7,
-                tabClean = 8, tabFocus = 9, tabNotes = 10, tabSnippets = 11,
-                tabClipboard = 12, tabSorting = 13, tabTools = 14, tabSettings = 15
+                tabPhone = 4, tabReminders = 5, tabMusic = 6, tabWeather = 7,
+                tabHome = 8, tabStorage = 9, tabClean = 10, tabFocus = 11,
+                tabNotes = 12, tabSnippets = 13, tabClipboard = 14, tabSorting = 15,
+                tabTools = 16, tabSettings = 17
 
     // Modules
     private var storagePanel: StoragePanelView!
@@ -64,6 +67,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var phonePanel: PhonePanelView!
     private var remindersPanel: RemindersPanelView!
     private var musicPanel: MusicPanelView!
+    private var weatherPanel: WeatherPanelView!
+    private var homePanel: HomePanelView!
     private var capture: CaptureWindow!
 
     // Panneaux maison
@@ -747,6 +752,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         phonePanel = PhonePanelView(frame: pf)
         remindersPanel = RemindersPanelView(frame: pf)
         musicPanel = MusicPanelView(frame: pf)
+        weatherPanel = WeatherPanelView(frame: pf)
+        homePanel = HomePanelView(frame: pf)
         storagePanel = StoragePanelView(frame: pf)
         cleanPanel = CleanupPanelView(frame: pf)
         let focus = NSView(frame: pf)
@@ -758,7 +765,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let settings = NSView(frame: pf)
 
         panels = [companion, chatPanel, agentsPanel, mailPanel, phonePanel, remindersPanel,
-                  musicPanel, storagePanel, cleanPanel, focus, notes, snippetsPanel,
+                  musicPanel, weatherPanel, homePanel, storagePanel, cleanPanel, focus, notes, snippetsPanel,
                   clip, sorting, tools, settings]
         panels.forEach { p in
             p.isHidden = true
@@ -841,6 +848,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         remindersPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
         remindersPanel.onChanged = { [weak self] in self?.refreshReminderBadge() }
         musicPanel.onStatus = { [weak self] msg in self?.setStatus(msg) }
+        wireWeatherAndHome()
         // Le notch suit la lecture dès que le panneau relit l'état.
         musicPanel.onNowPlaying = { [weak self] n in self?.applyNowPlaying(n) }
         wireChat()
@@ -1326,6 +1334,40 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     // ═══════════ Chat ═══════════
 
+    /// La météo se relève seule toutes les trente minutes ; la maison se
+    /// lit une fois au lancement, pour que la voix trouve les commandes
+    /// sans qu'on ait ouvert le panneau.
+    private func wireWeatherAndHome() {
+        let w = WeatherService.shared
+        w.onUpdate = { [weak self] r in
+            guard let s = self else { return }
+            s.weatherPanel.apply(r, city: s.state.weatherCity, trouble: w.trouble)
+        }
+        weatherPanel.apply(w.report, city: state.weatherCity, trouble: w.trouble)
+        weatherPanel.onCity = { [weak self] city in
+            guard let s = self else { return }
+            s.state.weatherCity = city
+            BudStore.shared.save(s.state)
+            w.refresh(city: city, force: true)
+        }
+        weatherPanel.onRefresh = { [weak self] in
+            guard let s = self else { return }
+            w.refresh(city: s.state.weatherCity, force: true)
+        }
+        w.start { [weak self] in self?.state.weatherCity ?? "Paris" }
+
+        homePanel.folder = { [weak self] in self?.state.homeFolder ?? "BUD Maison" }
+        homePanel.onFolder = { [weak self] f in
+            guard let s = self else { return }
+            s.state.homeFolder = f
+            BudStore.shared.save(s.state)
+        }
+        homePanel.onRan = { [weak self] _, ok in
+            self?.mood(ok ? .proud : .confused, 2.5)
+        }
+        homePanel.reload()
+    }
+
     private func wireChat() {
         var a = ChatActions()
         a.storageReport = { [weak self] in
@@ -1478,6 +1520,33 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             guard let s = self else { return "" }
             return s.musicPanel.command(cmd)
         }
+        a.weather = { [weak self] late in
+            guard let s = self else { return "" }
+            let w = WeatherService.shared
+            if let r = w.report, Date().timeIntervalSince(r.fetchedAt) < 60 * 60 {
+                return w.summary()
+            }
+            // Pas de relevé, ou trop vieux : on le demande et on répond
+            // quand il arrive. `onUpdate` est déjà pris par le panneau.
+            let before = w.report?.fetchedAt
+            w.refresh(city: s.state.weatherCity, force: true)
+            var tries = 0
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { tm in
+                tries += 1
+                if w.report?.fetchedAt != before || !w.trouble.isEmpty || tries > 40 {
+                    tm.invalidate(); late(w.summary())
+                }
+            }
+            return "Je regarde le ciel de \(s.state.weatherCity)…"
+        }
+        a.home = { [weak self] phrase, late in
+            guard let s = self, let scene = HomeShortcuts.shared.match(phrase) else { return nil }
+            s.homePanel.launch(named: scene.name) { ok, msg in
+                late(ok ? (msg.isEmpty ? "C'est fait : \(scene.name)." : msg)
+                        : "« \(scene.name) » n'a pas abouti : \(msg)")
+            }
+            return "Je lance « \(scene.name) »…"
+        }
         a.tellJoke = { budJokes.randomElement() ?? "" }
         a.giveTip = { [weak self] in
             let pool = tipsFor(self?.state.personality ?? 0)
@@ -1557,6 +1626,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         case "music":     return nowPlayingTitle.isEmpty
                                 ? "—" : String(nowPlayingTitle.prefix(14))
         case "memory":    return memoryShort()
+        case "weather":   return WeatherService.shared.report.map { "\(Int($0.temp.rounded()))°" } ?? "—"
         default:          return "—"
         }
     }
@@ -1638,6 +1708,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             holdUntil = Date().addingTimeInterval(12)
             pollMusic()
         case "focus":     openPanel(); selectTab(tabFocus)
+        case "weather":   openPanel(); selectTab(tabWeather)
         default:          openPanel()
         }
     }
@@ -2036,7 +2107,9 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
         chrome.chips = PreviewChips.current(state).map { key -> (String, String, NSColor?) in
             guard let c = PreviewChips.chip(key) else { return ("questionmark", "—", nil) }
-            return (c.icon, chipValue(key, boot: boot, ext: ext, focus: focusTxt), c.color)
+            var icon = c.icon
+            if key == "weather", let r = WeatherService.shared.report { icon = r.condition.symbol }
+            return (icon, chipValue(key, boot: boot, ext: ext, focus: focusTxt), c.color)
         }
         chrome.progress = ratio
         if pendingAgents > 0 { chrome.badge = dangerColor }
@@ -2426,6 +2499,11 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         case tabPhone: phonePanel.refresh()
         case tabReminders: remindersPanel.refresh()
         case tabMusic: musicPanel.refresh()
+        case tabWeather:
+            let w = WeatherService.shared
+            weatherPanel.apply(w.report, city: state.weatherCity, trouble: w.trouble)
+            w.refresh(city: state.weatherCity)
+        case tabHome: homePanel.reload()
         case tabStorage: storagePanel.refresh(animated: true)
         case tabAgents: agentsPanel.refresh()
         case tabClean: cleanPanel.scan()
