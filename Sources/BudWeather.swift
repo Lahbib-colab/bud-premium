@@ -519,7 +519,7 @@ final class WeatherSceneView: NSView {
 
     private func drawSun(_ b: NSRect) {
         let c = CGPoint(x: b.maxX - b.width * 0.18, y: b.maxY - b.height * 0.16)
-        let r = min(b.width, b.height) * 0.09
+        let r = min(b.width, b.height) * 0.07
         // Le halo respire lentement ; les rayons tournent à peine.
         let breath = 1 + 0.06 * sin(t * 0.9)
         NSGradient(colors: [NSColor(srgbRed: 1, green: 0.93, blue: 0.62, alpha: 0.55),
@@ -595,7 +595,7 @@ final class WeatherSceneView: NSView {
         // et le plus lent. C'est la différence de vitesse qui donne la
         // profondeur, pas la taille.
         let specs: [(y: CGFloat, w: CGFloat, speed: CGFloat, alpha: CGFloat, n: Int)] = [
-            (0.80, 0.30, 4, 0.55, 3), (0.68, 0.42, 7, 0.75, 3), (0.86, 0.55, 11, 1.0, 2)
+            (0.84, 0.24, 4, 0.55, 3), (0.77, 0.32, 7, 0.75, 3), (0.92, 0.42, 11, 1.0, 2)
         ]
         for (i, s) in specs.prefix(layers).enumerated() {
             let base = dark ? NSColor(white: 0.78 - CGFloat(i) * 0.08, alpha: 1) : NSColor(white: 1, alpha: 1)
