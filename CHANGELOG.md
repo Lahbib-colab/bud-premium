@@ -2,6 +2,18 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.2 — le lecteur réduit
+
+**La pastille Musique se déplie en lecteur, sur place.** Un clic dessus ne quitte plus l'aperçu pour le grand panneau : elle s'étire en un petit lecteur — pochette, titre, artiste, avancement, précédent, lecture, suivant. On change de morceau sans perdre ce qu'on faisait.
+
+**Il naît de la pastille, littéralement.** Son rectangle part de celui de la pastille cliquée et s'étire jusqu'à la largeur de l'aperçu, avec un léger dépassement, en gardant sa couleur. Un lecteur qui apparaîtrait ailleurs, en fondu, ne dirait pas d'où il vient. Les pastilles s'effacent pendant qu'il grandit, et son contenu n'apparaît qu'une fois la coque presque dépliée : un titre qui s'étire avec elle serait illisible le temps du mouvement. Il se replie plus vite qu'il ne s'ouvre — en refermant, l'attention est déjà ailleurs.
+
+**Il montre le morceau en pause aussi**, pochette comprise : c'est justement là qu'on veut le relancer. Sans morceau, il dit « Rien en lecture », et le bouton lecture lance Musique — il fait ce qu'il promet. Pendant la lecture, un petit égaliseur se pose sur un coin de la pochette.
+
+**La barre d'avancement glisse.** Elle avance entre deux relevés au lieu de sauter de quatre secondes en quatre secondes.
+
+**Chaque commande repousse la fermeture de l'aperçu** : il ne se replie pas entre deux « suivant ». Lecture et pause changent d'icône au clic, sans attendre Musique. Un clic dans le lecteur mais à côté d'un bouton ne fait rien — ouvrir le grand panneau parce qu'on a visé à côté de « suivant » serait une punition. La pochette et le titre, eux, y mènent ; le chevron replie le lecteur dans sa pastille.
+
 ## 25.1 — BUDs
 
 **Le compagnon s'appelle BUDs, et il a sept visages rendus.** Neutre, content, réfléchi, déçu, en colère, étourdi, cool. On ne repeint plus les traits en code : chaque expression est votre rendu, visage compris, et BUD choisit le bon puis l'anime.

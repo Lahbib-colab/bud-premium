@@ -312,6 +312,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         chrome.onHover = { [weak self] inside in self?.hover(inside) }
         chrome.onClick = { [weak self] in self?.notchClicked() }
         chrome.onChipClick = { [weak self] i in self?.openChip(i) }
+        chrome.onPlayer = { [weak self] a in self?.playerAction(a) }
         host.addSubview(chrome)
 
         buildApprovalBar()
@@ -616,10 +617,18 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             chrome.needsDisplay = true
         }
 
-        // La pochette : le replié ne montre le morceau que pendant la
-        // lecture, donc la vignette suit la même règle. Le cache fait
-        // le reste — un seul export par morceau, partagé avec le panneau.
-        if n.playing && n.hasTrack {
+        // Le lecteur réduit montre le morceau en pause aussi : c'est
+        // justement là qu'on veut le relancer.
+        chrome.playerTitle = n.title
+        chrome.playerArtist = n.artist
+        chrome.setPlayback(position: n.position, duration: n.duration,
+                           known: n.positionKnown)
+
+        // La pochette, dès qu'il y a un morceau. Le replié ne la montre
+        // que pendant la lecture — il le vérifie lui-même — mais le
+        // lecteur réduit en a besoin en pause. Le cache fait le reste :
+        // un seul export par morceau, partagé avec le panneau.
+        if n.hasTrack {
             chrome.nowPlayingArt = ArtworkStore.request(n.trackKey) { [weak self] img in
                 self?.chrome.nowPlayingArt = img
             }
@@ -1579,6 +1588,38 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         return free > 0 ? String(format: "%.1f Go", free / 1_073_741_824) : "—"
     }
 
+    /// Les commandes du lecteur réduit.
+    ///
+    /// Chacune repousse la fermeture de l'aperçu : on ne veut pas qu'il
+    /// se replie entre deux « suivant ». Lecture et pause changent l'icône
+    /// tout de suite, sans attendre Musique — la relecture qui suit
+    /// corrige si elle a refusé.
+    private func playerAction(_ a: NotchChrome.PlayerAction) {
+        holdUntil = Date().addingTimeInterval(12)
+        switch a {
+        case .previous:
+            MusicBridge.previous()
+        case .next:
+            MusicBridge.next()
+        case .toggle:
+            // `playPause` lance Musique si elle est fermée : depuis « Rien
+            // en lecture », le bouton fait donc ce qu'il promet.
+            MusicBridge.playPause()
+            chrome.musicPlaying.toggle()
+        case .open:
+            chrome.hidePlayer(instant: true)
+            openPanel()
+            selectTab(tabMusic)
+            return
+        case .close:
+            chrome.hidePlayer()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            self?.pollMusic()
+        }
+    }
+
     /// Le clic sur une pastille mène à ce qu'elle montre.
     private func openChip(_ index: Int) {
         let keys = PreviewChips.current(state)
@@ -1590,7 +1631,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         case "agents":    openPanel(); selectTab(tabAgents)
         case "mail":      openPanel(); selectTab(tabMail)
         case "reminders": openPanel(); selectTab(tabReminders)
-        case "music":     openPanel(); selectTab(tabMusic)
+        case "music":
+            // Le lecteur réduit, sur place. Le grand panneau reste à un
+            // clic : la pochette et le titre y mènent.
+            chrome.showPlayer(fromChip: index)
+            holdUntil = Date().addingTimeInterval(12)
+            pollMusic()
         case "focus":     openPanel(); selectTab(tabFocus)
         default:          openPanel()
         }
@@ -1879,6 +1925,9 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let opening = (s == .open)
         notchState = s
         chrome.state = s
+        // Le lecteur réduit n'existe que dans l'aperçu. Rouvert plus tard,
+        // l'aperçu retrouve ses pastilles, pas un lecteur à demi replié.
+        if s != .glance { chrome.hidePlayer(instant: true) }
         backdrop.radius = radiusFor(s)
 
         if !opening { content.isHidden = true }

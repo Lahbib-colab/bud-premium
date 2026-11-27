@@ -7,7 +7,7 @@ TOOLS_DIR="$SUPPORT_DIR/tools"
 ART_DIR="$SUPPORT_DIR/art"
 
 echo "============================================================"
-echo "   BUD Premium 25.1 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 25.2 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents" "$ART_DIR"
@@ -588,6 +588,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         chrome.onHover = { [weak self] inside in self?.hover(inside) }
         chrome.onClick = { [weak self] in self?.notchClicked() }
         chrome.onChipClick = { [weak self] i in self?.openChip(i) }
+        chrome.onPlayer = { [weak self] a in self?.playerAction(a) }
         host.addSubview(chrome)
 
         buildApprovalBar()
@@ -892,10 +893,18 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             chrome.needsDisplay = true
         }
 
-        // La pochette : le replié ne montre le morceau que pendant la
-        // lecture, donc la vignette suit la même règle. Le cache fait
-        // le reste — un seul export par morceau, partagé avec le panneau.
-        if n.playing && n.hasTrack {
+        // Le lecteur réduit montre le morceau en pause aussi : c'est
+        // justement là qu'on veut le relancer.
+        chrome.playerTitle = n.title
+        chrome.playerArtist = n.artist
+        chrome.setPlayback(position: n.position, duration: n.duration,
+                           known: n.positionKnown)
+
+        // La pochette, dès qu'il y a un morceau. Le replié ne la montre
+        // que pendant la lecture — il le vérifie lui-même — mais le
+        // lecteur réduit en a besoin en pause. Le cache fait le reste :
+        // un seul export par morceau, partagé avec le panneau.
+        if n.hasTrack {
             chrome.nowPlayingArt = ArtworkStore.request(n.trackKey) { [weak self] img in
                 self?.chrome.nowPlayingArt = img
             }
@@ -1855,6 +1864,38 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         return free > 0 ? String(format: "%.1f Go", free / 1_073_741_824) : "—"
     }
 
+    /// Les commandes du lecteur réduit.
+    ///
+    /// Chacune repousse la fermeture de l'aperçu : on ne veut pas qu'il
+    /// se replie entre deux « suivant ». Lecture et pause changent l'icône
+    /// tout de suite, sans attendre Musique — la relecture qui suit
+    /// corrige si elle a refusé.
+    private func playerAction(_ a: NotchChrome.PlayerAction) {
+        holdUntil = Date().addingTimeInterval(12)
+        switch a {
+        case .previous:
+            MusicBridge.previous()
+        case .next:
+            MusicBridge.next()
+        case .toggle:
+            // `playPause` lance Musique si elle est fermée : depuis « Rien
+            // en lecture », le bouton fait donc ce qu'il promet.
+            MusicBridge.playPause()
+            chrome.musicPlaying.toggle()
+        case .open:
+            chrome.hidePlayer(instant: true)
+            openPanel()
+            selectTab(tabMusic)
+            return
+        case .close:
+            chrome.hidePlayer()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            self?.pollMusic()
+        }
+    }
+
     /// Le clic sur une pastille mène à ce qu'elle montre.
     private func openChip(_ index: Int) {
         let keys = PreviewChips.current(state)
@@ -1866,7 +1907,12 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         case "agents":    openPanel(); selectTab(tabAgents)
         case "mail":      openPanel(); selectTab(tabMail)
         case "reminders": openPanel(); selectTab(tabReminders)
-        case "music":     openPanel(); selectTab(tabMusic)
+        case "music":
+            // Le lecteur réduit, sur place. Le grand panneau reste à un
+            // clic : la pochette et le titre y mènent.
+            chrome.showPlayer(fromChip: index)
+            holdUntil = Date().addingTimeInterval(12)
+            pollMusic()
         case "focus":     openPanel(); selectTab(tabFocus)
         default:          openPanel()
         }
@@ -2155,6 +2201,9 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let opening = (s == .open)
         notchState = s
         chrome.state = s
+        // Le lecteur réduit n'existe que dans l'aperçu. Rouvert plus tard,
+        // l'aperçu retrouve ses pastilles, pas un lecteur à demi replié.
+        if s != .glance { chrome.hidePlayer(instant: true) }
         backdrop.radius = radiusFor(s)
 
         if !opening { content.isHidden = true }
@@ -5748,7 +5797,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "25.1"
+let budVersion = "25.2"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -17099,6 +17148,75 @@ final class NotchChrome: NSView {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    //  Le lecteur réduit
+    //
+    //  Un clic sur la pastille Musique ne quitte plus l'aperçu
+    //  pour ouvrir le grand panneau : la pastille se déplie sur
+    //  place en un petit lecteur — pochette, titre, artiste,
+    //  avancement, précédent, lecture, suivant. On change de
+    //  morceau sans perdre ce qu'on faisait.
+    //
+    //  Il naît de la pastille, littéralement : son rectangle
+    //  part de celui de la pastille cliquée et s'étire jusqu'à
+    //  la largeur de l'aperçu, avec un léger dépassement. Un
+    //  lecteur qui apparaîtrait ailleurs, en fondu, ne dirait
+    //  pas d'où il vient.
+    // ═══════════════════════════════════════════════════════════
+
+    enum PlayerAction { case previous, toggle, next, open, close }
+    var onPlayer: ((PlayerAction) -> Void)?
+
+    /// Ce que le lecteur affiche, en lecture comme en pause.
+    var playerTitle = "" { didSet { if playerTitle != oldValue { marquee = 0 } } }
+    var playerArtist = ""
+    /// Teinte de la pastille Musique, reprise par le lecteur : il en est
+    /// le prolongement, il en garde la couleur.
+    var playerTint: NSColor = .systemPink
+
+    /// Position et durée connues, et l'instant où on les a apprises :
+    /// la barre avance entre deux relevés au lieu de sauter de quatre
+    /// secondes en quatre secondes.
+    private var playerPos: Double = 0
+    private var playerDur: Double = 0
+    private var playerStamp = Date()
+
+    func setPlayback(position: Double, duration: Double, known: Bool) {
+        playerPos = known ? position : 0
+        playerDur = known ? duration : 0
+        playerStamp = Date()
+    }
+
+    private(set) var playerShown = false
+    private var playerMorph: CGFloat = 0          // 0 pastilles · 1 lecteur
+    private var playerOrigin = NSRect.zero
+    private var playerRects: [(PlayerAction, NSRect)] = []
+    private var playerHover: PlayerAction?
+
+    /// Déplie le lecteur depuis la pastille `i`.
+    func showPlayer(fromChip i: Int) {
+        playerOrigin = chipRects.indices.contains(i) ? chipRects[i] : playerFrame()
+        if chips.indices.contains(i), let tint = chips[i].2 { playerTint = tint }
+        playerShown = true
+        chipHover = -1
+        needsDisplay = true
+    }
+
+    /// Replie le lecteur dans sa pastille ; `instant` saute l'animation,
+    /// pour un aperçu qui se ferme de toute façon.
+    func hidePlayer(instant: Bool = false) {
+        playerShown = false
+        playerHover = nil
+        if instant { playerMorph = 0 }
+        needsDisplay = true
+    }
+
+    /// La place du lecteur déplié : la bande des pastilles et de la ligne
+    /// d'aide, qu'il remplace le temps qu'il est ouvert.
+    private func playerFrame() -> NSRect {
+        NSRect(x: 22, y: 10, width: bounds.width - 44, height: 52)
+    }
+
     let sprite = BudSprite()
     private var phase: CGFloat = 0, dash: CGFloat = 0
     private var frames = 0
@@ -17121,22 +17239,40 @@ final class NotchChrome: NSView {
     }
 
     override func mouseMoved(with e: NSEvent) {
-        let i = chipIndex(at: convert(e.locationInWindow, from: nil))
+        let p = convert(e.locationInWindow, from: nil)
+        let a = playerAction(at: p)
+        if a != playerHover { playerHover = a; needsDisplay = true }
+        let i = chipIndex(at: p)
         if i != chipHover { chipHover = i; needsDisplay = true }
     }
 
     override func mouseUp(with e: NSEvent) {
         guard state != .open else { return }
+        let p = convert(e.locationInWindow, from: nil)
+        // Le lecteur d'abord : ses boutons sont posés là où étaient les
+        // pastilles. Un clic dans le lecteur mais hors d'un bouton ne fait
+        // rien — ouvrir le grand panneau parce qu'on a visé à côté de
+        // « suivant » serait une punition.
+        if playerShown && playerMorph > 0.8 {
+            if let a = playerAction(at: p) { onPlayer?(a); return }
+            if playerFrame().contains(p) { return }
+        }
         // Une pastille cliquée mène à son panneau ; partout ailleurs, le
         // clic ouvre BUD comme avant.
-        let i = chipIndex(at: convert(e.locationInWindow, from: nil))
+        let i = chipIndex(at: p)
         if i >= 0 { onChipClick?(i); return }
         onClick?()
     }
 
+    private func playerAction(at p: NSPoint) -> PlayerAction? {
+        guard state == .glance, playerShown, playerMorph > 0.8 else { return nil }
+        for (a, r) in playerRects where r.contains(p) { return a }
+        return nil
+    }
+
     /// L'indice de la pastille sous le point, ou -1.
     private func chipIndex(at p: NSPoint) -> Int {
-        guard state == .glance else { return -1 }
+        guard state == .glance, !playerShown, playerMorph < 0.05 else { return -1 }
         for (i, r) in chipRects.enumerated() where r.contains(p) { return i }
         return -1
     }
@@ -17166,6 +17302,16 @@ final class NotchChrome: NSView {
             }
             marquee += 0.9
         }
+
+        // Le dépli prend trois dixièmes, le repli un peu moins : on
+        // referme plus vite qu'on n'ouvre, l'attention est déjà ailleurs.
+        let target: CGFloat = playerShown ? 1 : 0
+        if playerMorph != target {
+            let speed: CGFloat = playerShown ? 1.0 / (30 * 0.30) : 1.0 / (30 * 0.22)
+            playerMorph = playerShown ? min(1, playerMorph + speed) : max(0, playerMorph - speed)
+            needsDisplay = true
+        }
+        if playerShown && musicPlaying && state == .glance { needsDisplay = true }
 
         let r = budRect()
         var dirty = sprite.step(follow: follow, in: self, anchor: NSPoint(x: r.midX, y: r.midY))
@@ -17364,7 +17510,17 @@ final class NotchChrome: NSView {
                          xRadius: 2, yRadius: 2).fill()
         }
 
-        if !chips.isEmpty {
+        // Les pastilles et la ligne d'aide s'effacent pendant que le
+        // lecteur se déplie : on les dessine dans un calque dont
+        // l'opacité suit le dépli, plutôt que de les retirer d'un coup.
+        let chipAlpha = 1 - min(1, playerMorph * 1.6)
+        let ctx = NSGraphicsContext.current?.cgContext
+        if chipAlpha < 1 {
+            ctx?.saveGState()
+            ctx?.setAlpha(chipAlpha)
+            ctx?.beginTransparencyLayer(auxiliaryInfo: nil)
+        }
+        if !chips.isEmpty && chipAlpha > 0 {
             let gap: CGFloat = 8
             let cw = (b.width - 44 - gap * CGFloat(chips.count - 1)) / CGFloat(chips.count)
             chipRects.removeAll()
@@ -17389,9 +17545,156 @@ final class NotchChrome: NSView {
             }
         }
 
-        drawString("Cliquer pour ouvrir · déposer des fichiers ici",
-                   in: NSRect(x: 0, y: 8, width: b.width, height: 14),
-                   size: 9.5, weight: .medium, color: TH.dim(0.26), align: .center)
+        if chipAlpha > 0 {
+            drawString("Cliquer pour ouvrir · déposer des fichiers ici",
+                       in: NSRect(x: 0, y: 8, width: b.width, height: 14),
+                       size: 9.5, weight: .medium, color: TH.dim(0.26), align: .center)
+        }
+        if chipAlpha < 1 {
+            ctx?.endTransparencyLayer()
+            ctx?.restoreGState()
+        }
+
+        if playerMorph > 0.001 { drawPlayer() } else { playerRects.removeAll() }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Le lecteur réduit, dessiné
+    // ─────────────────────────────────────────────────────────
+
+    /// Dépli élastique : le lecteur dépasse un peu sa largeur puis s'y
+    /// pose. Au repli, une courbe douce — un ressort qui se referme en
+    /// rebondissant aurait l'air de résister.
+    private func playerEase(_ x: CGFloat) -> CGFloat {
+        let c = max(0, min(1, x))
+        if !playerShown { return c * c * (3 - 2 * c) }
+        if c >= 1 { return 1 }
+        return 1 - exp(-6.0 * c) * cos(8.0 * c)
+    }
+
+    private func lerp(_ a: NSRect, _ b: NSRect, _ t: CGFloat) -> NSRect {
+        NSRect(x: a.minX + (b.minX - a.minX) * t, y: a.minY + (b.minY - a.minY) * t,
+               width: a.width + (b.width - a.width) * t,
+               height: a.height + (b.height - a.height) * t)
+    }
+
+    private func drawPlayer() {
+        let full = playerFrame()
+        let origin = playerOrigin == .zero ? full : playerOrigin
+        let e = playerEase(playerMorph)
+        let r = lerp(origin, full, e)
+        let radius = min(r.height / 2, 14 + (1 - e) * 6)
+
+        // La coque garde la teinte de la pastille : c'est elle qui grandit.
+        let shell = NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius)
+        playerTint.withAlphaComponent(0.10 + 0.06 * (1 - e)).setFill()
+        shell.fill()
+        TH.fill(0.06).setFill()
+        shell.fill()
+        playerTint.withAlphaComponent(0.42).setStroke()
+        shell.lineWidth = 1
+        shell.stroke()
+
+        // Le contenu n'apparaît qu'une fois la coque presque dépliée :
+        // un titre qui s'étire avec elle serait illisible le temps du
+        // mouvement.
+        let ca = max(0, min(1, (playerMorph - 0.45) / 0.55))
+        playerRects.removeAll()
+        guard ca > 0.01 else { return }
+
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius).addClip()
+        let ctx = NSGraphicsContext.current?.cgContext
+        ctx?.setAlpha(ca)
+        ctx?.beginTransparencyLayer(auxiliaryInfo: nil)
+
+        // ── La pochette, ou une note quand il n'y en a pas ──
+        let art = NSRect(x: full.minX + 6, y: full.minY + 6, width: 40, height: 40)
+        let ap = NSBezierPath(roundedRect: art, xRadius: 9, yRadius: 9)
+        if let img = nowPlayingArt, img.size.width > 0, img.size.height > 0 {
+            NSGraphicsContext.current?.saveGraphicsState()
+            ap.addClip()
+            let k = max(art.width / img.size.width, art.height / img.size.height)
+            let w = img.size.width * k, h = img.size.height * k
+            img.draw(in: NSRect(x: art.midX - w / 2, y: art.midY - h / 2, width: w, height: h))
+            NSGraphicsContext.current?.restoreGraphicsState()
+        } else {
+            playerTint.withAlphaComponent(0.22).setFill()
+            ap.fill()
+            drawSymbol("music.note", center: NSPoint(x: art.midX, y: art.midY), size: 16,
+                       weight: .semibold, color: playerTint)
+        }
+        TH.fill(0.10).setStroke()
+        ap.lineWidth = 1
+        ap.stroke()
+        // Pendant la lecture, l'égaliseur se pose sur un coin de la
+        // pochette : on voit d'un coup d'œil que ça joue.
+        if musicPlaying {
+            let eq = NSRect(x: art.maxX - 15, y: art.minY + 4, width: 11, height: 9)
+            NSColor.black.withAlphaComponent(0.35).setFill()
+            NSBezierPath(roundedRect: eq.insetBy(dx: -2.5, dy: -2), xRadius: 3, yRadius: 3).fill()
+            drawEqBars(in: eq)
+        }
+
+        // ── Les commandes, à droite ──
+        let cy = full.midY
+        let close = NSRect(x: full.maxX - 26, y: cy - 10, width: 20, height: 20)
+        let next = NSRect(x: close.minX - 34, y: cy - 14, width: 28, height: 28)
+        let play = NSRect(x: next.minX - 38, y: cy - 16, width: 32, height: 32)
+        let prev = NSRect(x: play.minX - 34, y: cy - 14, width: 28, height: 28)
+        let textX = art.maxX + 10
+        let textW = max(40, prev.minX - 10 - textX)
+        playerRects = [(.previous, prev), (.toggle, play), (.next, next), (.close, close),
+                       (.open, NSRect(x: art.minX, y: full.minY, width: textX + textW - art.minX,
+                                      height: full.height))]
+
+        func button(_ a: PlayerAction, _ rect: NSRect, _ symbol: String, _ size: CGFloat,
+                    filled: Bool = false) {
+            let hot = playerHover == a
+            if filled {
+                (hot ? playerTint : playerTint.withAlphaComponent(0.88)).setFill()
+                NSBezierPath(ovalIn: rect).fill()
+                drawSymbol(symbol, center: NSPoint(x: rect.midX + (symbol == "play.fill" ? 1 : 0),
+                                                   y: rect.midY),
+                           size: size, weight: .bold, color: .white)
+            } else {
+                if hot {
+                    TH.fill(0.12).setFill()
+                    NSBezierPath(ovalIn: rect).fill()
+                }
+                drawSymbol(symbol, center: NSPoint(x: rect.midX, y: rect.midY), size: size,
+                           weight: .semibold, color: hot ? TH.text : TH.dim(0.78))
+            }
+        }
+        button(.previous, prev, "backward.fill", 12)
+        button(.toggle, play, musicPlaying ? "pause.fill" : "play.fill", 13, filled: true)
+        button(.next, next, "forward.fill", 12)
+        button(.close, close, "chevron.down", 10)
+
+        // ── Titre, artiste, avancement ──
+        let hasTrack = !playerTitle.isEmpty
+        let title = hasTrack ? playerTitle : "Rien en lecture"
+        let sub = hasTrack ? (playerArtist.isEmpty ? "Musique" : playerArtist)
+                           : "Touchez lecture pour lancer Musique"
+        drawMarquee(title, in: NSRect(x: textX, y: cy + 3, width: textW, height: 16),
+                    size: 12.5, color: TH.text)
+        drawString(sub, in: NSRect(x: textX, y: cy - 12, width: textW, height: 14),
+                   size: 10.5, weight: .medium, color: TH.dim(0.55))
+
+        if playerDur > 0 {
+            let elapsed = musicPlaying ? Date().timeIntervalSince(playerStamp) : 0
+            let f = CGFloat(max(0, min(1, (playerPos + elapsed) / playerDur)))
+            let track = NSRect(x: textX, y: full.minY + 7, width: textW, height: 3)
+            TH.fill(0.14).setFill()
+            NSBezierPath(roundedRect: track, xRadius: 1.5, yRadius: 1.5).fill()
+            playerTint.setFill()
+            NSBezierPath(roundedRect: NSRect(x: track.minX, y: track.minY,
+                                             width: max(3, track.width * f), height: 3),
+                         xRadius: 1.5, yRadius: 1.5).fill()
+        }
+
+        ctx?.endTransparencyLayer()
+        NSGraphicsContext.current?.restoreGraphicsState()
     }
 }
 
