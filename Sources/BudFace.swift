@@ -129,6 +129,13 @@ final class BudSprite {
 
     /// Humeurs passagères, posées par `flash(_:for:)` : elles l'emportent
     /// le temps qu'elles durent, puis l'humeur de fond revient.
+    /// Le visage affiché, celui d'avant, et l'instant du changement.
+    /// Sur l'instance : le notch et le panneau changent d'expression
+    /// chacun à son rythme, sans se voler leur transition.
+    private var shownFace: BudsFace = .happy
+    private var previousFace: BudsFace = .happy
+    private var faceSince: CGFloat = -10
+
     private var flashMood: BudMood = .calm
     private var flashUntil = Date.distantPast
 
@@ -425,15 +432,55 @@ final class BudSprite {
             break
         }
 
+        // ── Le visage ──
+        let target = BudArt.face(for: effectiveMood, music: equalizer)
+        if target != shownFace {
+            previousFace = shownFace
+            shownFace = target
+            faceSince = t
+        }
+        let since = t - faceSince
+        // Fondu de seize centièmes. À deux dixièmes, on apercevait les deux
+        // expressions superposées — des arches et des points en même
+        // temps. Plus court, l'œil voit le visage changer sans le voir
+        // dédoublé, et le petit bond du corps achève de masquer le
+        // passage.
+        let mix = min(1, since / 0.16)
+
+        // Un petit bond à chaque changement : le corps s'étire, puis se
+        // tasse un instant avant de reprendre sa posture. C'est ce qui
+        // fait passer une expression pour un geste plutôt que pour un
+        // changement d'image.
+        var pop: CGFloat = 0
+        if since < 0.42 {
+            let q = since / 0.42
+            pop = -sin(q * .pi) * 0.07 * (1 - q) + sin(q * .pi * 2) * 0.03 * (1 - q)
+        }
+
+        // ── Les billes, chacune son rythme ──
+        //  Même rebond de fond, plus un battement propre déphasé de trois
+        //  dixièmes de période. Ensemble elles avaient l'air d'un seul
+        //  objet ; décalées, d'antennes.
+        let own = 0.12 * (1 - min(1, abs(squash) * 6))
+        let liftL = max(0, bounce + own * sin(t * 2.9))
+        let liftR = max(0, bounce + own * sin(t * 2.9 - 1.9))
+
         let side = min(rect.width, rect.height)
-        // L'illustration est plus haute que large : on l'inscrit sur la
-        // hauteur, centrée, pour qu'elle ne se déforme jamais.
+        // Les rendus sont plus hauts que larges : on les inscrit sur la
+        // hauteur, centrés, pour qu'ils ne se déforment jamais.
         let h = side * 0.96
-        let w = h * 0.878          // 253 / 288, le rapport des calques
+        let w = h * BudArt.ratio
         let box = NSRect(x: rect.midX - w / 2, y: rect.midY - h / 2,
                          width: w, height: h)
-        BudArt.drawCompanion(in: box, beat: bounce, tilt: tilt, squash: squash,
-                             mood: effectiveMood, clock: t)
+        var pose = BudArt.Pose()
+        pose.face = shownFace
+        pose.previous = previousFace
+        pose.mix = mix
+        pose.liftL = liftL
+        pose.liftR = liftR
+        pose.tilt = tilt
+        pose.squash = squash + pop
+        BudArt.drawBuds(in: box, pose: pose)
     }
 
     func draw(in rect: NSRect, detail: Bool, glowColor: NSColor) {

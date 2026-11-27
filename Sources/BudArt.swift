@@ -1,497 +1,155 @@
 import Cocoa
 
 // ═══════════════════════════════════════════════════════════
-//  Le logo
+//  BUDs — le compagnon rendu
 //
-//  Trois images dans le paquet, et une raison pour le
-//  découpage. Le mot entier sert au démarrage. Le Ü est coupé
-//  en deux calques — les deux billes d'un côté, le U avec son
-//  visage de l'autre — sur la même toile, aux mêmes
-//  dimensions, de sorte qu'ils se superposent sans calcul.
+//  Sept expressions, rendues une à une : neutre, content,
+//  réfléchi, déçu, en colère, étourdi, cool. Chacune est une
+//  image complète, visage compris — on ne repeint plus rien en
+//  code, on choisit le bon rendu et on l'anime.
 //
-//  C'est ce découpage qui rend l'animation possible sans
-//  retoucher le dessin : les billes rebondissent et penchent
-//  pendant que le corps se tasse, et le tout reste votre
-//  illustration, pas une imitation vectorielle.
+//  Les sept partagent exactement le même cadrage, au pixel
+//  près. C'est ce qui rend les transitions possibles : en
+//  posant le nouveau visage par-dessus l'ancien, en fondu, la
+//  silhouette ne bouge pas, seul le visage change.
 //
-//  Et le visage, cette fois, n'est pas peint dans le corps :
-//  les yeux et la bouche sont des îlots clairs qui flottent
-//  dans l'ouverture du U, sans toucher l'anneau. On a donc pu
-//  les retirer proprement et les repeindre en code — ce qui
-//  fait la différence entre un compagnon qui bouge et un
-//  compagnon qui a des humeurs.
-//
-//  Leur position n'est pas inventée : elle est relevée sur
-//  votre illustration, en fractions de la boîte du visage.
-//  L'œil gauche était à 23 % de sa largeur, le droit à 76 %,
-//  la bouche à 51 %. Toutes les humeurs se posent là.
+//  Trois calques par dessin : la bille gauche, la bille
+//  droite, le corps. Les billes sont séparées l'une de
+//  l'autre pour rebondir chacune avec son déphasage — deux
+//  antennes qui bougent ensemble ont l'air d'un seul objet,
+//  décalées elles ont l'air vivantes.
 // ═══════════════════════════════════════════════════════════
+
+/// Les sept rendus, par leur nom de fichier.
+enum BudsFace: String, CaseIterable {
+    case neutral, happy, thinking, sad, angry, dizzy, cool
+}
 
 enum BudArt {
 
-    /// Chargées une fois. `nil` si le paquet ne les porte pas — une
-    /// installation par les sources d'une version antérieure, par
-    /// exemple : l'habillage retombe alors sur le dessin vectoriel plutôt
-    /// que d'afficher un carré vide.
-    // ─────────────────────────────────────────────────────────
-    //  Deux encres, choisies par le thème
-    //
-    //  Jusqu'ici BUD n'avait que l'illustration blanche, qui
-    //  s'évanouit sur un fond clair — on voyait les billes et
-    //  plus rien du corps. Les deux polarités du même dessin
-    //  règlent cela sans compromis : la blanche sur les thèmes
-    //  sombres, la noire sur les clairs.
-    //
-    //  Le suffixe dit la couleur de l'encre, pas celle du fond :
-    //  « light » est l'illustration claire, celle qu'on pose sur
-    //  du sombre.
-    // ─────────────────────────────────────────────────────────
-
-    /// Le suffixe des fichiers pour le thème courant.
+    /// Le suffixe d'encre des pièces du mot, pour le démarrage.
     static var ink: String { TH.dark ? "light" : "dark" }
 
-    /// La couleur dont BUD repeint le visage : celle du corps, sinon
-    /// les traits flotteraient dans une teinte étrangère au dessin.
-    static var faceInk: NSColor {
-        TH.dark ? NSColor(calibratedWhite: 0.97, alpha: 1)
-                : NSColor(calibratedWhite: 0.07, alpha: 1)
+    static func body(_ f: BudsFace) -> NSImage? { letter("buds-\(f.rawValue)") }
+    static var dotL: NSImage? { letter("buds-dotL") }
+    static var dotR: NSImage? { letter("buds-dotR") }
+
+    /// Vrai quand le paquet porte les neuf calques. Sinon l'habillage
+    /// retombe sur le dessin vectoriel, jamais sur une case vide.
+    static var hasCompanion: Bool {
+        dotL != nil && dotR != nil && BudsFace.allCases.allSatisfy { body($0) != nil }
     }
 
-    static var dots: NSImage? { letter("bud-dots-\(ink)") }
-    static var body: NSImage? { letter("bud-body-\(ink)") }
-
-    /// Vrai quand le paquet porte de quoi dessiner le compagnon.
-    static var hasCompanion: Bool { dots != nil && body != nil }
+    /// Rapport largeur / hauteur de la toile commune (282 × 320).
+    static let ratio: CGFloat = 282.0 / 320.0
 
     // ─────────────────────────────────────────────────────────
-    //  La boîte du visage, relevée sur l'illustration
+    //  Quelle tête pour quelle humeur
     //
-    //  En fractions de la toile, origine en bas comme AppKit.
-    //  Les mesures ont été prises sur l'image d'origine avant
-    //  effacement des traits : c'est pourquoi les humeurs se
-    //  posent exactement où le visage était.
+    //  Treize humeurs, sept rendus. Le visage dit l'émotion, la
+    //  posture dit le reste : « écoute » et « alerte » partagent
+    //  le visage neutre, mais l'une se dresse et l'autre tremble.
+    //
+    //  Au repos, BUDs sourit. Le rendu neutre, avec sa bouche
+    //  plate, est un visage d'attention — le montrer en
+    //  permanence donnerait un compagnon qui boude.
     // ─────────────────────────────────────────────────────────
 
-    //  Relevés sur les deux rendus et moyennés : ils diffèrent de trois
-    //  pour mille, et trancher pour l'un aurait décalé l'autre.
-    private static let faceX: CGFloat = 0.28278
-    private static let faceY: CGFloat = 0.30103     // 1 − (0.47248 + 0.22649)
-    private static let faceW: CGFloat = 0.42140
-    private static let faceH: CGFloat = 0.22649
+    static func face(for mood: BudMood, music: Bool) -> BudsFace {
+        switch mood {
+        case .calm, .happy, .wink, .speaking:
+            // La musique met les lunettes. C'est le seul cas où le décor
+            // décide du visage : une humeur passagère — une colère, un
+            // échec — reste prioritaire pendant qu'elle dure.
+            return music ? .cool : .happy
+        case .proud:               return .cool
+        case .listening, .alert:   return .neutral
+        case .thinking, .confused: return .thinking
+        case .sad, .sleepy:        return .sad
+        case .angry:               return .angry
+        case .dizzy:               return .dizzy
+        }
+    }
 
-    /// Dessine le Ü dans un cadre, billes animées et visage peint.
-    ///
-    /// `beat` va de 0 à 1 et commande le rebond ; `tilt` penche les billes
-    /// comme une tête qu'on incline. Les deux calques partagent la même
-    /// toile : le cadre est donc le même pour les deux, au décalage près.
-    static func drawCompanion(in rect: NSRect, beat: CGFloat, tilt: CGFloat,
-                              squash: CGFloat = 0,
-                              mood: BudMood = .calm, clock: CGFloat = 0) {
-        guard let dots = dots, let body = body else { return }
+    // ─────────────────────────────────────────────────────────
+    //  Le dessin
+    // ─────────────────────────────────────────────────────────
 
-        // Le corps se tasse par le bas : une forme qui s'écrase garde les
-        // pieds au sol, sinon elle flotte.
-        let s = max(0, min(0.14, squash))
+    struct Pose {
+        var face: BudsFace = .happy
+        /// Le visage d'avant, et l'avancement du fondu vers le nouveau.
+        var previous: BudsFace = .happy
+        var mix: CGFloat = 1
+        /// Rebond des billes, 0 à 1, et leur décalage l'une par rapport à
+        /// l'autre.
+        var liftL: CGFloat = 0
+        var liftR: CGFloat = 0
+        /// Inclinaison de la tête, en degrés, autour du haut du corps.
+        var tilt: CGFloat = 0
+        /// Tassement du corps, 0 à 0,16. Négatif : il s'étire.
+        var squash: CGFloat = 0
+    }
+
+    static func drawBuds(in rect: NSRect, pose p: Pose) {
+        guard let dl = dotL, let dr = dotR,
+              let now = body(p.face) else { return }
+
+        // L'ombre, en thème clair seulement. Les rendus sont blancs : sur
+        // un fond clair, sans elle, le corps se confond avec le panneau et
+        // on ne voit plus que le visage. En thème sombre elle salirait le
+        // contour au lieu de le détacher.
+        let shadow: NSShadow? = TH.dark ? nil : {
+            let s = NSShadow()
+            s.shadowColor = NSColor.black.withAlphaComponent(0.26)
+            s.shadowBlurRadius = max(2, rect.height * 0.05)
+            s.shadowOffset = NSSize(width: 0, height: -max(1, rect.height * 0.018))
+            return s
+        }()
+
+        NSGraphicsContext.current?.saveGraphicsState()
+        shadow?.set()
+
+        // Le corps se tasse par le bas : pieds au sol. Négatif, il
+        // s'étire vers le haut — c'est le petit bond d'un changement
+        // d'expression.
+        let s = max(-0.08, min(0.16, p.squash))
         let bodyRect = NSRect(x: rect.minX - rect.width * s * 0.5,
                               y: rect.minY,
                               width: rect.width * (1 + s),
                               height: rect.height * (1 - s))
-        body.draw(in: bodyRect, from: .zero, operation: .sourceOver, fraction: 1)
 
-        // Le visage suit le corps et non le cadre : quand BUD se tasse,
-        // ses yeux se tassent avec lui. Peint après le corps, avant les
-        // billes, comme dans l'illustration.
-        // Le visage grandit quand le compagnon rétrécit.
-        //
-        // Dans le notch replié, BUD tient dans 34 × 32 points : la cavité
-        // du U n'y fait que douze points sur sept, et toutes les humeurs
-        // s'y ressemblaient. Les réduire fidèlement, c'est les perdre.
-        //
-        // C'est le principe de l'icône : on la redessine, on ne la
-        // rétrécit pas. Le visage est donc agrandi d'un peu plus d'un
-        // cinquième en dessous de soixante points, autour du même
-        // centre. Pas davantage : à une fois et demie, les arches
-        // débordaient de l'anneau du U. Au-delà de soixante points, il
-        // reprend les proportions exactes relevées sur l'illustration.
-        let small = max(0, min(1, (60 - bodyRect.width) / 26))
-        let grow = 1 + 0.22 * small
-        let fw = bodyRect.width * faceW * grow
-        let fh = bodyRect.height * faceH * grow
-        let fcx = bodyRect.minX + bodyRect.width * (faceX + faceW / 2)
-        let fcy = bodyRect.minY + bodyRect.height * (faceY + faceH / 2)
-        drawFace(in: NSRect(x: fcx - fw / 2, y: fcy - fh / 2, width: fw, height: fh),
-                 mood: mood, clock: clock)
+        // Le fondu. L'ancien visage est posé plein, le nouveau par-dessus
+        // avec une opacité croissante. Fondre les deux à demi creuserait
+        // la silhouette au milieu de la transition ; comme elles sont
+        // identiques, poser l'une sur l'autre la garde pleine.
+        if p.mix < 1, p.previous != p.face, let before = body(p.previous) {
+            before.draw(in: bodyRect, from: .zero, operation: .sourceOver, fraction: 1)
+            now.draw(in: bodyRect, from: .zero, operation: .sourceOver,
+                     fraction: Double(max(0, min(1, p.mix))))
+        } else {
+            now.draw(in: bodyRect, from: .zero, operation: .sourceOver, fraction: 1)
+        }
 
-        // Les billes montent, et penchent autour du centre du cadre.
-        let lift = beat * rect.height * 0.055
-        let dotsRect = NSRect(x: rect.minX, y: rect.minY + lift,
+        // Les billes : chacune monte de son côté, puis toutes deux
+        // suivent l'inclinaison de la tête autour du haut du corps.
+        let pivot = CGPoint(x: rect.midX, y: rect.minY + rect.height * 0.62)
+        for (img, lift) in [(dl, p.liftL), (dr, p.liftR)] {
+            let up = lift * rect.height * 0.055
+            let dest = NSRect(x: rect.minX, y: rect.minY + up,
                               width: rect.width, height: rect.height)
-        guard abs(tilt) > 0.001 else {
-            dots.draw(in: dotsRect, from: .zero, operation: .sourceOver, fraction: 1)
-            return
+            NSGraphicsContext.current?.saveGraphicsState()
+            if abs(p.tilt) > 0.01 {
+                let t = NSAffineTransform()
+                t.translateX(by: pivot.x, yBy: pivot.y)
+                t.rotate(byDegrees: p.tilt)
+                t.translateX(by: -pivot.x, yBy: -pivot.y)
+                t.concat()
+            }
+            img.draw(in: dest, from: .zero, operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.restoreGraphicsState()
         }
-        NSGraphicsContext.current?.saveGraphicsState()
-        let t = NSAffineTransform()
-        t.translateX(by: rect.midX, yBy: rect.midY)
-        t.rotate(byDegrees: tilt)
-        t.translateX(by: -rect.midX, yBy: -rect.midY)
-        t.concat()
-        dots.draw(in: dotsRect, from: .zero, operation: .sourceOver, fraction: 1)
+
         NSGraphicsContext.current?.restoreGraphicsState()
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    //  Le visage
-    //
-    //  Peint en vectoriel dans l'ouverture du U. Les traits sont
-    //  blancs avec un dégradé vers le gris en bas, comme ceux de
-    //  l'illustration : posés sur le fond sombre de la cavité,
-    //  ils se lisent du premier coup d'œil.
-    //
-    //  Une règle tient tout : en dessous d'une certaine taille,
-    //  on enlève du détail plutôt que de le rétrécir. Le
-    //  compagnon vit dans un notch de vingt-huit points de haut
-    //  — une spirale d'étourdi y deviendrait une tache grise,
-    //  alors que deux croix s'y lisent encore.
-    // ═══════════════════════════════════════════════════════════
-
-    /// Repères relevés sur l'illustration, en fractions de la boîte du
-    /// visage, `y` compté depuis le haut.
-    private static let eyeL = CGPoint(x: 0.231, y: 0.220)
-    private static let eyeR = CGPoint(x: 0.763, y: 0.217)
-    private static let mouthC = CGPoint(x: 0.507, y: 0.784)
-    private static let eyeW: CGFloat = 0.466       // largeur d'un œil
-    private static let eyeH: CGFloat = 0.435
-    private static let mouthW: CGFloat = 0.365
-    private static let mouthH: CGFloat = 0.427
-
-    static func drawFace(in box: NSRect, mood: BudMood, clock: CGFloat,
-                         ink: NSColor? = nil) {
-        inkColor = ink ?? faceInk
-        guard box.width > 6, box.height > 4 else { return }
-        let fine = box.width >= 44          // assez grand pour du détail
-
-        // Un point de la boîte, `y` depuis le haut comme les mesures.
-        func p(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
-            CGPoint(x: box.minX + box.width * fx,
-                    y: box.maxY - box.height * fy)
-        }
-        let ew = box.width * eyeW, eh = box.height * eyeH
-        let lc = p(eyeL.x, eyeL.y), rc = p(eyeR.x, eyeR.y)
-        let mc = p(mouthC.x, mouthC.y)
-        let mw = box.width * mouthW, mh = box.height * mouthH
-
-        switch mood {
-
-        case .calm, .happy:
-            // Le visage d'origine : deux arches et une bouche ouverte.
-            // L'humeur joyeuse ouvre un peu plus la bouche, rien d'autre —
-            // votre dessin est déjà souriant, il n'y a pas à le refaire.
-            let grow: CGFloat = mood == .happy ? 1.18 : 1
-            arch(at: lc, w: ew, h: eh); arch(at: rc, w: ew, h: eh)
-            smile(at: mc, w: mw * grow, h: mh * grow)
-
-        case .wink:
-            arch(at: lc, w: ew, h: eh)
-            blob(at: rc, w: ew * 0.52, h: eh * 0.82)
-            smile(at: mc, w: mw, h: mh)
-
-        case .sleepy:
-            // Paupières closes : deux traits, et une petite bouche molle.
-            bar(at: lc, w: ew * 0.86, thick: eh * 0.30, angle: 0)
-            bar(at: rc, w: ew * 0.86, thick: eh * 0.30, angle: 0)
-            bar(at: mc, w: mw * 0.62, thick: mh * 0.26, angle: 0)
-
-        case .alert:
-            // Yeux grands ouverts, bouche en « o » : la surprise se lit à
-            // l'ouverture, pas à la couleur.
-            blob(at: lc, w: ew * 0.80, h: eh * 1.12)
-            blob(at: rc, w: ew * 0.80, h: eh * 1.12)
-            blob(at: mc, w: mw * 0.52, h: mh * 0.86)
-
-        case .angry:
-            // La colère est dans les sourcils, pas dans les yeux : deux
-            // barres qui plongent vers le nez, et une bouche renversée.
-            // C'est le seul trait qui se lise encore à seize points.
-            bar(at: CGPoint(x: lc.x, y: lc.y + eh * 0.10),
-                w: ew * 0.98, thick: eh * 0.34, angle: -17)
-            bar(at: CGPoint(x: rc.x, y: rc.y + eh * 0.10),
-                w: ew * 0.98, thick: eh * 0.34, angle: 17)
-            frown(at: CGPoint(x: mc.x, y: mc.y - mh * 0.10), w: mw * 1.12, h: mh * 0.80)
-
-        case .dizzy:
-            // Étourdi : des spirales quand la place le permet, deux croix
-            // sinon. Une spirale de six points de large n'est plus une
-            // spirale, c'est une bavure.
-            let wob = sin(clock * 7) * box.height * 0.045
-            if fine {
-                spiral(at: CGPoint(x: lc.x, y: lc.y + wob), r: eh * 0.56, turns: 2.1,
-                       width: max(1.2, eh * 0.16), phase: clock * 2.4)
-                spiral(at: CGPoint(x: rc.x, y: rc.y - wob), r: eh * 0.56, turns: 2.1,
-                       width: max(1.2, eh * 0.16), phase: -clock * 2.4)
-            } else {
-                cross(at: CGPoint(x: lc.x, y: lc.y + wob), r: eh * 0.46,
-                      width: max(1.4, eh * 0.26))
-                cross(at: CGPoint(x: rc.x, y: rc.y - wob), r: eh * 0.46,
-                      width: max(1.4, eh * 0.26))
-            }
-            wavy(at: mc, w: mw * 1.25, h: mh * 0.52, width: max(1.4, mh * 0.26),
-                 phase: clock * 3)
-
-        case .thinking:
-            // Réfléchi : le regard part en haut à gauche et y reste. Ce
-            // n'est pas un clin d'œil — les deux pupilles vont du même
-            // côté, sinon on lit un strabisme et non une réflexion.
-            let look = CGPoint(x: -ew * 0.17, y: -eh * 0.20)
-            blob(at: CGPoint(x: lc.x + look.x, y: lc.y - look.y),
-                 w: ew * 0.46, h: eh * 0.74)
-            blob(at: CGPoint(x: rc.x + look.x, y: rc.y - look.y),
-                 w: ew * 0.46, h: eh * 0.74)
-            // Un sourcil levé au-dessus de l'œil droit : c'est lui qui
-            // fait basculer la lecture de « distrait » à « il réfléchit ».
-            if fine {
-                bar(at: CGPoint(x: rc.x, y: rc.y + eh * 0.78),
-                    w: ew * 0.82, thick: eh * 0.22, angle: 9)
-            }
-            // Bouche serrée, décalée : la moue de celui qui pèse le pour
-            // et le contre.
-            bar(at: CGPoint(x: mc.x - mw * 0.14, y: mc.y),
-                w: mw * 0.74, thick: mh * 0.28, angle: -6)
-
-        case .listening:
-            // L'écoute, ce sont des yeux ouverts et immobiles. Les
-            // pupilles ne bougent pas : un regard qui balaie dit qu'on
-            // cherche, pas qu'on écoute. La vie est dans la pulsation,
-            // qui suit la même horloge que les billes au-dessus.
-            let beat = 1 + 0.10 * sin(clock * 5.2)
-            blob(at: lc, w: ew * 0.56 * beat, h: eh * 1.02 * beat)
-            blob(at: rc, w: ew * 0.56 * beat, h: eh * 1.02 * beat)
-            bar(at: mc, w: mw * 0.52, thick: mh * 0.26, angle: 0)
-
-        case .speaking:
-            // Les yeux de toujours, et la bouche qui s'ouvre et se ferme.
-            // Deux fréquences superposées, parce qu'une bouche qui bat à
-            // intervalle régulier mâche au lieu de parler.
-            arch(at: lc, w: ew, h: eh); arch(at: rc, w: ew, h: eh)
-            let talk = 0.40 + 0.60 * abs(sin(clock * 7.4) * 0.7 + sin(clock * 11.3) * 0.3)
-            smile(at: mc, w: mw * (0.92 + 0.10 * talk), h: mh * (0.45 + 0.85 * talk))
-
-        case .proud:
-            // La fierté se distingue de la simple joie par l'ouverture :
-            // des arches plus hautes, une bouche plus large. Même visage,
-            // poussé — si c'était un autre dessin, on ne lirait plus BUD.
-            arch(at: CGPoint(x: lc.x, y: lc.y + eh * 0.06), w: ew * 1.10, h: eh * 1.12)
-            arch(at: CGPoint(x: rc.x, y: rc.y + eh * 0.06), w: ew * 1.10, h: eh * 1.12)
-            smile(at: mc, w: mw * 1.30, h: mh * 1.22)
-
-        case .sad:
-            // Les arches retournées. C'est le seul changement nécessaire :
-            // une arche vers le haut sourit, vers le bas elle s'attriste,
-            // et l'œil le lit avant toute autre chose.
-            valley(at: CGPoint(x: lc.x, y: lc.y - eh * 0.10), w: ew * 0.94, h: eh * 0.90)
-            valley(at: CGPoint(x: rc.x, y: rc.y - eh * 0.10), w: ew * 0.94, h: eh * 0.90)
-            frown(at: CGPoint(x: mc.x, y: mc.y - mh * 0.06), w: mw * 0.96, h: mh * 0.62)
-
-        case .confused:
-            // Perplexe : un œil grand ouvert, l'autre plissé, et les
-            // sourcils en désaccord. L'asymétrie est tout le message —
-            // deux yeux traités pareil ne disent jamais le doute.
-            blob(at: lc, w: ew * 0.52, h: eh * 0.96)
-            bar(at: rc, w: ew * 0.80, thick: eh * 0.30, angle: 0)
-            if fine {
-                bar(at: CGPoint(x: lc.x, y: lc.y + eh * 0.82),
-                    w: ew * 0.76, thick: eh * 0.20, angle: 13)
-            }
-            wavy(at: mc, w: mw * 0.92, h: mh * 0.34, width: max(1.4, mh * 0.26), phase: 0)
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────
-    //  Les primitives
-    //
-    //  Toutes remplies du même dégradé : blanc en haut, gris
-    //  perle en bas. C'est ce léger poids vers le bas qui donne
-    //  aux traits l'air d'appartenir à la même matière que le U.
-    // ─────────────────────────────────────────────────────────
-
-    /// L'encre du visage, posée par `drawFace` avant de tracer.
-    private static var inkColor = NSColor.white
-
-    private static func paint(_ path: NSBezierPath, in bounds: NSRect) {
-        // Le même léger poids vers le bas dans les deux encres : sur la
-        // noire, c'est un éclaircissement, pas un assombrissement — un
-        // dégradé qui va vers le noir sur du noir ne se voit pas.
-        let c = inkColor
-        let shade = TH.dark ? c.blended(withFraction: 0.16, of: .black)
-                            : c.blended(withFraction: 0.22, of: .white)
-        let g = NSGradient(colors: [c, shade ?? c])
-        NSGraphicsContext.current?.saveGraphicsState()
-        path.addClip()
-        g?.draw(in: bounds, angle: -90)
-        NSGraphicsContext.current?.restoreGraphicsState()
-    }
-
-    private static func fill(_ path: NSBezierPath) {
-        paint(path, in: path.bounds.insetBy(dx: -1, dy: -1))
-    }
-
-    private static func stroke(_ path: NSBezierPath, width: CGFloat) {
-        // On transforme le trait en surface avant de le peindre : un
-        // dégradé ne s'applique pas à un contour, seulement à un
-        // remplissage.
-        let outline = path.cgPath(strokedWidth: width)
-        paint(outline, in: outline.bounds.insetBy(dx: -1, dy: -1))
-    }
-
-    /// Une arche « ⌒ » : l'œil fermé et souriant de l'illustration.
-    private static func arch(at c: CGPoint, w: CGFloat, h: CGFloat) {
-        let r = w / 2
-        let th = max(1.2, h * 0.52)
-        let p = NSBezierPath()
-        let base = CGPoint(x: c.x, y: c.y - h * 0.18)
-        p.appendArc(withCenter: base, radius: r, startAngle: 0, endAngle: 180)
-        p.appendArc(withCenter: base, radius: max(0.5, r - th),
-                    startAngle: 180, endAngle: 0, clockwise: true)
-        p.close()
-        fill(p)
-    }
-
-    /// Une arche retournée « ⌄ » : l'œil triste.
-    ///
-    /// Le même tracé que `arch`, au signe près. C'est voulu : l'œil
-    /// reconnaît la parenté des deux formes avant d'en lire le sens, et
-    /// la tristesse se lit comme une joie renversée plutôt que comme un
-    /// autre dessin.
-    private static func valley(at c: CGPoint, w: CGFloat, h: CGFloat) {
-        let r = w / 2
-        let th = max(1.2, h * 0.52)
-        let p = NSBezierPath()
-        let base = CGPoint(x: c.x, y: c.y + h * 0.18)
-        p.appendArc(withCenter: base, radius: r, startAngle: 180, endAngle: 360)
-        p.appendArc(withCenter: base, radius: max(0.5, r - th),
-                    startAngle: 360, endAngle: 180, clockwise: true)
-        p.close()
-        fill(p)
-    }
-
-    /// Un ovale plein : la pupille, ou une bouche en « o ».
-    private static func blob(at c: CGPoint, w: CGFloat, h: CGFloat) {
-        fill(NSBezierPath(ovalIn: NSRect(x: c.x - w / 2, y: c.y - h / 2,
-                                         width: w, height: h)))
-    }
-
-    /// Une barre aux bouts arrondis, inclinée. Sert de sourcil, de
-    /// paupière close et de bouche serrée.
-    private static func bar(at c: CGPoint, w: CGFloat, thick: CGFloat, angle: CGFloat) {
-        let t = max(1.2, thick)
-        let r = NSRect(x: -w / 2, y: -t / 2, width: w, height: t)
-        let p = NSBezierPath(roundedRect: r, xRadius: t / 2, yRadius: t / 2)
-        let m = AffineTransform(translationByX: c.x, byY: c.y)
-        var rot = AffineTransform(rotationByDegrees: angle)
-        rot.append(m)
-        p.transform(using: rot)
-        fill(p)
-    }
-
-    /// La bouche ouverte de l'illustration : plate en haut, ronde en bas.
-    private static func smile(at c: CGPoint, w: CGFloat, h: CGFloat) {
-        let p = NSBezierPath()
-        let left = CGPoint(x: c.x - w / 2, y: c.y + h / 2)
-        let right = CGPoint(x: c.x + w / 2, y: c.y + h / 2)
-        p.move(to: left)
-        p.line(to: right)
-        p.curve(to: left,
-                controlPoint1: CGPoint(x: right.x, y: c.y - h * 0.95),
-                controlPoint2: CGPoint(x: left.x, y: c.y - h * 0.95))
-        p.close()
-        fill(p)
-    }
-
-    /// La bouche renversée de la colère.
-    private static func frown(at c: CGPoint, w: CGFloat, h: CGFloat) {
-        let p = NSBezierPath()
-        p.move(to: CGPoint(x: c.x - w / 2, y: c.y - h * 0.30))
-        p.curve(to: CGPoint(x: c.x + w / 2, y: c.y - h * 0.30),
-                controlPoint1: CGPoint(x: c.x - w * 0.22, y: c.y + h * 0.62),
-                controlPoint2: CGPoint(x: c.x + w * 0.22, y: c.y + h * 0.62))
-        stroke(p, width: max(1.4, h * 0.42))
-    }
-
-    /// Une spirale, dessinée en segments : deux tours et un peu.
-    private static func spiral(at c: CGPoint, r: CGFloat, turns: CGFloat,
-                               width: CGFloat, phase: CGFloat) {
-        let p = NSBezierPath()
-        let steps = 48
-        for i in 0...steps {
-            let f = CGFloat(i) / CGFloat(steps)
-            let a = phase + f * turns * 2 * .pi
-            let rad = r * f
-            let pt = CGPoint(x: c.x + cos(a) * rad, y: c.y + sin(a) * rad)
-            if i == 0 { p.move(to: pt) } else { p.line(to: pt) }
-        }
-        stroke(p, width: width)
-    }
-
-    /// Deux traits croisés : l'étourdi, quand la spirale ne tient plus.
-    private static func cross(at c: CGPoint, r: CGFloat, width: CGFloat) {
-        let p = NSBezierPath()
-        p.move(to: CGPoint(x: c.x - r, y: c.y - r))
-        p.line(to: CGPoint(x: c.x + r, y: c.y + r))
-        p.move(to: CGPoint(x: c.x - r, y: c.y + r))
-        p.line(to: CGPoint(x: c.x + r, y: c.y - r))
-        stroke(p, width: width)
-    }
-
-    /// Une bouche ondulée, qui se déplace lentement : le haut-le-cœur.
-    private static func wavy(at c: CGPoint, w: CGFloat, h: CGFloat,
-                             width: CGFloat, phase: CGFloat) {
-        let p = NSBezierPath()
-        let steps = 20
-        for i in 0...steps {
-            let f = CGFloat(i) / CGFloat(steps)
-            let x = c.x - w / 2 + w * f
-            let y = c.y + sin(phase + f * 3.4 * .pi) * h * 0.5
-            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
-            else { p.line(to: CGPoint(x: x, y: y)) }
-        }
-        stroke(p, width: width)
-    }
-}
-
-extension NSBezierPath {
-    /// Le contour d'un trait, rendu comme une surface remplissable.
-    ///
-    /// `NSGradient` ne sait peindre qu'un remplissage. Pour qu'une
-    /// spirale ait la même matière que les autres traits, il faut donc
-    /// transformer sa ligne en forme — ce que `CGPath` sait faire et
-    /// `NSBezierPath` non.
-    func cgPath(strokedWidth: CGFloat) -> NSBezierPath {
-        let cg = CGMutablePath()
-        var pts = [NSPoint](repeating: .zero, count: 3)
-        for i in 0..<elementCount {
-            switch element(at: i, associatedPoints: &pts) {
-            case .moveTo:    cg.move(to: pts[0])
-            case .lineTo:    cg.addLine(to: pts[0])
-            case .curveTo:   cg.addCurve(to: pts[2], control1: pts[0], control2: pts[1])
-            case .closePath: cg.closeSubpath()
-            @unknown default: break
-            }
-        }
-        let outline = cg.copy(strokingWithWidth: strokedWidth, lineCap: .round,
-                              lineJoin: .round, miterLimit: 10)
-        let out = NSBezierPath()
-        outline.applyWithBlock { el in
-            let p = el.pointee.points
-            switch el.pointee.type {
-            case .moveToPoint:         out.move(to: p[0])
-            case .addLineToPoint:      out.line(to: p[0])
-            case .addQuadCurveToPoint: out.curve(to: p[1], controlPoint1: p[0], controlPoint2: p[0])
-            case .addCurveToPoint:     out.curve(to: p[2], controlPoint1: p[0], controlPoint2: p[1])
-            case .closeSubpath:        out.close()
-            @unknown default: break
-            }
-        }
-        return out
     }
 }
 // ═══════════════════════════════════════════════════════════

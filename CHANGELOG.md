@@ -2,6 +2,26 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.1 — BUDs
+
+**Le compagnon s'appelle BUDs, et il a sept visages rendus.** Neutre, content, réfléchi, déçu, en colère, étourdi, cool. On ne repeint plus les traits en code : chaque expression est votre rendu, visage compris, et BUD choisit le bon puis l'anime.
+
+**Les sept rendus ont exactement le même cadrage**, au pixel près. C'est ce qui rend les transitions possibles : le nouveau visage est posé sur l'ancien en fondu, la silhouette ne bouge pas, seul le visage change. Fondre les deux à demi aurait creusé la silhouette au milieu du passage ; poser l'un sur l'autre la garde pleine.
+
+**Chaque changement d'expression est un geste.** Le corps s'étire un instant, se tasse, puis reprend sa posture — c'est ce qui fait passer une expression pour un mouvement plutôt que pour un changement d'image. Le fondu dure seize centièmes : à deux dixièmes, on apercevait les deux visages superposés.
+
+**Les billes sont deux calques, plus un.** Elles rebondissent chacune avec son déphasage. Ensemble elles avaient l'air d'un seul objet ; décalées, d'antennes. Elles sont prises sur le rendu neutre et partagées par les sept : d'un rendu à l'autre elles ne diffèrent que de reflets, sur moins de 1,4 % de leur surface, et un jeu unique évite qu'elles « sautent » à chaque changement.
+
+**Treize humeurs, sept visages.** Le visage dit l'émotion, la posture dit le reste : « écoute » et « alerte » partagent le visage neutre, mais l'une se dresse et l'autre tremble. Au repos BUDs sourit — le neutre, avec sa bouche plate, est un visage d'attention, et le montrer en permanence donnerait un compagnon qui boude.
+
+**La musique met les lunettes.** Pendant la lecture, BUDs danse avec le rendu cool. C'est le seul cas où le décor décide du visage : une humeur passagère — une colère, un échec — reste prioritaire tant qu'elle dure.
+
+**Dans le notch, les sept se lisent.** Ces rendus ont un plateau de visage bien plus grand que l'illustration précédente : à 34 × 32 points, les yeux et la bouche restent nets, sans l'agrandissement optique qu'il fallait avant.
+
+**En thème clair, une ombre douce détache le compagnon.** Les rendus sont blancs ; sans elle, le corps se confondait avec le panneau et on ne voyait plus que le visage. En thème sombre elle salirait le contour, elle n'y est pas.
+
+**L'habillage s'appelle BUDs** dans Réglages. Le choisir enchaîne les sept visages, et recliquer rejoue la démonstration.
+
 ## 25.0 — BUD partout, et neuf humeurs
 
 **Le notch ne connaissait pas le logo.** Le panneau savait traiter l'habillage Logo, le notch appelait `draw` directement et montrait donc toujours le personnage vectoriel, quel que soit votre réglage. Un aiguillage dupliqué est un aiguillage qu'on oublie quelque part : il n'y en a plus qu'un, `render`, par lequel passent les trois vues.

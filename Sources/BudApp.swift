@@ -484,20 +484,21 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     }
 
     /// Les quatre humeurs à la suite, pour les voir. Joué une fois quand
-    /// vous choisissez l'habillage Logo : une démonstration qu'on ne
+    /// vous choisissez l'habillage BUDs : une démonstration qu'on ne
     /// demande pas deux fois vaut mieux qu'un écran de réglages de plus.
     private func demoMoods() {
+        // Les sept visages, une humeur pour chacun : la démonstration
+        // montre les rendus, pas les treize humeurs qui se les partagent.
         let show: [(BudMood, String)] = [
-            (.calm, "Normal"), (.speaking, "Parle"), (.listening, "Écoute"),
-            (.proud, "Fier"), (.confused, "Perplexe"), (.thinking, "Réfléchi"),
-            (.sad, "Déçu"), (.angry, "Colère"), (.dizzy, "Étourdi")
+            (.happy, "Content"), (.listening, "Attentif"), (.thinking, "Réfléchi"),
+            (.proud, "Cool"), (.sad, "Déçu"), (.angry, "Colère"), (.dizzy, "Étourdi")
         ]
-        // Onze dixièmes chacune : assez pour voir la posture s'installer,
-        // pas assez pour que la démonstration devienne une attente. Elle
-        // se rejoue en recliquant sur l'habillage.
+        // Treize dixièmes chacune : le fondu et le petit bond du changement
+        // prennent quatre dixièmes, il reste de quoi voir la posture
+        // s'installer. Elle se rejoue en recliquant sur l'habillage.
         for (i, s) in show.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.1) { [weak self] in
-                self?.mood(s.0, 1.2)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.3) { [weak self] in
+                self?.mood(s.0, 1.4)
                 self?.setStatus("Humeur : \(s.1)")
             }
         }
@@ -923,7 +924,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                                items: [SegmentedBar.Item(title: "À plat", icon: "square.fill"),
                                        SegmentedBar.Item(title: "Nacré", icon: "sparkle"),
                                        SegmentedBar.Item(title: "Métal", icon: "cpu"),
-                                       SegmentedBar.Item(title: "Logo", icon: "face.smiling")],
+                                       SegmentedBar.Item(title: "BUDs", icon: "face.smiling")],
                                selected: state.budSkin)
         skinSeg.onSelect = { [weak self] i in self?.setBudSkin(i) }
         p.addSubview(skinSeg)
@@ -957,7 +958,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             demoMoods()
         } else {
             setStatus(["Compagnon à plat", "Compagnon nacré", "Compagnon métal",
-                       "Logo indisponible dans ce paquet : dessin conservé."][state.budSkin])
+                       "BUDs indisponible dans ce paquet : dessin conservé."][state.budSkin])
         }
     }
 
