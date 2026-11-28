@@ -535,9 +535,9 @@ final class WeatherHomeAgent: BudAgent {
     let icon = "cloud.sun.fill"
     var tint: NSColor { tintSky }
     let sources = [
-        FlowSource(id: "sky", title: "Ciel · Open-Meteo", icon: "cloud.sun.fill", tint: tintSky,
+        FlowSource(id: "sky", title: "Open-Meteo", icon: "cloud.sun.fill", tint: tintSky,
                    note: "Seules les coordonnées de la ville partent, arrondies au kilomètre."),
-        FlowSource(id: "home", title: "Raccourcis Maison", icon: "house.fill",
+        FlowSource(id: "home", title: "Raccourcis", icon: "house.fill",
                    tint: NSColor(calibratedRed: 1.00, green: 0.62, blue: 0.25, alpha: 1),
                    note: "Les raccourcis de votre dossier Maison. BUD ne voit pas vos appareils.")
     ]

@@ -8593,9 +8593,9 @@ final class WeatherHomeAgent: BudAgent {
     let icon = "cloud.sun.fill"
     var tint: NSColor { tintSky }
     let sources = [
-        FlowSource(id: "sky", title: "Ciel · Open-Meteo", icon: "cloud.sun.fill", tint: tintSky,
+        FlowSource(id: "sky", title: "Open-Meteo", icon: "cloud.sun.fill", tint: tintSky,
                    note: "Seules les coordonnées de la ville partent, arrondies au kilomètre."),
-        FlowSource(id: "home", title: "Raccourcis Maison", icon: "house.fill",
+        FlowSource(id: "home", title: "Raccourcis", icon: "house.fill",
                    tint: NSColor(calibratedRed: 1.00, green: 0.62, blue: 0.25, alpha: 1),
                    note: "Les raccourcis de votre dossier Maison. BUD ne voit pas vos appareils.")
     ]
@@ -9134,12 +9134,15 @@ final class FlowCanvasView: NSView {
             .draw(in: NSBezierPath(roundedRect: tile, xRadius: 8, yRadius: 8), angle: -90)
         drawSymbol(a.icon, center: NSPoint(x: tile.midX, y: tile.midY), size: 13, weight: .semibold, color: .white)
 
-        // Le badge d'état, en haut à droite.
+        drawString(a.name, in: NSRect(x: tile.maxX + 9, y: r.maxY - 33, width: r.maxX - tile.maxX - 20, height: 17),
+                   size: 12.5, weight: .bold, color: TH.text)
+
+        // En bas : la dernière ligne à gauche, le badge d'état à droite.
         var label = st.status.label
         if st.status == .needsApproval, let n = st.result?.approval?.items.count { label += " · \(n)" }
         if st.simulated && st.status != .idle { label += " · démo" }
         let bw = textWidth(label, size: 9.5, weight: .bold) + 24
-        let badge = NSRect(x: r.maxX - bw - 8, y: r.maxY - 22, width: bw, height: 16)
+        let badge = NSRect(x: r.maxX - bw - 8, y: r.minY + 7, width: bw, height: 16)
         st.status.color.withAlphaComponent(0.18).setFill()
         capsule(badge).fill()
         if st.status == .running {
@@ -9156,10 +9159,8 @@ final class FlowCanvasView: NSView {
         drawString(label, in: NSRect(x: badge.minX + 16, y: badge.minY + 1.5, width: bw - 18, height: 13),
                    size: 9.5, weight: .bold, color: st.status.color)
 
-        drawString(a.name, in: NSRect(x: tile.maxX + 9, y: r.maxY - 30, width: badge.minX - tile.maxX - 14, height: 17),
-                   size: 12.5, weight: .bold, color: TH.text)
         let line = st.line.isEmpty ? a.summary : st.line
-        drawString(line, in: NSRect(x: r.minX + 14, y: r.minY + 8, width: r.width - 26, height: 14),
+        drawString(line, in: NSRect(x: r.minX + 14, y: r.minY + 8, width: badge.minX - r.minX - 20, height: 14),
                    size: 10.5, weight: .medium, color: TH.dim(0.6))
 
         // Pendant le travail, un trait qui parcourt le bas du nœud : la
