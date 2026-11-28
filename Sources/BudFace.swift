@@ -25,6 +25,8 @@ import Cocoa
 enum BudMood {
     case calm, happy, alert, sleepy, wink, dizzy, angry, thinking
     case listening, speaking, proud, sad, confused
+    /// Un agent travaille : les deux billes du tréma jonglent.
+    case working
 }
 
 /// Trois habillages : à plat, nacré-or, et métal.
@@ -428,6 +430,12 @@ final class BudSprite {
             bounce = 0.08 + breath * 0.06
             tilt = sin(t * 1.3) * 7.5
             squash = breath * 0.012
+        case .working:
+            // Le corps se tient tranquille, concentré : tout le travail
+            // est dans les billes, plus bas.
+            bounce = 0.05
+            tilt = sin(t * 1.7) * 1.2
+            squash = 0.015
         default:
             break
         }
@@ -462,8 +470,15 @@ final class BudSprite {
         //  dixièmes de période. Ensemble elles avaient l'air d'un seul
         //  objet ; décalées, d'antennes.
         let own = 0.12 * (1 - min(1, abs(squash) * 6))
-        let liftL = max(0, bounce + own * sin(t * 2.9))
-        let liftR = max(0, bounce + own * sin(t * 2.9 - 1.9))
+        var liftL = max(0, bounce + own * sin(t * 2.9))
+        var liftR = max(0, bounce + own * sin(t * 2.9 - 1.9))
+        if effectiveMood == .working {
+            // Elles jonglent : quand l'une est en haut, l'autre est en bas.
+            // Un rebond en valeur absolue, pas un sinus, pour qu'elles
+            // touchent le corps et repartent — c'est le toc d'un sablier.
+            liftL = abs(sin(t * 6.4)) * 0.95
+            liftR = abs(sin(t * 6.4 + .pi / 2)) * 0.95
+        }
 
         let side = min(rect.width, rect.height)
         // Les rendus sont plus hauts que larges : on les inscrit sur la
@@ -657,7 +672,7 @@ final class BudSprite {
         let open = max(0.08, 1 - blink * 0.92)
 
         switch m {
-        case .calm, .sleepy, .thinking, .speaking, .confused, .sad:
+        case .calm, .sleepy, .thinking, .speaking, .confused, .sad, .working:
             let h = m == .sleepy ? eyeS * 0.18 : eyeS * open
             metalEye(NSPoint(x: -eyeX, y: eyeY), w: eyeS, h: h, r: corner, c: eye, detail: detail)
             metalEye(NSPoint(x: eyeX * 1.04, y: eyeY + r * 0.01),
@@ -972,7 +987,7 @@ final class BudSprite {
         let eyeR = s * 0.044
 
         switch m {
-        case .calm, .thinking, .speaking, .confused, .sad:
+        case .calm, .thinking, .speaking, .confused, .sad, .working:
             drawRoundEye(at: NSPoint(x: -eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawRoundEye(at: NSPoint(x: eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawOMouth(size: s, y: -s * 0.125, w: s * 0.042, h: s * 0.056,

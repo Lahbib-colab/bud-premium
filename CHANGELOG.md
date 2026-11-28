@@ -2,6 +2,25 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.4 — le Flux
+
+**Une vue des agents à la manière de n8n.** Nouvel onglet Flux, sous Agents : trois colonnes de nœuds sur une trame de points — les sources que les agents lisent, les agents, et BUDs en sortie. Les liens sont des courbes qui partent et arrivent à l'horizontale ; quand un agent travaille, les siens s'animent dans sa couleur, avec des tirets qui avancent et une perle qui circule. Chaque nœud porte un badge d'état : Prêt, En cours, OK, Alerte, Échec, À valider. Un clic sélectionne, un double clic exécute.
+
+**BUDs est le nœud de sortie, en vrai.** Un BUDs miniature y vit, avec un halo de la couleur de son expression, et il change de visage en même temps que celui du bureau et de l'encoche. Pendant qu'un agent travaille, il prend l'état « au travail » : visage concentré, et les deux billes du tréma qui jonglent — quand l'une est en haut, l'autre est en bas. Puis l'expression du résultat : content, réfléchi, agacé, étourdi, cool ou déçu.
+
+**L'inspecteur** montre le nœud choisi : ce qu'il fait, son état, quand il a tourné, ses boutons Simuler et Exécuter, et les cartes de son dernier résultat, compactes à la manière des widgets iOS. La carte météo y a son vrai ciel animé, en petit ; les cartes de la maison se touchent et s'allument comme des accessoires.
+
+**Rien ne se supprime sans fiche.** Ce qui toucherait au disque revient sous forme de fiche d'approbation : une case par élément, sa raison, sa taille, le total qui suit les coches, et un bouton qui dit ce qu'il va faire. Seuls les installeurs anciens arrivent cochés ; les applications et leurs restes attendent votre coche. Tout part à la corbeille, jamais à la destruction.
+
+**Trois agents pour commencer.**
+- *Nettoyage & Rangement* : installeurs déjà utilisés, gros fichiers oubliés et fichiers suspects des téléchargements, applications non ouvertes depuis 120 jours avec leurs restes dans la bibliothèque. Les apps d'Apple, celles qui sont ouvertes et BUD lui-même ne sont jamais proposées.
+- *Cybersécurité* : les liens du presse-papiers, d'un champ où coller une adresse, et des derniers messages. Adresses IP nues, punycode, lettres cyrilliques mêlées, raccourcisseurs, extensions à risque, « @ » trompeurs, sosies de marques — paypa1, micros0ft. Le courrier passe par l'analyse déjà en place. En option, Google Safe Browsing avec votre propre clé, rangée dans le trousseau : seules les adresses des liens partent.
+- *Météo & Maison* : le ciel du moment, et les commandes de chauffage, de lumières et de caméra trouvées dans votre dossier de raccourcis Maison.
+
+**Un registre pour la suite.** Un agent est une classe conforme à `BudAgent`, inscrite d'une ligne dans le catalogue. Le graphe, les liens, les états, la fiche et les cartes suivent seuls.
+
+**Une démo sans rien toucher.** « Démo » lance les trois agents sur des données d'exemple — la fiche fonctionne, la corbeille non. « Visages » passe les huit expressions en revue.
+
 ## 25.3 — Météo et Maison
 
 **Une section Maison, avec la météo et vos objets connectés.** Elle prend place dans la barre latérale, entre Communication et Travail.

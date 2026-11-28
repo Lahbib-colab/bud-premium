@@ -34,7 +34,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private let nav: [(String, [NavEntry])] = [
         ("Essentiel",     [NavEntry(icon: "face.smiling", title: "Compagnon"),
                            NavEntry(icon: "bubble.left.and.bubble.right.fill", title: "Chat"),
-                           NavEntry(icon: "bell.badge.fill", title: "Agents")]),
+                           NavEntry(icon: "bell.badge.fill", title: "Agents"),
+                           NavEntry(icon: "point.3.connected.trianglepath.dotted", title: "Flux")]),
         ("Communication", [NavEntry(icon: "envelope.fill", title: "Courrier"),
                            NavEntry(icon: "iphone", title: "Téléphone"),
                            NavEntry(icon: "alarm.fill", title: "Rappels"),
@@ -51,11 +52,11 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         ("Système",       [NavEntry(icon: "wrench.and.screwdriver", title: "Outils"),
                            NavEntry(icon: "slider.horizontal.3", title: "Réglages")])
     ]
-    private let tabCompanion = 0, tabChat = 1, tabAgents = 2, tabMail = 3,
-                tabPhone = 4, tabReminders = 5, tabMusic = 6, tabWeather = 7,
-                tabHome = 8, tabStorage = 9, tabClean = 10, tabFocus = 11,
-                tabNotes = 12, tabSnippets = 13, tabClipboard = 14, tabSorting = 15,
-                tabTools = 16, tabSettings = 17
+    private let tabCompanion = 0, tabChat = 1, tabAgents = 2, tabFlow = 3, tabMail = 4,
+                tabPhone = 5, tabReminders = 6, tabMusic = 7, tabWeather = 8,
+                tabHome = 9, tabStorage = 10, tabClean = 11, tabFocus = 12,
+                tabNotes = 13, tabSnippets = 14, tabClipboard = 15, tabSorting = 16,
+                tabTools = 17, tabSettings = 18
 
     // Modules
     private var storagePanel: StoragePanelView!
@@ -68,6 +69,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var remindersPanel: RemindersPanelView!
     private var musicPanel: MusicPanelView!
     private var weatherPanel: WeatherPanelView!
+    private var flowPanel: FlowPanelView!
     private var homePanel: HomePanelView!
     private var capture: CaptureWindow!
 
@@ -748,6 +750,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let companion = NSView(frame: pf)
         chatPanel = ChatPanelView(frame: pf)
         agentsPanel = AgentsPanelView(frame: pf)
+        flowPanel = FlowPanelView(frame: pf)
         mailPanel = MailPanelView(frame: pf)
         phonePanel = PhonePanelView(frame: pf)
         remindersPanel = RemindersPanelView(frame: pf)
@@ -764,7 +767,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let tools = NSView(frame: pf)
         let settings = NSView(frame: pf)
 
-        panels = [companion, chatPanel, agentsPanel, mailPanel, phonePanel, remindersPanel,
+        panels = [companion, chatPanel, agentsPanel, flowPanel, mailPanel, phonePanel, remindersPanel,
                   musicPanel, weatherPanel, homePanel, storagePanel, cleanPanel, focus, notes, snippetsPanel,
                   clip, sorting, tools, settings]
         panels.forEach { p in
@@ -1366,6 +1369,28 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             self?.mood(ok ? .proud : .confused, 2.5)
         }
         homePanel.reload()
+        wireFlow()
+    }
+
+    /// Le Flux : les agents s'inscrivent, et leurs expressions passent par
+    /// le même chemin que toutes les autres humeurs de BUDs — bureau,
+    /// encoche et nœud du graphe ensemble.
+    private func wireFlow() {
+        BudAgentCatalog.registerDefaults(
+            mail: { [weak self] in self?.mailPanel.recentMessages ?? [] },
+            city: { [weak self] in self?.state.weatherCity ?? "Paris" },
+            runHome: { [weak self] name, done in
+                guard let s = self else { done(false, "Indisponible."); return }
+                s.homePanel.launch(named: name, done: done)
+            })
+        let m = BudAgentManager.shared
+        m.onExpression = { [weak self] e, hold in
+            guard let s = self else { return }
+            s.mood(e.mood, hold)
+            s.flowPanel.show(e, hold: hold)
+        }
+        m.onStatus = { [weak self] line in self?.setStatus(line) }
+        flowPanel.refresh()
     }
 
     private func wireChat() {
@@ -2499,6 +2524,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         case tabPhone: phonePanel.refresh()
         case tabReminders: remindersPanel.refresh()
         case tabMusic: musicPanel.refresh()
+        case tabFlow: flowPanel.refresh()
         case tabWeather:
             let w = WeatherService.shared
             weatherPanel.apply(w.report, city: state.weatherCity, trouble: w.trouble)

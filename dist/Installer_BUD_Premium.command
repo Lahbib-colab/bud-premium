@@ -7,7 +7,7 @@ TOOLS_DIR="$SUPPORT_DIR/tools"
 ART_DIR="$SUPPORT_DIR/art"
 
 echo "============================================================"
-echo "   BUD Premium 25.3 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 25.4 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents" "$ART_DIR"
@@ -310,7 +310,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private let nav: [(String, [NavEntry])] = [
         ("Essentiel",     [NavEntry(icon: "face.smiling", title: "Compagnon"),
                            NavEntry(icon: "bubble.left.and.bubble.right.fill", title: "Chat"),
-                           NavEntry(icon: "bell.badge.fill", title: "Agents")]),
+                           NavEntry(icon: "bell.badge.fill", title: "Agents"),
+                           NavEntry(icon: "point.3.connected.trianglepath.dotted", title: "Flux")]),
         ("Communication", [NavEntry(icon: "envelope.fill", title: "Courrier"),
                            NavEntry(icon: "iphone", title: "Téléphone"),
                            NavEntry(icon: "alarm.fill", title: "Rappels"),
@@ -327,11 +328,11 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         ("Système",       [NavEntry(icon: "wrench.and.screwdriver", title: "Outils"),
                            NavEntry(icon: "slider.horizontal.3", title: "Réglages")])
     ]
-    private let tabCompanion = 0, tabChat = 1, tabAgents = 2, tabMail = 3,
-                tabPhone = 4, tabReminders = 5, tabMusic = 6, tabWeather = 7,
-                tabHome = 8, tabStorage = 9, tabClean = 10, tabFocus = 11,
-                tabNotes = 12, tabSnippets = 13, tabClipboard = 14, tabSorting = 15,
-                tabTools = 16, tabSettings = 17
+    private let tabCompanion = 0, tabChat = 1, tabAgents = 2, tabFlow = 3, tabMail = 4,
+                tabPhone = 5, tabReminders = 6, tabMusic = 7, tabWeather = 8,
+                tabHome = 9, tabStorage = 10, tabClean = 11, tabFocus = 12,
+                tabNotes = 13, tabSnippets = 14, tabClipboard = 15, tabSorting = 16,
+                tabTools = 17, tabSettings = 18
 
     // Modules
     private var storagePanel: StoragePanelView!
@@ -344,6 +345,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var remindersPanel: RemindersPanelView!
     private var musicPanel: MusicPanelView!
     private var weatherPanel: WeatherPanelView!
+    private var flowPanel: FlowPanelView!
     private var homePanel: HomePanelView!
     private var capture: CaptureWindow!
 
@@ -1024,6 +1026,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let companion = NSView(frame: pf)
         chatPanel = ChatPanelView(frame: pf)
         agentsPanel = AgentsPanelView(frame: pf)
+        flowPanel = FlowPanelView(frame: pf)
         mailPanel = MailPanelView(frame: pf)
         phonePanel = PhonePanelView(frame: pf)
         remindersPanel = RemindersPanelView(frame: pf)
@@ -1040,7 +1043,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         let tools = NSView(frame: pf)
         let settings = NSView(frame: pf)
 
-        panels = [companion, chatPanel, agentsPanel, mailPanel, phonePanel, remindersPanel,
+        panels = [companion, chatPanel, agentsPanel, flowPanel, mailPanel, phonePanel, remindersPanel,
                   musicPanel, weatherPanel, homePanel, storagePanel, cleanPanel, focus, notes, snippetsPanel,
                   clip, sorting, tools, settings]
         panels.forEach { p in
@@ -1642,6 +1645,28 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             self?.mood(ok ? .proud : .confused, 2.5)
         }
         homePanel.reload()
+        wireFlow()
+    }
+
+    /// Le Flux : les agents s'inscrivent, et leurs expressions passent par
+    /// le même chemin que toutes les autres humeurs de BUDs — bureau,
+    /// encoche et nœud du graphe ensemble.
+    private func wireFlow() {
+        BudAgentCatalog.registerDefaults(
+            mail: { [weak self] in self?.mailPanel.recentMessages ?? [] },
+            city: { [weak self] in self?.state.weatherCity ?? "Paris" },
+            runHome: { [weak self] name, done in
+                guard let s = self else { done(false, "Indisponible."); return }
+                s.homePanel.launch(named: name, done: done)
+            })
+        let m = BudAgentManager.shared
+        m.onExpression = { [weak self] e, hold in
+            guard let s = self else { return }
+            s.mood(e.mood, hold)
+            s.flowPanel.show(e, hold: hold)
+        }
+        m.onStatus = { [weak self] line in self?.setStatus(line) }
+        flowPanel.refresh()
     }
 
     private func wireChat() {
@@ -2775,6 +2800,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         case tabPhone: phonePanel.refresh()
         case tabReminders: remindersPanel.refresh()
         case tabMusic: musicPanel.refresh()
+        case tabFlow: flowPanel.refresh()
         case tabWeather:
             let w = WeatherService.shared
             weatherPanel.apply(w.report, city: state.weatherCity, trouble: w.trouble)
@@ -3141,7 +3167,7 @@ enum BudArt {
             // échec — reste prioritaire pendant qu'elle dure.
             return music ? .cool : .happy
         case .proud:               return .cool
-        case .listening, .alert:   return .neutral
+        case .listening, .alert, .working: return .neutral
         case .thinking, .confused: return .thinking
         case .sad, .sleepy:        return .sad
         case .angry:               return .angry
@@ -5909,7 +5935,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "25.3"
+let budVersion = "25.4"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -6305,6 +6331,8 @@ import Cocoa
 enum BudMood {
     case calm, happy, alert, sleepy, wink, dizzy, angry, thinking
     case listening, speaking, proud, sad, confused
+    /// Un agent travaille : les deux billes du tréma jonglent.
+    case working
 }
 
 /// Trois habillages : à plat, nacré-or, et métal.
@@ -6708,6 +6736,12 @@ final class BudSprite {
             bounce = 0.08 + breath * 0.06
             tilt = sin(t * 1.3) * 7.5
             squash = breath * 0.012
+        case .working:
+            // Le corps se tient tranquille, concentré : tout le travail
+            // est dans les billes, plus bas.
+            bounce = 0.05
+            tilt = sin(t * 1.7) * 1.2
+            squash = 0.015
         default:
             break
         }
@@ -6742,8 +6776,15 @@ final class BudSprite {
         //  dixièmes de période. Ensemble elles avaient l'air d'un seul
         //  objet ; décalées, d'antennes.
         let own = 0.12 * (1 - min(1, abs(squash) * 6))
-        let liftL = max(0, bounce + own * sin(t * 2.9))
-        let liftR = max(0, bounce + own * sin(t * 2.9 - 1.9))
+        var liftL = max(0, bounce + own * sin(t * 2.9))
+        var liftR = max(0, bounce + own * sin(t * 2.9 - 1.9))
+        if effectiveMood == .working {
+            // Elles jonglent : quand l'une est en haut, l'autre est en bas.
+            // Un rebond en valeur absolue, pas un sinus, pour qu'elles
+            // touchent le corps et repartent — c'est le toc d'un sablier.
+            liftL = abs(sin(t * 6.4)) * 0.95
+            liftR = abs(sin(t * 6.4 + .pi / 2)) * 0.95
+        }
 
         let side = min(rect.width, rect.height)
         // Les rendus sont plus hauts que larges : on les inscrit sur la
@@ -6937,7 +6978,7 @@ final class BudSprite {
         let open = max(0.08, 1 - blink * 0.92)
 
         switch m {
-        case .calm, .sleepy, .thinking, .speaking, .confused, .sad:
+        case .calm, .sleepy, .thinking, .speaking, .confused, .sad, .working:
             let h = m == .sleepy ? eyeS * 0.18 : eyeS * open
             metalEye(NSPoint(x: -eyeX, y: eyeY), w: eyeS, h: h, r: corner, c: eye, detail: detail)
             metalEye(NSPoint(x: eyeX * 1.04, y: eyeY + r * 0.01),
@@ -7252,7 +7293,7 @@ final class BudSprite {
         let eyeR = s * 0.044
 
         switch m {
-        case .calm, .thinking, .speaking, .confused, .sad:
+        case .calm, .thinking, .speaking, .confused, .sad, .working:
             drawRoundEye(at: NSPoint(x: -eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawRoundEye(at: NSPoint(x: eyeX, y: eyeY), r: eyeR, premium: premium, detail: detail)
             drawOMouth(size: s, y: -s * 0.125, w: s * 0.042, h: s * 0.056,
@@ -7612,6 +7653,2218 @@ final class BudSprite {
     }
 }
 EOF_BUDFACE_SWIFT
+
+cat << 'EOF_BUDFLOW_SWIFT' > "$SRC_DIR/BudFlow.swift"
+import Cocoa
+
+// ═══════════════════════════════════════════════════════════
+//  Le Flux — des agents en nœuds, à la manière de n8n
+//
+//  Ce n'est pas un moteur n8n et cela ne parle à aucun
+//  serveur : c'est une façon de montrer et d'organiser ce que
+//  font les agents de BUD. Trois colonnes, lues de gauche à
+//  droite :
+//
+//      Sources  ──▶  Agents  ──▶  BUDs
+//
+//  Une source est ce qu'un agent lit (les téléchargements, le
+//  courrier, le ciel). Un agent est un traitement. BUDs est la
+//  sortie : son expression dit le résultat, et ses cartes le
+//  détaillent.
+//
+//  Tout passe par un registre. Un nouvel agent est une classe
+//  conforme à `BudAgent`, inscrite d'une ligne dans
+//  `BudAgentCatalog.registerDefaults()` : la vue le place,
+//  trace ses liens, gère son état et ses cartes. Elle n'a pas
+//  à être retouchée.
+// ═══════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────
+//  Les expressions de BUD, dans le vocabulaire des agents
+//
+//  Les agents parlent en expressions — sept visages et un
+//  état de travail — et pas en humeurs internes : un agent
+//  écrit dans une future mise à jour n'a pas à connaître les
+//  treize humeurs du compagnon, ni leurs postures.
+// ─────────────────────────────────────────────────────────
+
+enum BudExpression: String, CaseIterable {
+    case neutral, happy, reflection, annoyed, dizzy, cool, sad, working
+
+    /// L'humeur du compagnon qui porte cette expression — visage et
+    /// posture compris.
+    var mood: BudMood {
+        switch self {
+        case .neutral:    return .listening
+        case .happy:      return .happy
+        case .reflection: return .thinking
+        case .annoyed:    return .angry
+        case .dizzy:      return .dizzy
+        case .cool:       return .proud
+        case .sad:        return .sad
+        case .working:    return .working
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .neutral:    return "Attentif"
+        case .happy:      return "Content"
+        case .reflection: return "Réfléchi"
+        case .annoyed:    return "Agacé"
+        case .dizzy:      return "Étourdi"
+        case .cool:       return "Cool"
+        case .sad:        return "Déçu"
+        case .working:    return "Au travail"
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────
+//  États et badges
+// ─────────────────────────────────────────────────────────
+
+enum NodeStatus: Equatable {
+    case idle, running, success, warning, failure, needsApproval
+
+    var label: String {
+        switch self {
+        case .idle:          return "Prêt"
+        case .running:       return "En cours"
+        case .success:       return "OK"
+        case .warning:       return "Alerte"
+        case .failure:       return "Échec"
+        case .needsApproval: return "À valider"
+        }
+    }
+
+    var color: NSColor {
+        switch self {
+        case .idle:          return NSColor(calibratedWhite: 0.62, alpha: 1)
+        case .running:       return NSColor(calibratedRed: 0.38, green: 0.66, blue: 1.00, alpha: 1)
+        case .success:       return NSColor(calibratedRed: 0.30, green: 0.82, blue: 0.55, alpha: 1)
+        case .warning:       return NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.25, alpha: 1)
+        case .failure:       return NSColor(calibratedRed: 1.00, green: 0.40, blue: 0.42, alpha: 1)
+        case .needsApproval: return NSColor(calibratedRed: 0.72, green: 0.52, blue: 1.00, alpha: 1)
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .idle:          return "circle"
+        case .running:       return "arrow.triangle.2.circlepath"
+        case .success:       return "checkmark"
+        case .warning:       return "exclamationmark.triangle.fill"
+        case .failure:       return "xmark"
+        case .needsApproval: return "hand.raised.fill"
+        }
+    }
+}
+
+/// Une source : ce qu'un agent lit. Deux agents qui déclarent la même
+/// source (même `id`) partagent son nœud dans la vue.
+struct FlowSource {
+    let id: String
+    let title: String
+    let icon: String
+    var tint: NSColor = NSColor(calibratedWhite: 0.8, alpha: 1)
+    /// Ce qu'on en lit, et si quelque chose sort du Mac.
+    var note: String = ""
+}
+
+// ─────────────────────────────────────────────────────────
+//  Les cartes — le détail d'un résultat
+//
+//  Des cartes compactes à la manière des widgets iOS : une
+//  pastille, un intitulé en petites capitales, une valeur en
+//  gros, une ligne de détail. Trois styles seulement : une
+//  carte de statistique, une carte de contrôle (cliquable,
+//  pour la maison) et une carte météo, qui dessine son ciel.
+// ─────────────────────────────────────────────────────────
+
+struct BudCard {
+    enum Style { case stat, control, weather }
+
+    var style: Style = .stat
+    var icon: String
+    var title: String
+    var value: String
+    var detail: String = ""
+    var tint: NSColor
+    /// Pour une carte de contrôle : l'action au clic. Elle reçoit un
+    /// rappel à appeler avec le message de fin.
+    var action: ((@escaping (Bool, String) -> Void) -> Void)? = nil
+    /// Pour une carte météo : le code OMM et le jour ou la nuit.
+    var weatherCode: Int = 0
+    var isDay: Bool = true
+}
+
+// ─────────────────────────────────────────────────────────
+//  La fiche d'approbation
+//
+//  Tout ce qui supprime, désinstalle ou modifie passe par là.
+//  Un agent ne reçoit pas le droit d'agir : il propose une
+//  liste, et c'est la fiche qui rend la sélection, cochée à la
+//  main. Les éléments risqués arrivent décochés.
+// ─────────────────────────────────────────────────────────
+
+struct ApprovalItem {
+    let id: String
+    var label: String
+    var detail: String
+    var icon: String
+    var bytes: Int64 = 0
+    var selected: Bool
+    var url: URL? = nil
+}
+
+struct ApprovalRequest {
+    var title: String
+    var message: String
+    var items: [ApprovalItem]
+    var confirmLabel: String
+    var destructive: Bool = true
+    /// Exécutée avec les seuls éléments cochés, hors du fil principal si
+    /// besoin ; le rappel rend le résultat final.
+    var perform: ([ApprovalItem], @escaping (AgentResult) -> Void) -> Void
+}
+
+// ─────────────────────────────────────────────────────────
+//  Le résultat d'un agent
+// ─────────────────────────────────────────────────────────
+
+struct AgentResult {
+    var status: NodeStatus
+    var expression: BudExpression
+    var headline: String
+    var cards: [BudCard] = []
+    var approval: ApprovalRequest? = nil
+    /// Combien de temps BUDs garde l'expression.
+    var hold: TimeInterval = 4
+}
+
+/// Ce qu'un agent reçoit pour travailler.
+final class AgentContext {
+    let simulated: Bool
+    /// Une ligne d'avancement, affichée sous le nœud. Appelable de
+    /// n'importe quel fil.
+    let progress: (String) -> Void
+    private(set) var cancelled = false
+    init(simulated: Bool, progress: @escaping (String) -> Void) {
+        self.simulated = simulated
+        self.progress = progress
+    }
+    func cancel() { cancelled = true }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le contrat d'un agent
+// ═══════════════════════════════════════════════════════════
+
+protocol BudAgent: AnyObject {
+    var id: String { get }
+    var name: String { get }
+    /// Une phrase : ce que fait l'agent.
+    var summary: String { get }
+    var icon: String { get }
+    var tint: NSColor { get }
+    var sources: [FlowSource] { get }
+    /// Le vrai travail. `done` peut être appelé de n'importe quel fil ;
+    /// le gestionnaire le ramène sur le fil principal.
+    func run(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void)
+    /// Le même parcours sur des données d'exemple, sans rien lire ni
+    /// toucher. Sert à la démonstration et aux essais d'interface.
+    func simulate(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void)
+}
+
+/// Ce que voit la vue d'un agent à un instant donné.
+struct AgentState {
+    var status: NodeStatus = .idle
+    var line = ""
+    var lastRun: Date?
+    var result: AgentResult?
+    var simulated = false
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le registre
+// ═══════════════════════════════════════════════════════════
+
+final class BudAgentManager {
+    static let shared = BudAgentManager()
+
+    private(set) var agents: [BudAgent] = []
+    private(set) var states: [String: AgentState] = [:]
+    private var contexts: [String: AgentContext] = [:]
+
+    /// Prévenu à chaque changement d'état, avec l'identifiant de l'agent.
+    private var observers: [(String) -> Void] = []
+    /// Branché par l'application : c'est ainsi que BUDs change de visage.
+    var onExpression: ((BudExpression, TimeInterval) -> Void)?
+    /// Une ligne pour la barre d'état de BUD.
+    var onStatus: ((String) -> Void)?
+
+    func observe(_ f: @escaping (String) -> Void) { observers.append(f) }
+    private func changed(_ id: String) { observers.forEach { $0(id) } }
+
+    func register(_ a: BudAgent) {
+        guard !agents.contains(where: { $0.id == a.id }) else { return }
+        agents.append(a)
+        states[a.id] = AgentState()
+        changed(a.id)
+    }
+
+    func agent(_ id: String) -> BudAgent? { agents.first { $0.id == id } }
+    func state(_ id: String) -> AgentState { states[id] ?? AgentState() }
+
+    /// Toutes les sources, dans l'ordre des agents, sans doublon.
+    var sources: [FlowSource] {
+        var seen = Set<String>(), out: [FlowSource] = []
+        for a in agents { for s in a.sources where seen.insert(s.id).inserted { out.append(s) } }
+        return out
+    }
+
+    var anyRunning: Bool { states.values.contains { $0.status == .running } }
+
+    // ── Exécution ──
+
+    func run(_ id: String, simulated: Bool = false) {
+        guard let a = agent(id), state(id).status != .running else { return }
+        var st = state(id)
+        st.status = .running
+        st.line = simulated ? "Simulation…" : "Démarrage…"
+        st.simulated = simulated
+        states[id] = st
+        changed(id)
+        // « Au travail » tient tant que l'agent tourne ; on le renouvelle
+        // à la fin, par l'expression du résultat.
+        onExpression?(.working, 120)
+        onStatus?("\(a.name) : au travail…")
+
+        let ctx = AgentContext(simulated: simulated) { [weak self] line in
+            DispatchQueue.main.async {
+                guard let s = self, var st = s.states[id], st.status == .running else { return }
+                st.line = line
+                s.states[id] = st
+                s.changed(id)
+            }
+        }
+        contexts[id] = ctx
+        let finish: (AgentResult) -> Void = { [weak self] r in
+            DispatchQueue.main.async { self?.finish(id, r, ctx: ctx) }
+        }
+        if simulated { a.simulate(ctx, done: finish) } else { a.run(ctx, done: finish) }
+    }
+
+    func cancel(_ id: String) {
+        contexts[id]?.cancel()
+    }
+
+    private func finish(_ id: String, _ r: AgentResult, ctx: AgentContext) {
+        guard contexts[id] === ctx else { return }
+        contexts[id] = nil
+        var st = state(id)
+        st.status = ctx.cancelled ? .idle : (r.approval != nil ? .needsApproval : r.status)
+        st.line = ctx.cancelled ? "Interrompu." : r.headline
+        st.lastRun = Date()
+        st.result = r
+        states[id] = st
+        changed(id)
+        let expr: BudExpression = ctx.cancelled ? .neutral : r.expression
+        // Si un autre agent tourne encore, BUDs reste au travail.
+        onExpression?(anyRunning ? .working : expr, anyRunning ? 120 : r.hold)
+        onStatus?(st.line)
+    }
+
+    /// Exécute la fiche d'approbation avec les éléments cochés. Une liste
+    /// vide revient à refuser.
+    func approve(_ id: String, items: [ApprovalItem]) {
+        guard var st = states[id], let req = st.result?.approval else { return }
+        let chosen = items.filter { $0.selected }
+        guard !chosen.isEmpty else { decline(id); return }
+        st.status = .running
+        st.line = "Application de votre choix…"
+        states[id] = st
+        changed(id)
+        onExpression?(.working, 120)
+        req.perform(chosen) { [weak self] r in
+            DispatchQueue.main.async {
+                guard let s = self else { return }
+                var st = s.state(id)
+                st.status = r.status
+                st.line = r.headline
+                st.lastRun = Date()
+                // On garde les cartes du relevé si l'exécution n'en rend pas.
+                var merged = r
+                if merged.cards.isEmpty { merged.cards = st.result?.cards ?? [] }
+                merged.approval = nil
+                st.result = merged
+                s.states[id] = st
+                s.changed(id)
+                s.onExpression?(s.anyRunning ? .working : r.expression, r.hold)
+                s.onStatus?(r.headline)
+            }
+        }
+    }
+
+    func decline(_ id: String) {
+        guard var st = states[id] else { return }
+        st.result?.approval = nil
+        st.status = .success
+        st.line = "Rien n'a été touché."
+        states[id] = st
+        changed(id)
+        onExpression?(.neutral, 2.5)
+    }
+
+    /// Sélectionner un nœud montre son dernier état sur le visage de BUDs :
+    /// le dernier résultat s'il y en a un, l'attention sinon.
+    func preview(_ id: String) {
+        let st = state(id)
+        if st.status == .running { onExpression?(.working, 120); return }
+        onExpression?(st.result?.expression ?? .neutral, 2.5)
+    }
+
+    /// Les agents un par un, sur les données d'exemple : la démonstration
+    /// complète des nœuds et des expressions.
+    func demo() {
+        for (i, a) in agents.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 4.5) { [weak self] in
+                self?.run(a.id, simulated: true)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le catalogue
+//
+//  La seule liste à toucher pour ajouter un agent.
+// ═══════════════════════════════════════════════════════════
+
+enum BudAgentCatalog {
+    static func registerDefaults(mail: @escaping () -> [MailMessage],
+                                 city: @escaping () -> String,
+                                 runHome: @escaping (String, @escaping (Bool, String) -> Void) -> Void) {
+        let m = BudAgentManager.shared
+        m.register(CleanupAgent())
+        m.register(SecurityAgent(mail: mail))
+        m.register(WeatherHomeAgent(city: city, runHome: runHome))
+        // Prochains agents : m.register(MonNouvelAgent())
+    }
+}
+EOF_BUDFLOW_SWIFT
+
+cat << 'EOF_BUDFLOWAGENTS_SWIFT' > "$SRC_DIR/BudFlowAgents.swift"
+import Cocoa
+
+// ═══════════════════════════════════════════════════════════
+//  Les trois premiers agents du Flux
+//
+//  Chacun suit la même forme : `run` lit le vrai Mac, hors du
+//  fil principal ; `simulate` parcourt le même chemin sur les
+//  données de `BudFlowSamples`. Aucun des deux ne supprime
+//  quoi que ce soit : ce qui touche au disque est rendu sous
+//  forme de fiche d'approbation, et c'est l'utilisateur qui
+//  coche.
+// ═══════════════════════════════════════════════════════════
+
+private let tintCleanup  = NSColor(calibratedRed: 0.36, green: 0.84, blue: 0.62, alpha: 1)
+private let tintSecurity = NSColor(calibratedRed: 1.00, green: 0.46, blue: 0.42, alpha: 1)
+private let tintSky      = NSColor(calibratedRed: 0.42, green: 0.70, blue: 1.00, alpha: 1)
+
+// ═══════════════════════════════════════════════════════════
+//  1. Nettoyage & Rangement
+// ═══════════════════════════════════════════════════════════
+
+/// Une application qui dort, et ce qu'elle a laissé dans la bibliothèque.
+struct DormantApp {
+    var url: URL
+    var name: String
+    var bundleID: String
+    var lastUsed: Date?
+    var bytes: Int64
+    var fromAppStore: Bool
+    var leftovers: [URL]
+}
+
+/// Un fichier des téléchargements qui mérite un regard.
+struct ClutterFile {
+    var url: URL
+    var reason: String
+    var bytes: Int64
+    /// Coché d'avance dans la fiche : seulement les installeurs anciens,
+    /// le cas où l'on ne regrette jamais.
+    var preselect: Bool
+}
+
+enum CleanupScan {
+    static let day: TimeInterval = 86_400
+
+    static func size(_ u: URL) -> Int64 {
+        var dir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: u.path, isDirectory: &dir) else { return 0 }
+        if dir.boolValue { return Cleaner.sizeOf(u, limit: 20_000).bytes }
+        return Int64((try? u.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?
+                        .totalFileAllocatedSize ?? 0)
+    }
+
+    static func downloads(limit: Int = 40) -> [ClutterFile] {
+        let fm = FileManager.default
+        guard let dl = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first,
+              let items = try? fm.contentsOfDirectory(
+                at: dl, includingPropertiesForKeys: [.contentAccessDateKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]) else { return [] }
+        let now = Date()
+        var out: [ClutterFile] = []
+        let suspects = Dictionary(MailGuard.scanDownloads().map { ($0.url.path, $0.reason) },
+                                  uniquingKeysWith: { a, _ in a })
+        for u in items {
+            let v = try? u.resourceValues(forKeys: [.contentAccessDateKey, .contentModificationDateKey])
+            let touched = max(v?.contentAccessDate ?? .distantPast, v?.contentModificationDate ?? .distantPast)
+            let age = now.timeIntervalSince(touched) / day
+            let ext = u.pathExtension.lowercased()
+
+            if let why = suspects[u.path] {
+                out.append(ClutterFile(url: u, reason: "Suspect : \(why)", bytes: size(u), preselect: false))
+            } else if ["dmg", "pkg", "mpkg"].contains(ext), age > 7 {
+                out.append(ClutterFile(url: u, reason: "Installeur, ouvert il y a \(Int(age)) j",
+                                       bytes: size(u), preselect: true))
+            } else if age > 90 {
+                let b = size(u)
+                // Les petits fichiers anciens ne valent pas une ligne : la
+                // fiche serait longue, et le gain nul.
+                if b > 50_000_000 {
+                    out.append(ClutterFile(url: u, reason: "Pas ouvert depuis \(Int(age)) j",
+                                           bytes: b, preselect: false))
+                }
+            }
+            if out.count >= limit { break }
+        }
+        return out.sorted { $0.bytes > $1.bytes }
+    }
+
+    /// Applications non ouvertes depuis `days` jours.
+    ///
+    /// Exclues d'office : celles d'Apple, celles du système, celles qui
+    /// tournent en ce moment, et BUD lui-même. La date d'usage vient de
+    /// Spotlight ; sans elle, on prend la date d'accès du paquet, et sans
+    /// aucune des deux, on ne propose rien — on ne désinstalle pas sur
+    /// une supposition.
+    static func dormantApps(excluding running: Set<String>, days: Double = 120) -> [DormantApp] {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let roots = [URL(fileURLWithPath: "/Applications"), home.appendingPathComponent("Applications")]
+        let lib = home.appendingPathComponent("Library")
+        let now = Date()
+        var out: [DormantApp] = []
+
+        for root in roots {
+            guard let items = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil,
+                                                          options: [.skipsHiddenFiles]) else { continue }
+            for u in items where u.pathExtension == "app" {
+                let path = u.standardizedFileURL.path
+                if running.contains(path) || path.hasPrefix("/System/") { continue }
+                guard let b = Bundle(url: u), let id = b.bundleIdentifier,
+                      !id.hasPrefix("com.apple.") else { continue }
+
+                var last = NSMetadataItem(url: u)?.value(forAttribute: "kMDItemLastUsedDate") as? Date
+                if last == nil {
+                    last = (try? u.resourceValues(forKeys: [.contentAccessDateKey]))?.contentAccessDate
+                }
+                guard let used = last, now.timeIntervalSince(used) / day > days else { continue }
+
+                let name = (b.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                    ?? u.deletingPathExtension().lastPathComponent
+                let candidates = [
+                    lib.appendingPathComponent("Application Support/\(name)"),
+                    lib.appendingPathComponent("Application Support/\(id)"),
+                    lib.appendingPathComponent("Caches/\(id)"),
+                    lib.appendingPathComponent("Preferences/\(id).plist"),
+                    lib.appendingPathComponent("Saved Application State/\(id).savedState")
+                ]
+                let left = candidates.filter { fm.fileExists(atPath: $0.path) }
+                let mas = fm.fileExists(atPath: u.appendingPathComponent("Contents/_MASReceipt").path)
+                out.append(DormantApp(url: u, name: name, bundleID: id, lastUsed: used,
+                                      bytes: size(u), fromAppStore: mas, leftovers: left))
+            }
+        }
+        return out.sorted { $0.bytes > $1.bytes }
+    }
+
+    /// Met à la corbeille, jamais à la destruction : une erreur doit rester
+    /// réparable depuis le Finder.
+    static func trash(_ items: [ApprovalItem]) -> (freed: Int64, ok: Int, failed: Int) {
+        var freed: Int64 = 0, ok = 0, failed = 0
+        for it in items {
+            guard let u = it.url else { continue }
+            if (try? FileManager.default.trashItem(at: u, resultingItemURL: nil)) != nil {
+                freed += it.bytes; ok += 1
+            } else {
+                failed += 1
+            }
+        }
+        return (freed, ok, failed)
+    }
+}
+
+final class CleanupAgent: BudAgent {
+    let id = "cleanup"
+    let name = "Nettoyage & Rangement"
+    let summary = "Téléchargements oubliés, installeurs, applications dormantes. Rien ne part sans votre accord."
+    let icon = "sparkles"
+    var tint: NSColor { tintCleanup }
+    let sources = [
+        FlowSource(id: "downloads", title: "Téléchargements", icon: "arrow.down.circle.fill",
+                   tint: NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1),
+                   note: "Noms, tailles et dates du dossier, lus sur place. Le contenu n'est pas ouvert."),
+        FlowSource(id: "apps", title: "Applications", icon: "square.grid.2x2.fill",
+                   tint: NSColor(calibratedRed: 0.74, green: 0.52, blue: 1.00, alpha: 1),
+                   note: "Date de dernier usage selon Spotlight. Apps d'Apple et apps ouvertes exclues.")
+    ]
+
+    func run(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void) {
+        // Lu sur le fil principal : la liste des applications ouvertes.
+        var running = Set(NSWorkspace.shared.runningApplications
+                            .compactMap { $0.bundleURL?.standardizedFileURL.path })
+        running.insert(Bundle.main.bundleURL.standardizedFileURL.path)
+        DispatchQueue.global(qos: .utility).async {
+            ctx.progress("Lecture des téléchargements…")
+            let files = CleanupScan.downloads()
+            if ctx.cancelled { return done(Self.empty) }
+            ctx.progress("Applications dormantes…")
+            let apps = CleanupScan.dormantApps(excluding: running)
+            done(Self.result(files: files, apps: apps, simulated: false))
+        }
+    }
+
+    func simulate(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void) {
+        ctx.progress("Lecture des téléchargements…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            ctx.progress("Applications dormantes…")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                done(Self.result(files: BudFlowSamples.clutter, apps: BudFlowSamples.dormant, simulated: true))
+            }
+        }
+    }
+
+    private static let empty = AgentResult(status: .idle, expression: .neutral, headline: "Interrompu.")
+
+    static func result(files: [ClutterFile], apps: [DormantApp], simulated: Bool) -> AgentResult {
+        let fileBytes = files.reduce(Int64(0)) { $0 + $1.bytes }
+        let appBytes = apps.reduce(Int64(0)) { $0 + $1.bytes }
+        let suspects = files.filter { $0.reason.hasPrefix("Suspect") }.count
+
+        var cards = [
+            BudCard(icon: "arrow.down.circle.fill", title: "TÉLÉCHARGEMENTS",
+                    value: files.isEmpty ? "Rangés" : formatBytes(fileBytes),
+                    detail: "\(files.count) élément\(files.count > 1 ? "s" : "") à revoir",
+                    tint: NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1)),
+            BudCard(icon: "square.grid.2x2.fill", title: "APPS DORMANTES",
+                    value: apps.isEmpty ? "Aucune" : "\(apps.count)",
+                    detail: apps.isEmpty ? "Tout sert" : "\(formatBytes(appBytes)) · 120 j sans usage",
+                    tint: NSColor(calibratedRed: 0.74, green: 0.52, blue: 1.00, alpha: 1))
+        ]
+        if suspects > 0 {
+            cards.append(BudCard(icon: "exclamationmark.shield.fill", title: "SUSPECTS",
+                                 value: "\(suspects)", detail: "Dans les téléchargements",
+                                 tint: dangerColor))
+        }
+
+        guard !files.isEmpty || !apps.isEmpty else {
+            return AgentResult(status: .success, expression: .happy,
+                               headline: "Rien à ranger : tout est propre.", cards: cards)
+        }
+
+        // La fiche. Les installeurs anciens sont cochés ; tout le reste —
+        // fichiers, applications, restes — attend votre coche.
+        var items: [ApprovalItem] = files.map {
+            ApprovalItem(id: $0.url.path, label: $0.url.lastPathComponent, detail: $0.reason,
+                         icon: $0.reason.hasPrefix("Suspect") ? "exclamationmark.shield.fill" : "doc.fill",
+                         bytes: $0.bytes, selected: $0.preselect, url: $0.url)
+        }
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "fr_FR")
+        df.dateFormat = "d MMM yyyy"
+        for a in apps {
+            let used = a.lastUsed.map { "ouverte le \(df.string(from: $0))" } ?? "jamais ouverte"
+            items.append(ApprovalItem(id: a.url.path, label: a.name,
+                                      detail: "Application, \(used)" + (a.fromAppStore ? " · réinstallable depuis l'App Store" : ""),
+                                      icon: "app.fill", bytes: a.bytes, selected: false, url: a.url))
+            for l in a.leftovers {
+                items.append(ApprovalItem(id: l.path, label: "Restes de \(a.name)",
+                                          detail: "~/Library/" + l.pathComponents.suffix(2).joined(separator: "/"),
+                                          icon: "folder.fill", bytes: simulated ? 0 : CleanupScan.size(l),
+                                          selected: false, url: l))
+            }
+        }
+
+        let total = fileBytes + appBytes
+        let req = ApprovalRequest(
+            title: "Mettre à la corbeille ?",
+            message: simulated
+                ? "Simulation : aucun fichier réel n'est concerné. Cochez, validez, et regardez BUDs réagir."
+                : "Tout part à la corbeille, d'où vous pouvez le récupérer. Les applications ouvertes et celles d'Apple ne sont jamais proposées.",
+            items: items,
+            confirmLabel: "Mettre à la corbeille",
+            destructive: true,
+            perform: { chosen, finish in
+                if simulated {
+                    let b = chosen.reduce(Int64(0)) { $0 + $1.bytes }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                        finish(AgentResult(status: .success, expression: .happy,
+                                           headline: "Simulation : \(chosen.count) élément\(chosen.count > 1 ? "s" : ""), \(formatBytes(b)) — rien n'a été touché."))
+                    }
+                    return
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let r = CleanupScan.trash(chosen)
+                    let expr: BudExpression = r.failed == 0 ? .happy : (r.ok == 0 ? .sad : .dizzy)
+                    let status: NodeStatus = r.failed == 0 ? .success : (r.ok == 0 ? .failure : .warning)
+                    var line = "\(r.ok) à la corbeille, \(formatBytes(r.freed)) libérés."
+                    if r.failed > 0 {
+                        line += " \(r.failed) refusé\(r.failed > 1 ? "s" : "") par macOS (droits ou app protégée)."
+                    }
+                    finish(AgentResult(status: status, expression: expr, headline: line))
+                }
+            })
+
+        // Plus de cinq gigaoctets de désordre : BUDs en a la tête qui tourne.
+        let expr: BudExpression = total > 5_000_000_000 ? .dizzy : .reflection
+        return AgentResult(status: .needsApproval, expression: expr,
+                           headline: "\(items.count) élément\(items.count > 1 ? "s" : "") à examiner, \(formatBytes(total)) récupérables.",
+                           cards: cards, approval: req, hold: 5)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  2. Cybersécurité — liens, domaines, courrier
+// ═══════════════════════════════════════════════════════════
+
+/// L'analyse d'un lien, entièrement locale. Les règles complètent celles
+/// du courrier (`MailGuard`) et en reprennent le vocabulaire : marques
+/// usurpées, raccourcisseurs, écritures mélangées.
+enum LinkGuard {
+    static let riskyTLDs: Set<String> = [
+        "zip", "mov", "xyz", "top", "click", "country", "gq", "tk", "ml", "cf", "ga",
+        "work", "support", "rest", "cam", "icu", "sbs", "buzz", "monster", "cfd"
+    ]
+    static let lureWords = ["login", "signin", "verify", "verif", "secure", "update", "account",
+                            "compte", "connexion", "identifiant", "paiement", "facture", "colis",
+                            "douane", "remboursement", "banque", "suspendu"]
+
+    static func analyze(_ url: String) -> MailThreat {
+        var t = MailThreat()
+        let lower = url.lowercased()
+        let host = MailGuard.host(ofURL: url)
+        guard !host.isEmpty else { return t }
+
+        if lower.hasPrefix("http://") { t.add(15, "connexion non chiffrée (http)") }
+        let afterScheme = lower.components(separatedBy: "://").dropFirst().first ?? lower
+        let authority = afterScheme.split(separator: "/").first.map(String.init) ?? afterScheme
+        if authority.contains("@") { t.add(40, "adresse déguisée par un « @ »") }
+        if host.range(of: "^[0-9.]+$", options: .regularExpression) != nil {
+            t.add(35, "adresse IP au lieu d'un nom")
+        }
+        if host.contains("xn--") { t.add(35, "nom de domaine en punycode") }
+        if MailGuard.hasMixedScript(host) { t.add(50, "lettres cyrilliques ou grecques mêlées") }
+        if MailGuard.shorteners.contains(host) { t.add(20, "lien raccourci : destination cachée") }
+
+        let parts = host.split(separator: ".")
+        if let tld = parts.last, riskyTLDs.contains(String(tld)) {
+            t.add(20, "extension « .\(tld) » très prisée des fraudeurs")
+        }
+        if parts.count >= 5 { t.add(15, "nombreux sous-domaines") }
+        if host.filter({ $0 == "-" }).count >= 3 { t.add(10, "nom fait de mots accolés") }
+
+        // Les marques : le nom apparaît dans l'adresse, mais l'adresse
+        // n'est pas la sienne. On teste aussi la version « déchiffrée » —
+        // paypa1 → paypal, micros0ft → microsoft.
+        let swaps: [Character: Character] = ["0": "o", "1": "l", "3": "e", "5": "s", "4": "a"]
+        let decodedHost = String(host.replacingOccurrences(of: "rn", with: "m").map { swaps[$0] ?? $0 })
+        // Un nom court — « ups », « sfr », « free » — n'est cherché que comme
+        // mot entier de l'adresse : « groups » n'imite pas UPS.
+        func mentions(_ h: String, _ token: String) -> Bool {
+            if token.count >= 5 { return h.contains(token) }
+            return h.split(whereSeparator: { $0 == "." || $0 == "-" }).contains { String($0) == token }
+        }
+        for b in MailGuard.brands {
+            let token = MailGuard.fold(b.name).replacingOccurrences(of: " ", with: "")
+            guard token.count >= 3 else { continue }
+            if b.domains.contains(where: { MailGuard.domain(host, isOrSub: $0) }) { break }
+            if mentions(host, token) {
+                t.add(45, "imite \(b.name.capitalized) sans en être")
+                break
+            }
+            if mentions(decodedHost, token) {
+                t.add(55, "sosie de \(b.name.capitalized) (chiffres à la place des lettres)")
+                break
+            }
+        }
+
+        if t.score > 0, lureWords.contains(where: { lower.contains($0) }) {
+            t.add(10, "vocabulaire d'identification ou de paiement")
+        }
+        if url.count > 160 { t.add(5, "adresse anormalement longue") }
+        return t
+    }
+}
+
+/// Le complément en ligne, facultatif : Google Safe Browsing, API
+/// Lookup v4, gratuite pour un usage non commercial. Sans clé, rien ne
+/// part. Avec une clé — rangée dans le trousseau, jamais sur disque —
+/// seules les adresses des liens sont envoyées, pas le courrier.
+enum SafeBrowsing {
+    static let account = "safebrowsing-key"
+    static var key: String? {
+        guard let k = BudKeychain.get(account), !k.isEmpty else { return nil }
+        return k
+    }
+
+    /// Rend l'ensemble des liens signalés, ou `nil` si la question n'a pas
+    /// pu être posée — ce qui n'est pas la même chose que « aucun ».
+    static func check(_ urls: [String], done: @escaping (Set<String>?) -> Void) {
+        guard let k = key, !urls.isEmpty,
+              var c = URLComponents(string: "https://safebrowsing.googleapis.com/v4/threatMatches:find")
+        else { done(nil); return }
+        c.queryItems = [URLQueryItem(name: "key", value: k)]
+        guard let url = c.url else { done(nil); return }
+        let body: [String: Any] = [
+            "client": ["clientId": "bud-premium", "clientVersion": budVersion],
+            "threatInfo": [
+                "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE",
+                                "POTENTIALLY_HARMFUL_APPLICATION"],
+                "platformTypes": ["ANY_PLATFORM"],
+                "threatEntryTypes": ["URL"],
+                "threatEntries": urls.prefix(100).map { ["url": $0] }
+            ]
+        ]
+        var req = URLRequest(url: url, timeoutInterval: 10)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let data = data,
+                  let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { done(nil); return }
+            let hits = (o["matches"] as? [[String: Any]] ?? []).compactMap {
+                ($0["threat"] as? [String: Any])?["url"] as? String
+            }
+            done(Set(hits))
+        }.resume()
+    }
+}
+
+final class SecurityAgent: BudAgent {
+    let id = "security"
+    let name = "Cybersécurité"
+    let summary = "Liens, domaines et courrier : hameçonnage, sosies de marques, adresses truquées."
+    let icon = "lock.shield.fill"
+    var tint: NSColor { tintSecurity }
+    let sources = [
+        FlowSource(id: "mail", title: "Courrier", icon: "envelope.fill",
+                   tint: NSColor(calibratedRed: 0.42, green: 0.66, blue: 1.00, alpha: 1),
+                   note: "Les trente derniers messages déjà relevés par BUD. Analyse sur place."),
+        FlowSource(id: "clipboard", title: "Presse-papiers", icon: "doc.on.clipboard.fill",
+                   tint: NSColor(calibratedRed: 1.00, green: 0.70, blue: 0.30, alpha: 1),
+                   note: "Lu seulement au lancement de l'agent, jamais en continu.")
+    ]
+
+    private let mail: () -> [MailMessage]
+    /// Un lien tapé dans l'inspecteur : analysé en plus, puis oublié.
+    var input: String?
+
+    init(mail: @escaping () -> [MailMessage]) { self.mail = mail }
+
+    func run(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void) {
+        let clip = NSPasteboard.general.string(forType: .string) ?? ""
+        let typed = input ?? ""
+        input = nil
+        let messages = mail()
+        DispatchQueue.global(qos: .userInitiated).async {
+            ctx.progress("Analyse locale…")
+            var links = MailGuard.urls(in: typed + "\n" + clip)
+            // Un domaine nu, tapé sans « https:// », est un lien aussi.
+            let bare = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+            if links.isEmpty, !bare.isEmpty, !bare.contains(" "), bare.contains(".") {
+                links.append("https://" + bare)
+            }
+            for m in messages.prefix(30) { links += MailGuard.urls(in: m.snippet) }
+            var seen = Set<String>()
+            links = links.filter { seen.insert($0).inserted }
+            let mails = messages.prefix(30).map { ($0, MailGuard.analyze($0)) }
+            let base = links.map { ($0, LinkGuard.analyze($0)) }
+
+            guard SafeBrowsing.key != nil, !links.isEmpty else {
+                done(Self.result(links: base, mails: Array(mails), online: nil))
+                return
+            }
+            ctx.progress("Vérification Safe Browsing…")
+            SafeBrowsing.check(links) { hits in
+                let merged = base.map { (u, t) -> (String, MailThreat) in
+                    var t = t
+                    if hits?.contains(u) == true { t.add(80, "signalé par Google Safe Browsing") }
+                    return (u, t)
+                }
+                done(Self.result(links: merged, mails: Array(mails), online: hits != nil))
+            }
+        }
+    }
+
+    func simulate(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void) {
+        ctx.progress("Analyse locale…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            // Les vraies règles, sur de faux liens : la simulation éprouve
+            // l'analyse autant que l'affichage.
+            let links = BudFlowSamples.links.map { ($0, LinkGuard.analyze($0)) }
+            let mails = BudFlowSamples.mails.map { ($0, MailGuard.analyze($0)) }
+            done(Self.result(links: links, mails: mails, online: nil))
+        }
+    }
+
+    static func result(links: [(String, MailThreat)], mails: [(MailMessage, MailThreat)],
+                       online: Bool?) -> AgentResult {
+        guard !links.isEmpty || !mails.isEmpty else {
+            return AgentResult(status: .idle, expression: .neutral,
+                               headline: "Rien à analyser : copiez un lien ou tapez-le ici.",
+                               cards: [BudCard(icon: "link", title: "LIENS", value: "0",
+                                               detail: "Presse-papiers vide", tint: tintSecurity)])
+        }
+        let worstLinks = links.sorted { $0.1.score > $1.1.score }
+        let dangerous = links.filter { $0.1.level == .dangerous }.count
+            + mails.filter { $0.1.level == .dangerous }.count
+        let suspect = links.filter { $0.1.level == .suspect }.count
+            + mails.filter { $0.1.level == .suspect }.count
+        let worst: ThreatLevel = dangerous > 0 ? .dangerous : (suspect > 0 ? .suspect : .clean)
+
+        var cards: [BudCard] = [
+            BudCard(icon: worst.icon, title: "NIVEAU DE RISQUE", value: worst.label,
+                    detail: "\(links.count) lien\(links.count > 1 ? "s" : ""), \(mails.count) message\(mails.count > 1 ? "s" : "")",
+                    tint: worst.color)
+        ]
+        for (u, t) in worstLinks.prefix(2) where t.level != .clean {
+            cards.append(BudCard(icon: t.level.icon, title: MailGuard.host(ofURL: u).uppercased(),
+                                 value: "\(min(100, t.score))/100",
+                                 detail: t.reasons.first ?? "", tint: t.level.color))
+        }
+        if let top = mails.sorted(by: { $0.1.score > $1.1.score }).first, top.1.level != .clean {
+            cards.append(BudCard(icon: "envelope.badge.fill", title: "COURRIER",
+                                 value: top.1.level.label,
+                                 detail: top.0.shortSender + " · " + (top.1.reasons.first ?? ""),
+                                 tint: top.1.level.color))
+        }
+        if let o = online {
+            cards.append(BudCard(icon: "globe", title: "SAFE BROWSING",
+                                 value: o ? "Consulté" : "Injoignable",
+                                 detail: o ? "Liens seulement" : "Analyse locale seule",
+                                 tint: tintSky))
+        }
+
+        switch worst {
+        case .dangerous:
+            return AgentResult(status: .warning, expression: .annoyed,
+                               headline: "\(dangerous) élément\(dangerous > 1 ? "s" : "") dangereux. N'ouvrez pas ces liens.",
+                               cards: cards, hold: 6)
+        case .suspect:
+            return AgentResult(status: .warning, expression: .reflection,
+                               headline: "\(suspect) élément\(suspect > 1 ? "s" : "") suspect\(suspect > 1 ? "s" : "") : prudence.",
+                               cards: cards, hold: 5)
+        case .clean:
+            return AgentResult(status: .success, expression: .happy,
+                               headline: "Rien de suspect dans \(links.count + mails.count) élément\(links.count + mails.count > 1 ? "s" : "").",
+                               cards: cards)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  3. Météo & Maison
+//
+//  Il ne refait ni la météo ni la maison : il lit le service
+//  météo et les raccourcis déjà chargés, et les rend en cartes.
+//  Rien de plus à télécharger, rien de plus à garder en
+//  mémoire.
+// ═══════════════════════════════════════════════════════════
+
+final class WeatherHomeAgent: BudAgent {
+    let id = "weatherhome"
+    let name = "Météo & Maison"
+    let summary = "Le ciel du moment, et vos commandes de chauffage, de lumières et de caméra."
+    let icon = "cloud.sun.fill"
+    var tint: NSColor { tintSky }
+    let sources = [
+        FlowSource(id: "sky", title: "Ciel · Open-Meteo", icon: "cloud.sun.fill", tint: tintSky,
+                   note: "Seules les coordonnées de la ville partent, arrondies au kilomètre."),
+        FlowSource(id: "home", title: "Raccourcis Maison", icon: "house.fill",
+                   tint: NSColor(calibratedRed: 1.00, green: 0.62, blue: 0.25, alpha: 1),
+                   note: "Les raccourcis de votre dossier Maison. BUD ne voit pas vos appareils.")
+    ]
+
+    private let city: () -> String
+    private let runHome: (String, @escaping (Bool, String) -> Void) -> Void
+
+    init(city: @escaping () -> String, runHome: @escaping (String, @escaping (Bool, String) -> Void) -> Void) {
+        self.city = city
+        self.runHome = runHome
+    }
+
+    func run(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void) {
+        let w = WeatherService.shared
+        if let r = w.report, Date().timeIntervalSince(r.fetchedAt) < 35 * 60 {
+            done(build(r, scenes: HomeShortcuts.shared.scenes.map { $0.name }, simulated: false))
+            return
+        }
+        ctx.progress("Relevé du ciel…")
+        let before = w.report?.fetchedAt
+        w.refresh(city: city(), force: true)
+        var tries = 0
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] tm in
+            tries += 1
+            guard let s = self else { tm.invalidate(); return }
+            if w.report?.fetchedAt != before || !w.trouble.isEmpty || tries > 30 || ctx.cancelled {
+                tm.invalidate()
+                done(s.build(w.report, scenes: HomeShortcuts.shared.scenes.map { $0.name }, simulated: false))
+            }
+        }
+    }
+
+    func simulate(_ ctx: AgentContext, done: @escaping (AgentResult) -> Void) {
+        ctx.progress("Relevé du ciel…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let s = self else { return }
+            done(s.build(BudFlowSamples.weather, scenes: BudFlowSamples.homeScenes, simulated: true))
+        }
+    }
+
+    /// Les trois familles de commandes et les mots qui les désignent.
+    private static let controls: [(title: String, icon: String, keys: [String], tint: NSColor, fallback: String)] = [
+        ("CHAUFFAGE", "thermometer", ["chauffage", "thermostat", "radiateur", "clim"],
+         NSColor(calibratedRed: 1.00, green: 0.45, blue: 0.30, alpha: 1), "com.apple.shortcuts"),
+        ("LUMIÈRES", "lightbulb.fill", ["lumiere", "lampe", "eclairage", "ampoule", "led"],
+         NSColor(calibratedRed: 1.00, green: 0.80, blue: 0.26, alpha: 1), "com.apple.shortcuts"),
+        ("CAMÉRA", "video.fill", ["camera", "alarme", "securite"],
+         NSColor(calibratedRed: 0.95, green: 0.40, blue: 0.45, alpha: 1), "com.apple.Home")
+    ]
+
+    private func build(_ r: WeatherReport?, scenes: [String], simulated: Bool) -> AgentResult {
+        var cards: [BudCard] = []
+        let expr: BudExpression
+        let headline: String
+
+        if let r = r {
+            let c = r.condition
+            var detail = c.label
+            if let d = r.days.first { detail += " · \(Int(d.tmin.rounded()))° / \(Int(d.tmax.rounded()))°" }
+            cards.append(BudCard(style: .weather, icon: c.symbol, title: r.place.name.uppercased(),
+                                 value: "\(Int(r.temp.rounded()))°", detail: detail, tint: tintSky,
+                                 weatherCode: r.code, isDay: r.isDay))
+            switch c.scene {
+            case .clear:                  expr = .cool
+            case .partly, .cloudy:        expr = .happy
+            case .fog:                    expr = .reflection
+            case .drizzle, .rain, .snow:  expr = .sad
+            case .storm:                  expr = .dizzy
+            }
+            headline = "\(r.place.name) : \(Int(r.temp.rounded()))°, \(c.label.lowercased())."
+        } else {
+            expr = .sad
+            headline = WeatherService.shared.trouble.isEmpty ? "Météo indisponible." : WeatherService.shared.trouble
+            cards.append(BudCard(icon: "cloud.fill", title: "MÉTÉO", value: "—", detail: headline, tint: tintSky))
+        }
+
+        for k in Self.controls {
+            let matches = scenes.filter { n in
+                let f = MailGuard.fold(n)
+                return k.keys.contains { f.contains($0) }
+            }
+            let runHome = self.runHome
+            if let first = matches.first {
+                cards.append(BudCard(style: .control, icon: k.icon, title: k.title,
+                                     value: matches.count == 1 ? first : "\(matches.count) commandes",
+                                     detail: simulated ? "Simulation" : "Toucher : « \(first) »",
+                                     tint: k.tint,
+                                     action: { finish in
+                                        if simulated {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                                                finish(true, "Simulation : « \(first) » lancé.")
+                                            }
+                                        } else {
+                                            runHome(first, finish)
+                                        }
+                                     }))
+            } else {
+                let bundle = k.fallback
+                cards.append(BudCard(style: .control, icon: k.icon, title: k.title, value: "À configurer",
+                                     detail: bundle == "com.apple.Home" ? "Ouvrir Maison" : "Ajouter un raccourci",
+                                     tint: k.tint.withAlphaComponent(0.55),
+                                     action: { finish in
+                                        if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) {
+                                            NSWorkspace.shared.openApplication(at: u, configuration: NSWorkspace.OpenConfiguration(),
+                                                                               completionHandler: nil)
+                                            finish(true, "Ouvert.")
+                                        } else {
+                                            finish(false, "Application introuvable.")
+                                        }
+                                     }))
+            }
+        }
+        return AgentResult(status: r == nil ? .failure : .success, expression: expr,
+                           headline: headline, cards: cards)
+    }
+}
+EOF_BUDFLOWAGENTS_SWIFT
+
+cat << 'EOF_BUDFLOWSAMPLES_SWIFT' > "$SRC_DIR/BudFlowSamples.swift"
+import Foundation
+
+// ═══════════════════════════════════════════════════════════
+//  Données d'exemple du Flux
+//
+//  De quoi tout voir sans rien toucher : le bouton « Démo »
+//  et le mode simulation de chaque agent passent par ici.
+//  Les chemins ne pointent sur rien de réel, et la fiche
+//  d'approbation d'une simulation ne met rien à la corbeille.
+//
+//  Chaque jeu est choisi pour faire apparaître une expression
+//  précise de BUDs :
+//    • nettoyage    → réfléchi (fiche à valider), puis content
+//    • sécurité     → agacé (un sosie de PayPal, une IP nue)
+//    • météo/maison → cool (ciel dégagé)
+//  et `expressionTour` passe les huit en revue.
+// ═══════════════════════════════════════════════════════════
+
+enum BudFlowSamples {
+
+    private static let dl = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads")
+    private static let lib = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library")
+
+    // ── Nettoyage ──
+
+    static let clutter: [ClutterFile] = [
+        ClutterFile(url: dl.appendingPathComponent("Xcode_13.2.1.dmg"),
+                    reason: "Installeur, ouvert il y a 212 j", bytes: 10_900_000_000, preselect: true),
+        ClutterFile(url: dl.appendingPathComponent("zoomusInstallerFull.pkg"),
+                    reason: "Installeur, ouvert il y a 48 j", bytes: 118_000_000, preselect: true),
+        ClutterFile(url: dl.appendingPathComponent("Vacances-2023-export.mov"),
+                    reason: "Pas ouvert depuis 301 j", bytes: 2_400_000_000, preselect: false),
+        ClutterFile(url: dl.appendingPathComponent("Facture_0412.pdf.command"),
+                    reason: "Suspect : double extension : se fait passer pour un PDF",
+                    bytes: 12_000, preselect: false)
+    ]
+
+    static let dormant: [DormantApp] = [
+        DormantApp(url: URL(fileURLWithPath: "/Applications/Skitch.app"), name: "Skitch",
+                   bundleID: "com.skitch.skitch",
+                   lastUsed: Date().addingTimeInterval(-400 * 86_400),
+                   bytes: 61_000_000, fromAppStore: true,
+                   leftovers: [lib.appendingPathComponent("Caches/com.skitch.skitch")]),
+        DormantApp(url: URL(fileURLWithPath: "/Applications/Old Converter.app"), name: "Old Converter",
+                   bundleID: "fr.exemple.converter",
+                   lastUsed: Date().addingTimeInterval(-190 * 86_400),
+                   bytes: 340_000_000, fromAppStore: false,
+                   leftovers: [lib.appendingPathComponent("Application Support/Old Converter"),
+                               lib.appendingPathComponent("Preferences/fr.exemple.converter.plist")])
+    ]
+
+    // ── Cybersécurité ──
+    //  De vrais motifs de fraude, sur des domaines inventés ou réservés.
+
+    static let links: [String] = [
+        "https://paypa1-secure-login.xyz/verify?id=88213",
+        "http://192.0.2.44/colis/frais-de-douane",
+        "https://bit.ly/3xYzBud",
+        "https://www.impots.gouv.fr/accueil"
+    ]
+
+    static let mails: [MailMessage] = {
+        var a = MailMessage(subject: "Votre colis est en attente — frais de douane",
+                            sender: "Chronopost <suivi@chrono-livraison.top>", date: "")
+        a.snippet = "Votre colis est en attente. Réglez 1,99 € sous 24 heures : https://chrono-livraison.top/payer"
+        var b = MailMessage(subject: "Compte rendu de la réunion",
+                            sender: "Camille <camille@exemple.fr>", date: "")
+        b.snippet = "Bonjour, voici le compte rendu de jeudi. Bonne journée."
+        return [a, b]
+    }()
+
+    // ── Météo & Maison ──
+
+    static var weather: WeatherReport {
+        let now = Date()
+        let hours = (0..<12).map {
+            WeatherHour(time: now.addingTimeInterval(Double($0) * 3600),
+                        temp: 14 - Double($0) * 0.4, code: $0 < 6 ? 0 : 1, isDay: $0 < 6)
+        }
+        let days = (0..<7).map {
+            WeatherDay(date: now.addingTimeInterval(Double($0) * 86_400),
+                       code: [0, 1, 2, 61, 3, 0, 1][$0],
+                       tmin: [6.0, 5, 7, 8, 6, 3, 4][$0], tmax: [15.0, 13, 12, 11, 12, 10, 11][$0],
+                       rain: [0, 0, 10, 70, 30, 0, 0][$0])
+        }
+        return WeatherReport(place: WeatherPlace(name: "Paris", country: "France",
+                                                 latitude: 48.85, longitude: 2.35),
+                             fetchedAt: now, temp: 14, feels: 12, code: 0, isDay: true,
+                             wind: 9, humidity: 61, hours: hours, days: days)
+    }
+
+    static let homeScenes = ["Chauffage salon 20°", "Lumière salon", "Lumières éteintes",
+                             "Bonne nuit", "Caméra entrée"]
+
+    // ── Le tour des expressions ──
+
+    static let expressionTour: [BudExpression] = [
+        .neutral, .working, .happy, .reflection, .annoyed, .dizzy, .cool, .sad
+    ]
+}
+EOF_BUDFLOWSAMPLES_SWIFT
+
+cat << 'EOF_BUDFLOWVIEW_SWIFT' > "$SRC_DIR/BudFlowView.swift"
+import Cocoa
+
+// ═══════════════════════════════════════════════════════════
+//  La vue du Flux
+//
+//  En haut, le graphe : trois colonnes de nœuds sur une trame
+//  de points, comme le plan de travail de n8n. Les liens sont
+//  des courbes de Bézier qui partent horizontalement d'un port
+//  et arrivent horizontalement sur le suivant ; quand un agent
+//  travaille, ses liens s'animent — des tirets qui avancent et
+//  une perle qui circule — dans sa couleur.
+//
+//  En bas, l'inspecteur du nœud choisi : ce qu'il fait, son
+//  état, ses boutons, et les cartes de son dernier résultat,
+//  compactes, à la manière des widgets iOS.
+//
+//  Par-dessus, quand il le faut, la fiche d'approbation.
+//
+//  Le graphe n'a aucune connaissance des agents : il lit le
+//  registre. Un quatrième agent y apparaîtra avec ses sources
+//  et ses liens sans qu'on touche à ce fichier.
+// ═══════════════════════════════════════════════════════════
+
+extension BudExpression {
+    /// La teinte du halo du nœud BUDs pour chaque expression.
+    var color: NSColor {
+        switch self {
+        case .neutral:    return NSColor(calibratedWhite: 0.70, alpha: 1)
+        case .happy:      return NSColor(calibratedRed: 0.30, green: 0.82, blue: 0.55, alpha: 1)
+        case .reflection: return NSColor(calibratedRed: 0.72, green: 0.52, blue: 1.00, alpha: 1)
+        case .annoyed:    return NSColor(calibratedRed: 1.00, green: 0.42, blue: 0.40, alpha: 1)
+        case .dizzy:      return NSColor(calibratedRed: 1.00, green: 0.66, blue: 0.25, alpha: 1)
+        case .cool:       return NSColor(calibratedRed: 0.40, green: 0.78, blue: 1.00, alpha: 1)
+        case .sad:        return NSColor(calibratedRed: 0.55, green: 0.62, blue: 0.80, alpha: 1)
+        case .working:    return NSColor(calibratedRed: 0.38, green: 0.66, blue: 1.00, alpha: 1)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le graphe
+// ═══════════════════════════════════════════════════════════
+
+final class FlowCanvasView: NSView {
+
+    enum Selection: Equatable { case agent(String), source(String), bud }
+
+    var selection: Selection? { didSet { needsDisplay = true } }
+    var onSelect: ((Selection) -> Void)?
+    var onRun: ((String) -> Void)?
+
+    /// Un BUDs à part entière, en miniature, dans le nœud de sortie.
+    let sprite = BudSprite()
+    var expression: BudExpression = .neutral { didSet { needsDisplay = true } }
+
+    private var timer: Timer?
+    private var t: CGFloat = 0
+    private var hover: Selection?
+
+    private var sourceRects: [(FlowSource, NSRect)] = []
+    private var agentRects: [(BudAgent, NSRect)] = []
+    private var budRect: NSRect = .zero
+
+    // Les mesures du graphe. Les colonnes extrêmes sont fixes, celle des
+    // agents prend le reste.
+    private let pad: CGFloat = 14, gap: CGFloat = 54
+    private let srcW: CGFloat = 140, budW: CGFloat = 138
+    private let srcH: CGFloat = 30, srcGap: CGFloat = 8
+    private let agentH: CGFloat = 64, agentGap: CGFloat = 14
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// La hauteur qu'il faut pour tout montrer : la vue grandit dans son
+    /// défilement quand les agents se multiplient.
+    func neededHeight() -> CGFloat {
+        let m = BudAgentManager.shared
+        let s = CGFloat(m.sources.count) * (srcH + srcGap)
+        let a = CGFloat(m.agents.count) * (agentH + agentGap)
+        return max(s, a, 190) + pad * 2
+    }
+
+    private func layoutNodes() {
+        let m = BudAgentManager.shared
+        let b = bounds
+        let agentW = b.width - pad * 2 - srcW - budW - gap * 2
+        let srcX = pad, agentX = pad + srcW + gap, budX = agentX + agentW + gap
+
+        let srcs = m.sources
+        let sTotal = CGFloat(srcs.count) * srcH + CGFloat(max(0, srcs.count - 1)) * srcGap
+        var y = b.midY + sTotal / 2 - srcH
+        sourceRects = srcs.map { s in
+            defer { y -= srcH + srcGap }
+            return (s, NSRect(x: srcX, y: y, width: srcW, height: srcH))
+        }
+
+        let ags = m.agents
+        let aTotal = CGFloat(ags.count) * agentH + CGFloat(max(0, ags.count - 1)) * agentGap
+        y = b.midY + aTotal / 2 - agentH
+        agentRects = ags.map { a in
+            defer { y -= agentH + agentGap }
+            return (a, NSRect(x: agentX, y: y, width: agentW, height: agentH))
+        }
+
+        let bh = min(b.height - pad * 2, 176)
+        budRect = NSRect(x: budX, y: b.midY - bh / 2, width: budW, height: bh)
+    }
+
+    // ── L'horloge : seulement quand on regarde ──
+
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); updateClock() }
+    override func viewDidHide() { super.viewDidHide(); updateClock() }
+    override func viewDidUnhide() { super.viewDidUnhide(); updateClock() }
+
+    func updateClock() {
+        let visible = window != nil && !isHiddenOrHasHiddenAncestor
+        if visible && timer == nil {
+            let tm = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.tick() }
+            RunLoop.main.add(tm, forMode: .common)
+            timer = tm
+        } else if !visible {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    private func tick() {
+        guard !isHiddenOrHasHiddenAncestor else { updateClock(); return }
+        guard window?.isVisible == true, window?.occlusionState.contains(.visible) == true else { return }
+        t += 1.0 / 30.0
+        _ = sprite.step(follow: false, in: self, anchor: NSPoint(x: budRect.midX, y: budRect.midY))
+        needsDisplay = true
+    }
+
+    // ── Souris ──
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    private func hit(_ p: NSPoint) -> Selection? {
+        if let a = agentRects.first(where: { $0.1.contains(p) }) { return .agent(a.0.id) }
+        if let s = sourceRects.first(where: { $0.1.contains(p) }) { return .source(s.0.id) }
+        if budRect.contains(p) { return .bud }
+        return nil
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        let h = hit(convert(e.locationInWindow, from: nil))
+        if h != hover { hover = h; needsDisplay = true }
+        if h != nil { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+    }
+    override func mouseExited(with e: NSEvent) { hover = nil; NSCursor.arrow.set(); needsDisplay = true }
+
+    override func mouseDown(with e: NSEvent) {
+        guard let h = hit(convert(e.locationInWindow, from: nil)) else { return }
+        selection = h
+        onSelect?(h)
+        // Un double clic sur un agent le lance, comme « Execute node ».
+        if e.clickCount == 2, case .agent(let id) = h { onRun?(id) }
+    }
+
+    // ═════════════ Le dessin ═════════════
+
+    override func draw(_ dirty: NSRect) {
+        layoutNodes()
+        drawGrid()
+        let m = BudAgentManager.shared
+
+        // Les liens d'abord : les nœuds se posent dessus.
+        for (a, ar) in agentRects {
+            let st = m.state(a.id)
+            let running = st.status == .running
+            for s in a.sources {
+                guard let sr = sourceRects.first(where: { $0.0.id == s.id })?.1 else { continue }
+                edge(from: NSPoint(x: sr.maxX, y: sr.midY), to: NSPoint(x: ar.minX, y: ar.midY),
+                     color: running ? a.tint : s.tint, active: running,
+                     lit: isSelected(.agent(a.id)) || isSelected(.source(s.id)))
+            }
+            let outColor = st.status == .idle ? TH.fill(0.5) : st.status.color
+            edge(from: NSPoint(x: ar.maxX, y: ar.midY), to: NSPoint(x: budRect.minX, y: budRect.midY),
+                 color: running ? a.tint : outColor, active: running,
+                 lit: isSelected(.agent(a.id)) || isSelected(.bud))
+        }
+
+        for (s, r) in sourceRects { drawSource(s, r) }
+        for (a, r) in agentRects { drawAgent(a, r, m.state(a.id)) }
+        drawBud(budRect)
+    }
+
+    private func isSelected(_ s: Selection) -> Bool { selection == s }
+
+    /// La trame de points du plan de travail.
+    private func drawGrid() {
+        TH.fill(0.07).setFill()
+        let step: CGFloat = 18
+        var x = bounds.minX + 9
+        while x < bounds.maxX {
+            var y = bounds.minY + 9
+            while y < bounds.maxY {
+                NSRect(x: x, y: y, width: 1.4, height: 1.4).fill()
+                y += step
+            }
+            x += step
+        }
+    }
+
+    private func edge(from a: NSPoint, to b: NSPoint, color: NSColor, active: Bool, lit: Bool) {
+        let dx = max(26, (b.x - a.x) * 0.5)
+        let c1 = NSPoint(x: a.x + dx, y: a.y), c2 = NSPoint(x: b.x - dx, y: b.y)
+        let p = NSBezierPath()
+        p.move(to: a)
+        p.curve(to: b, controlPoint1: c1, controlPoint2: c2)
+        p.lineWidth = active || lit ? 2 : 1.4
+        p.lineCapStyle = .round
+        if active {
+            // Des tirets qui avancent : le sens du flux se lit sans flèche.
+            let pattern: [CGFloat] = [6, 5]
+            p.setLineDash(pattern, count: 2, phase: -t * 26)
+            color.withAlphaComponent(0.95).setStroke()
+            p.stroke()
+            // Et une perle qui circule, avec son halo.
+            for k in 0..<2 {
+                let u = (t * 0.7 + CGFloat(k) * 0.5).truncatingRemainder(dividingBy: 1)
+                let q = bezier(a, c1, c2, b, u)
+                color.withAlphaComponent(0.25).setFill()
+                NSBezierPath(ovalIn: NSRect(x: q.x - 6, y: q.y - 6, width: 12, height: 12)).fill()
+                color.setFill()
+                NSBezierPath(ovalIn: NSRect(x: q.x - 3, y: q.y - 3, width: 6, height: 6)).fill()
+            }
+        } else {
+            color.withAlphaComponent(lit ? 0.85 : 0.38).setStroke()
+            p.stroke()
+        }
+    }
+
+    private func bezier(_ a: NSPoint, _ c1: NSPoint, _ c2: NSPoint, _ b: NSPoint, _ u: CGFloat) -> NSPoint {
+        let v = 1 - u
+        let x = v * v * v * a.x + 3 * v * v * u * c1.x + 3 * v * u * u * c2.x + u * u * u * b.x
+        let y = v * v * v * a.y + 3 * v * v * u * c1.y + 3 * v * u * u * c2.y + u * u * u * b.y
+        return NSPoint(x: x, y: y)
+    }
+
+    private func port(_ c: NSPoint, _ tint: NSColor, on: Bool) {
+        let r: CGFloat = on ? 4.5 : 3.8
+        (TH.dark ? NSColor(calibratedWhite: 0.10, alpha: 1) : NSColor.white).setFill()
+        let o = NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+        o.fill()
+        tint.withAlphaComponent(on ? 1 : 0.7).setStroke()
+        o.lineWidth = 1.6
+        o.stroke()
+    }
+
+    /// Le fond commun des nœuds : verre, liseré, et l'anneau de sélection.
+    private func nodeShell(_ r: NSRect, radius: CGFloat, tint: NSColor, selected: Bool, hovered: Bool) {
+        let p = NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius)
+        if selected {
+            NSGraphicsContext.current?.saveGraphicsState()
+            let sh = NSShadow()
+            sh.shadowColor = tint.withAlphaComponent(0.55)
+            sh.shadowBlurRadius = 12
+            sh.shadowOffset = .zero
+            sh.set()
+            (TH.dark ? NSColor(calibratedWhite: 0.13, alpha: 0.96) : NSColor(calibratedWhite: 0.99, alpha: 0.96)).setFill()
+            p.fill()
+            NSGraphicsContext.current?.restoreGraphicsState()
+        } else {
+            (TH.dark ? NSColor(calibratedWhite: 0.11, alpha: 0.92) : NSColor(calibratedWhite: 0.98, alpha: 0.92)).setFill()
+            p.fill()
+        }
+        TH.fill(hovered ? 0.10 : 0.04).setFill()
+        p.fill()
+        (selected ? tint : TH.fill(0.16)).setStroke()
+        p.lineWidth = selected ? 1.6 : 0.8
+        p.stroke()
+    }
+
+    private func drawSource(_ s: FlowSource, _ r: NSRect) {
+        let m = BudAgentManager.shared
+        let live = m.agents.contains { a in
+            m.state(a.id).status == .running && a.sources.contains { $0.id == s.id }
+        }
+        nodeShell(r, radius: 9, tint: s.tint, selected: isSelected(.source(s.id)),
+                  hovered: hover == .source(s.id))
+        let disc = NSRect(x: r.minX + 6, y: r.midY - 10, width: 20, height: 20)
+        s.tint.withAlphaComponent(live ? 1 : 0.85).setFill()
+        NSBezierPath(roundedRect: disc, xRadius: 6, yRadius: 6).fill()
+        drawSymbol(s.icon, center: NSPoint(x: disc.midX, y: disc.midY), size: 10, weight: .semibold, color: .white)
+        drawString(s.title, in: NSRect(x: r.minX + 32, y: r.midY - 8, width: r.width - 40, height: 16),
+                   size: 11, weight: .semibold, color: TH.text)
+        port(NSPoint(x: r.maxX, y: r.midY), s.tint, on: live)
+    }
+
+    private func drawAgent(_ a: BudAgent, _ r: NSRect, _ st: AgentState) {
+        let sel = isSelected(.agent(a.id))
+        nodeShell(r, radius: 14, tint: a.tint, selected: sel, hovered: hover == .agent(a.id))
+
+        // La bande de couleur à gauche, comme l'en-tête d'un nœud n8n.
+        NSGraphicsContext.current?.saveGraphicsState()
+        NSBezierPath(roundedRect: r, xRadius: 14, yRadius: 14).addClip()
+        a.tint.setFill()
+        NSRect(x: r.minX, y: r.minY, width: 4, height: r.height).fill()
+        NSGraphicsContext.current?.restoreGraphicsState()
+
+        let tile = NSRect(x: r.minX + 14, y: r.maxY - 40, width: 28, height: 28)
+        NSGradient(colors: [a.tint, a.tint.blended(withFraction: 0.35, of: .black) ?? a.tint])?
+            .draw(in: NSBezierPath(roundedRect: tile, xRadius: 8, yRadius: 8), angle: -90)
+        drawSymbol(a.icon, center: NSPoint(x: tile.midX, y: tile.midY), size: 13, weight: .semibold, color: .white)
+
+        // Le badge d'état, en haut à droite.
+        var label = st.status.label
+        if st.status == .needsApproval, let n = st.result?.approval?.items.count { label += " · \(n)" }
+        if st.simulated && st.status != .idle { label += " · démo" }
+        let bw = textWidth(label, size: 9.5, weight: .bold) + 24
+        let badge = NSRect(x: r.maxX - bw - 8, y: r.maxY - 22, width: bw, height: 16)
+        st.status.color.withAlphaComponent(0.18).setFill()
+        capsule(badge).fill()
+        if st.status == .running {
+            let c = NSPoint(x: badge.minX + 9, y: badge.midY)
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: c, radius: 4, startAngle: t * 400, endAngle: t * 400 + 250)
+            arc.lineWidth = 1.6
+            st.status.color.setStroke()
+            arc.stroke()
+        } else {
+            drawSymbol(st.status.icon, center: NSPoint(x: badge.minX + 9, y: badge.midY),
+                       size: 7.5, weight: .bold, color: st.status.color)
+        }
+        drawString(label, in: NSRect(x: badge.minX + 16, y: badge.minY + 1.5, width: bw - 18, height: 13),
+                   size: 9.5, weight: .bold, color: st.status.color)
+
+        drawString(a.name, in: NSRect(x: tile.maxX + 9, y: r.maxY - 30, width: badge.minX - tile.maxX - 14, height: 17),
+                   size: 12.5, weight: .bold, color: TH.text)
+        let line = st.line.isEmpty ? a.summary : st.line
+        drawString(line, in: NSRect(x: r.minX + 14, y: r.minY + 8, width: r.width - 26, height: 14),
+                   size: 10.5, weight: .medium, color: TH.dim(0.6))
+
+        // Pendant le travail, un trait qui parcourt le bas du nœud : la
+        // durée est inconnue, on montre seulement que ça avance.
+        if st.status == .running {
+            NSGraphicsContext.current?.saveGraphicsState()
+            NSBezierPath(roundedRect: r, xRadius: 14, yRadius: 14).addClip()
+            let w = r.width * 0.3
+            let x = r.minX - w + (t * 0.6).truncatingRemainder(dividingBy: 1) * (r.width + w)
+            NSGradient(colors: [a.tint.withAlphaComponent(0), a.tint, a.tint.withAlphaComponent(0)])?
+                .draw(in: NSRect(x: x, y: r.minY, width: w, height: 2.5), angle: 0)
+            NSGraphicsContext.current?.restoreGraphicsState()
+        }
+
+        port(NSPoint(x: r.minX, y: r.midY), a.tint, on: st.status == .running)
+        port(NSPoint(x: r.maxX, y: r.midY), a.tint, on: st.status == .running)
+    }
+
+    private func drawBud(_ r: NSRect) {
+        let c = expression.color
+        nodeShell(r, radius: 18, tint: c, selected: isSelected(.bud), hovered: hover == .bud)
+        // Un halo de la couleur de l'expression, derrière le personnage.
+        let halo = NSRect(x: r.midX - 52, y: r.maxY - 116, width: 104, height: 104)
+        NSGradient(colors: [c.withAlphaComponent(0.28), c.withAlphaComponent(0)])?
+            .draw(in: halo, relativeCenterPosition: .zero)
+        let face = NSRect(x: r.midX - 46, y: r.maxY - 108, width: 92, height: 92)
+        sprite.render(in: face, detail: true, glowColor: c)
+
+        drawString("BUDs", in: NSRect(x: r.minX, y: r.minY + 28, width: r.width, height: 17),
+                   size: 13, weight: .bold, color: TH.text, align: .center)
+        let lw = textWidth(expression.label, size: 10, weight: .bold) + 18
+        let pill = NSRect(x: r.midX - lw / 2, y: r.minY + 10, width: lw, height: 16)
+        c.withAlphaComponent(0.2).setFill()
+        capsule(pill).fill()
+        drawString(expression.label, in: NSRect(x: pill.minX, y: pill.minY + 1.5, width: lw, height: 13),
+                   size: 10, weight: .bold, color: c, align: .center)
+        port(NSPoint(x: r.minX, y: r.midY), c, on: expression == .working)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Les cartes, à la manière des widgets iOS
+// ═══════════════════════════════════════════════════════════
+
+final class BudCardView: NSView {
+    let card: BudCard
+    private var hovering = false
+    private var busy = false
+    private var spin: CGFloat = 0
+    private var note: (Bool, String)?
+    private var timer: Timer?
+    private var sky: WeatherSceneView?
+
+    init(frame: NSRect, card: BudCard) {
+        self.card = card
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 16
+        layer?.masksToBounds = true
+        if card.style == .weather {
+            // Le vrai ciel animé, en petit : le même que le panneau Météo.
+            let s = WeatherSceneView(frame: bounds)
+            s.condition = WeatherCondition(code: card.weatherCode, isDay: card.isDay)
+            s.autoresizingMask = [.width, .height]
+            addSubview(s)
+            let o = WeatherCardText(frame: bounds, card: card)
+            o.autoresizingMask = [.width, .height]
+            addSubview(o)
+            sky = s
+        }
+        toolTip = card.detail
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        guard card.style == .control else { return }
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+    override func mouseEntered(with e: NSEvent) { hovering = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hovering = false; needsDisplay = true }
+
+    override func mouseUp(with e: NSEvent) {
+        guard card.style == .control, !busy, let act = card.action,
+              bounds.contains(convert(e.locationInWindow, from: nil)) else { return }
+        busy = true
+        note = nil
+        let tm = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.spin += 0.25; self?.needsDisplay = true
+        }
+        RunLoop.main.add(tm, forMode: .common)
+        timer = tm
+        BudAgentManager.shared.onExpression?(.working, 30)
+        act { [weak self] ok, msg in
+            DispatchQueue.main.async {
+                guard let s = self else { return }
+                s.busy = false
+                s.timer?.invalidate(); s.timer = nil
+                s.note = (ok, msg)
+                s.needsDisplay = true
+                BudAgentManager.shared.onExpression?(ok ? .happy : .sad, 2.5)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [weak s] in
+                    s?.note = nil; s?.needsDisplay = true
+                }
+            }
+        }
+    }
+
+    override func draw(_ dirty: NSRect) {
+        guard card.style != .weather else { return }
+        let b = bounds
+        let p = NSBezierPath(roundedRect: b, xRadius: 16, yRadius: 16)
+        let on = busy || note?.0 == true
+        if card.style == .control && on && TH.dark {
+            // Comme un accessoire allumé dans Maison : la carte s'éclaire.
+            NSColor(calibratedWhite: 0.95, alpha: 0.95).setFill()
+        } else {
+            TH.fill(hovering ? 0.12 : 0.07).setFill()
+        }
+        p.fill()
+        TH.fill(0.10).setStroke()
+        p.lineWidth = 0.8
+        p.stroke()
+
+        let ink: NSColor = (card.style == .control && on && TH.dark) ? NSColor(calibratedWhite: 0.1, alpha: 1) : TH.text
+        let disc = NSRect(x: 12, y: b.maxY - 34, width: 22, height: 22)
+        card.tint.setFill()
+        NSBezierPath(ovalIn: disc).fill()
+        let dc = NSPoint(x: disc.midX, y: disc.midY)
+        if busy {
+            let a = NSBezierPath()
+            a.appendArc(withCenter: dc, radius: 6, startAngle: spin * 57.3, endAngle: spin * 57.3 + 260)
+            a.lineWidth = 1.8
+            NSColor.white.setStroke()
+            a.stroke()
+        } else if let n = note {
+            drawSymbol(n.0 ? "checkmark" : "exclamationmark", center: dc, size: 10, weight: .bold, color: .white)
+        } else {
+            drawSymbol(card.icon, center: dc, size: 10.5, weight: .semibold, color: .white)
+        }
+        drawString(card.title, in: NSRect(x: 40, y: b.maxY - 29, width: b.width - 48, height: 13),
+                   size: 9, weight: .bold, color: ink.withAlphaComponent(0.55))
+
+        let big: CGFloat = card.style == .control ? 14 : 20
+        drawString(card.value, in: NSRect(x: 12, y: b.minY + 28, width: b.width - 22, height: big + 6),
+                   size: big, weight: .bold, color: ink)
+        let detail = note?.1 ?? card.detail
+        drawString(detail, in: NSRect(x: 12, y: b.minY + 10, width: b.width - 22, height: 14),
+                   size: 10, weight: .medium,
+                   color: note?.0 == false ? dangerColor : ink.withAlphaComponent(0.6))
+    }
+}
+
+/// Le texte de la carte météo, posé sur son ciel animé.
+private final class WeatherCardText: NSView {
+    let card: BudCard
+    init(frame: NSRect, card: BudCard) { self.card = card; super.init(frame: frame) }
+    required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ p: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirty: NSRect) {
+        let b = bounds
+        NSGraphicsContext.current?.saveGraphicsState()
+        let sh = NSShadow()
+        sh.shadowColor = NSColor.black.withAlphaComponent(0.3)
+        sh.shadowBlurRadius = 4
+        sh.set()
+        drawString(card.title, in: NSRect(x: 12, y: b.maxY - 24, width: b.width - 40, height: 13),
+                   size: 9.5, weight: .bold, color: NSColor.white.withAlphaComponent(0.9))
+        drawString(card.value, in: NSRect(x: 12, y: b.minY + 26, width: b.width - 20, height: 34),
+                   size: 28, weight: .light, color: .white)
+        drawString(card.detail, in: NSRect(x: 12, y: b.minY + 9, width: b.width - 20, height: 14),
+                   size: 10, weight: .semibold, color: NSColor.white.withAlphaComponent(0.85))
+        NSGraphicsContext.current?.restoreGraphicsState()
+        drawWeatherSymbol(card.icon, center: NSPoint(x: b.maxX - 22, y: b.maxY - 20), size: 15)
+    }
+}
+
+/// La tuile d'icône d'un agent ou d'une source, dans l'inspecteur.
+private final class FlowIconView: NSView {
+    let icon: String, tint: NSColor
+    init(frame: NSRect, icon: String, tint: NSColor) {
+        self.icon = icon; self.tint = tint
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirty: NSRect) {
+        let r = bounds.insetBy(dx: 1, dy: 1)
+        NSGradient(colors: [tint, tint.blended(withFraction: 0.35, of: .black) ?? tint])?
+            .draw(in: NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10), angle: -90)
+        drawSymbol(icon, center: NSPoint(x: r.midX, y: r.midY), size: 16, weight: .semibold, color: .white)
+    }
+}
+
+/// Le badge d'état, réutilisé hors du graphe.
+private final class StatusPillView: NSView {
+    var status: NodeStatus = .idle { didSet { needsDisplay = true } }
+    var extra = ""
+    override func draw(_ dirty: NSRect) {
+        let label = status.label + extra
+        let w = min(bounds.width, textWidth(label, size: 10, weight: .bold) + 26)
+        let r = NSRect(x: 0, y: bounds.midY - 9, width: w, height: 18)
+        status.color.withAlphaComponent(0.18).setFill()
+        capsule(r).fill()
+        drawSymbol(status.icon, center: NSPoint(x: r.minX + 10, y: r.midY), size: 8, weight: .bold, color: status.color)
+        drawString(label, in: NSRect(x: r.minX + 18, y: r.minY + 2, width: w - 20, height: 14),
+                   size: 10, weight: .bold, color: status.color)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  La fiche d'approbation
+//
+//  Elle couvre le panneau : tant qu'elle est ouverte, rien
+//  d'autre ne se clique. Chaque élément a sa case, son
+//  icône, sa raison et sa taille ; le total suit les coches ;
+//  le bouton d'action dit ce qu'il va faire et sur combien
+//  d'éléments, et il est éteint quand rien n'est coché.
+// ═══════════════════════════════════════════════════════════
+
+final class ApprovalSheetView: NSView {
+    private var items: [ApprovalItem]
+    private let request: ApprovalRequest
+    private let agentID: String
+    private var total: NSTextField!
+    private var confirm: GlassButton!
+    private var boxes: [NSButton] = []
+    var onClose: (() -> Void)?
+
+    init(frame: NSRect, agentID: String, request: ApprovalRequest) {
+        self.items = request.items
+        self.request = request
+        self.agentID = agentID
+        super.init(frame: frame)
+        wantsLayer = true
+        build()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    // Le voile avale les clics : rien ne passe à travers la fiche.
+    override func mouseDown(with e: NSEvent) {}
+    override func scrollWheel(with e: NSEvent) {}
+
+    override func draw(_ dirty: NSRect) {
+        NSColor.black.withAlphaComponent(TH.dark ? 0.55 : 0.30).setFill()
+        bounds.fill()
+    }
+
+    private func build() {
+        let W: CGFloat = min(500, bounds.width - 40), H: CGFloat = min(430, bounds.height - 40)
+        let sheet = NSView(frame: NSRect(x: (bounds.width - W) / 2, y: (bounds.height - H) / 2, width: W, height: H))
+        sheet.wantsLayer = true
+        sheet.layer?.cornerRadius = 20
+        sheet.layer?.backgroundColor = (TH.dark ? NSColor(calibratedWhite: 0.10, alpha: 0.98)
+                                                : NSColor(calibratedWhite: 0.98, alpha: 0.98)).cgColor
+        sheet.layer?.borderWidth = 0.8
+        sheet.layer?.borderColor = TH.fill(0.18).cgColor
+        sheet.shadow = NSShadow()
+        sheet.layer?.shadowOpacity = 0.4
+        sheet.layer?.shadowRadius = 24
+        addSubview(sheet)
+
+        let purple = NodeStatus.needsApproval.color
+        sheet.addSubview(FlowIconView(frame: NSRect(x: 20, y: H - 56, width: 36, height: 36),
+                                      icon: "hand.raised.fill", tint: purple))
+        sheet.addSubview(mkLabel(request.title, NSRect(x: 66, y: H - 40, width: W - 86, height: 22), 16, .bold))
+        let msg = mkLabel(request.message, NSRect(x: 66, y: H - 84, width: W - 86, height: 44), 11.5, .medium, alpha: 0.65)
+        msg.cell?.usesSingleLineMode = false
+        msg.cell?.wraps = true
+        msg.lineBreakMode = .byWordWrapping
+        msg.maximumNumberOfLines = 3
+        sheet.addSubview(msg)
+
+        let all = GlassButton(frame: NSRect(x: 20, y: H - 120, width: 110, height: 26),
+                              title: "Tout cocher", icon: "checkmark.circle", compact: true)
+        all.onClick = { [weak self] _ in self?.setAll(true) }
+        sheet.addSubview(all)
+        let none = GlassButton(frame: NSRect(x: 138, y: H - 120, width: 120, height: 26),
+                               title: "Tout décocher", icon: "circle", compact: true)
+        none.onClick = { [weak self] _ in self?.setAll(false) }
+        sheet.addSubview(none)
+
+        // La liste.
+        let listH = H - 128 - 70
+        let scroll = NSScrollView(frame: NSRect(x: 12, y: 66, width: W - 24, height: listH))
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        let rowH: CGFloat = 46
+        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: W - 38, height: max(listH, CGFloat(items.count) * rowH)))
+        for (i, it) in items.enumerated() {
+            let y = CGFloat(i) * rowH
+            if i > 0 {
+                let sep = NSView(frame: NSRect(x: 44, y: y, width: doc.frame.width - 52, height: 0.5))
+                sep.wantsLayer = true
+                sep.layer?.backgroundColor = TH.fill(0.10).cgColor
+                doc.addSubview(sep)
+            }
+            let box = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggled(_:)))
+            box.frame = NSRect(x: 10, y: y + 13, width: 22, height: 20)
+            box.state = it.selected ? .on : .off
+            box.tag = i
+            box.setAccessibilityLabel(it.label)
+            doc.addSubview(box)
+            boxes.append(box)
+            let iv = NSImageView(frame: NSRect(x: 36, y: y + 13, width: 20, height: 20))
+            iv.image = NSImage(systemSymbolName: it.icon, accessibilityDescription: nil)
+            iv.contentTintColor = it.icon.contains("shield") ? dangerColor : TH.dim(0.7)
+            doc.addSubview(iv)
+            let sizeText = it.bytes > 0 ? formatBytes(it.bytes) : ""
+            doc.addSubview(mkLabel(it.label, NSRect(x: 64, y: y + 6, width: doc.frame.width - 160, height: 17), 12.5, .semibold))
+            doc.addSubview(mkLabel(it.detail, NSRect(x: 64, y: y + 24, width: doc.frame.width - 160, height: 15), 10.5, .medium, alpha: 0.55))
+            doc.addSubview(mkLabel(sizeText, NSRect(x: doc.frame.width - 92, y: y + 14, width: 84, height: 16),
+                                   11.5, .semibold, alpha: 0.75, .right, mono: true))
+        }
+        scroll.documentView = doc
+        sheet.addSubview(scroll)
+
+        total = mkLabel("", NSRect(x: 22, y: 24, width: W - 300, height: 18), 12, .semibold, alpha: 0.75)
+        sheet.addSubview(total)
+        let cancel = GlassButton(frame: NSRect(x: W - 276, y: 18, width: 96, height: 30), title: "Annuler")
+        cancel.onClick = { [weak self] _ in
+            guard let s = self else { return }
+            BudAgentManager.shared.decline(s.agentID)
+            s.close()
+        }
+        sheet.addSubview(cancel)
+        confirm = GlassButton(frame: NSRect(x: W - 172, y: 18, width: 152, height: 30),
+                              title: request.confirmLabel, icon: request.destructive ? "trash.fill" : "checkmark",
+                              prominent: true)
+        confirm.destructive = request.destructive
+        confirm.onClick = { [weak self] _ in
+            guard let s = self else { return }
+            BudAgentManager.shared.approve(s.agentID, items: s.items)
+            s.close()
+        }
+        sheet.addSubview(confirm)
+        refreshTotal()
+        ThemeRegistry.shared.prune()
+    }
+
+    @objc private func toggled(_ b: NSButton) {
+        guard b.tag >= 0, b.tag < items.count else { return }
+        items[b.tag].selected = b.state == .on
+        refreshTotal()
+    }
+
+    private func setAll(_ on: Bool) {
+        for i in items.indices { items[i].selected = on }
+        for b in boxes { b.state = on ? .on : .off }
+        refreshTotal()
+    }
+
+    private func refreshTotal() {
+        let chosen = items.filter { $0.selected }
+        let bytes = chosen.reduce(Int64(0)) { $0 + $1.bytes }
+        total.stringValue = chosen.isEmpty
+            ? "Rien de coché."
+            : "\(chosen.count) élément\(chosen.count > 1 ? "s" : "") · \(formatBytes(bytes))"
+        confirm.enabledFlag = !chosen.isEmpty
+    }
+
+    private func close() {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.18
+            self.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.removeFromSuperview()
+            self?.onClose?()
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le panneau
+// ═══════════════════════════════════════════════════════════
+
+final class FlowPanelView: NSView {
+    private let canvasScroll: NSScrollView
+    let canvas: FlowCanvasView
+    private let inspector = NSView()
+    private var selection: FlowCanvasView.Selection = .bud
+    private var linkField: NSTextField?
+    private var sheet: ApprovalSheetView?
+
+    override init(frame: NSRect) {
+        let W = frame.width, H = frame.height
+        let canvasH: CGFloat = 262
+        canvasScroll = NSScrollView(frame: NSRect(x: 0, y: H - 46 - canvasH, width: W, height: canvasH))
+        canvas = FlowCanvasView(frame: NSRect(x: 0, y: 0, width: W, height: canvasH))
+        super.init(frame: frame)
+
+        addSubview(mkLabel("Flux", NSRect(x: 0, y: H - 34, width: 120, height: 28), 22, .bold))
+        addSubview(mkLabel("Sources  →  Agents  →  BUDs", NSRect(x: 70, y: H - 30, width: 220, height: 18),
+                           12, .medium, alpha: 0.5))
+
+        let faces = GlassButton(frame: NSRect(x: W - 300, y: H - 36, width: 90, height: 28),
+                                title: "Visages", icon: "face.smiling", compact: true)
+        faces.onClick = { [weak self] _ in self?.expressionTour() }
+        addSubview(faces)
+        let demo = GlassButton(frame: NSRect(x: W - 204, y: H - 36, width: 84, height: 28),
+                               title: "Démo", icon: "play.circle", compact: true)
+        demo.onClick = { _ in BudAgentManager.shared.demo() }
+        addSubview(demo)
+        let all = GlassButton(frame: NSRect(x: W - 114, y: H - 36, width: 114, height: 28),
+                              title: "Tout lancer", icon: "play.fill", prominent: true, compact: true)
+        all.onClick = { _ in
+            for a in BudAgentManager.shared.agents { BudAgentManager.shared.run(a.id) }
+        }
+        addSubview(all)
+
+        // Le plan de travail, dans son cadre de verre.
+        _ = mkCard(self, canvasScroll.frame, radius: Radius.l, alpha: 0.04)
+        canvasScroll.drawsBackground = false
+        canvasScroll.hasVerticalScroller = true
+        canvasScroll.autohidesScrollers = true
+        canvasScroll.documentView = canvas
+        addSubview(canvasScroll)
+
+        inspector.frame = NSRect(x: 0, y: 0, width: W, height: canvasScroll.frame.minY - 10)
+        _ = mkCard(self, inspector.frame, radius: Radius.l, alpha: 0.06)
+        addSubview(inspector)
+
+        canvas.onSelect = { [weak self] s in
+            self?.selection = s
+            self?.rebuildInspector()
+            if case .agent(let id) = s { BudAgentManager.shared.preview(id) }
+        }
+        canvas.onRun = { id in BudAgentManager.shared.run(id) }
+        canvas.selection = .bud
+
+        BudAgentManager.shared.observe { [weak self] id in
+            guard let s = self else { return }
+            s.resizeCanvas()
+            s.canvas.needsDisplay = true
+            if s.selection == .agent(id) { s.rebuildInspector() }
+        }
+        resizeCanvas()
+        rebuildInspector()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func refresh() {
+        resizeCanvas()
+        canvas.updateClock()
+        rebuildInspector()
+    }
+
+    /// Appelée par l'application à chaque changement d'expression, pour
+    /// que le BUDs du graphe suive celui du bureau.
+    func show(_ e: BudExpression, hold: TimeInterval) {
+        canvas.expression = e
+        canvas.sprite.flash(e.mood, for: hold)
+        // Revenir à « attentif » quand l'expression s'éteint.
+        DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
+            guard let s = self, s.canvas.expression == e, e != .working || !BudAgentManager.shared.anyRunning
+            else { return }
+            s.canvas.expression = .neutral
+        }
+        if selection == .bud { rebuildInspector() }
+    }
+
+    private func resizeCanvas() {
+        let h = max(canvasScroll.contentSize.height, canvas.neededHeight())
+        if abs(canvas.frame.height - h) > 0.5 {
+            canvas.frame = NSRect(x: 0, y: 0, width: canvasScroll.contentSize.width, height: h)
+        }
+    }
+
+    /// Les huit expressions à la suite, une seconde et demie chacune.
+    private func expressionTour() {
+        for (i, e) in BudFlowSamples.expressionTour.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.5) {
+                BudAgentManager.shared.onExpression?(e, 1.6)
+                BudAgentManager.shared.onStatus?("Expression : \(e.label)")
+            }
+        }
+    }
+
+    // ═════════════ L'inspecteur ═════════════
+
+    private func rebuildInspector() {
+        inspector.subviews.forEach { $0.removeFromSuperview() }
+        linkField = nil
+        switch selection {
+        case .agent(let id):
+            if let a = BudAgentManager.shared.agent(id) { inspectAgent(a) }
+        case .source(let id):
+            if let s = BudAgentManager.shared.sources.first(where: { $0.id == id }) { inspectSource(s) }
+        case .bud:
+            inspectBud()
+        }
+        ThemeRegistry.shared.prune()
+    }
+
+    private func header(icon: String, tint: NSColor, title: String, subtitle: String, rightInset: CGFloat) {
+        let W = inspector.bounds.width, H = inspector.bounds.height
+        inspector.addSubview(FlowIconView(frame: NSRect(x: 16, y: H - 54, width: 38, height: 38), icon: icon, tint: tint))
+        inspector.addSubview(mkLabel(title, NSRect(x: 64, y: H - 35, width: W - 64 - rightInset, height: 20), 15, .bold))
+        inspector.addSubview(mkLabel(subtitle, NSRect(x: 64, y: H - 54, width: W - 64 - rightInset, height: 16),
+                                     11, .medium, alpha: 0.6))
+    }
+
+    private func inspectAgent(_ a: BudAgent) {
+        let m = BudAgentManager.shared
+        let st = m.state(a.id)
+        let W = inspector.bounds.width, H = inspector.bounds.height
+        header(icon: a.icon, tint: a.tint, title: a.name, subtitle: a.summary, rightInset: 216)
+
+        let running = st.status == .running
+        let sim = GlassButton(frame: NSRect(x: W - 206, y: H - 50, width: 92, height: 28),
+                              title: "Simuler", icon: "wand.and.stars", compact: true)
+        sim.enabledFlag = !running
+        sim.onClick = { _ in m.run(a.id, simulated: true) }
+        inspector.addSubview(sim)
+        let go = GlassButton(frame: NSRect(x: W - 108, y: H - 50, width: 94, height: 28),
+                             title: running ? "Arrêter" : "Exécuter",
+                             icon: running ? "stop.fill" : "play.fill", prominent: !running, compact: true)
+        go.onClick = { _ in
+            if running { m.cancel(a.id) } else { m.run(a.id) }
+        }
+        inspector.addSubview(go)
+
+        // L'état, et quand.
+        let pill = StatusPillView(frame: NSRect(x: 16, y: H - 86, width: 130, height: 22))
+        pill.status = st.status
+        if st.simulated && st.status != .idle { pill.extra = " · démo" }
+        inspector.addSubview(pill)
+        var line = st.line.isEmpty ? "Jamais exécuté. Double-cliquez sur le nœud, ou « Exécuter »." : st.line
+        if let d = st.lastRun {
+            let f = RelativeDateTimeFormatter()
+            f.locale = Locale(identifier: "fr_FR")
+            line += "  ·  " + f.localizedString(for: d, relativeTo: Date())
+        }
+        let lw = textWidth(st.status.label + (pill.extra), size: 10, weight: .bold) + 34
+        inspector.addSubview(mkLabel(line, NSRect(x: 16 + lw, y: H - 85, width: W - 32 - lw, height: 17), 11.5, .medium, alpha: 0.75))
+
+        // La rangée d'action propre à l'agent.
+        let rowY = H - 122
+        if let req = st.result?.approval, st.status == .needsApproval {
+            let n = req.items.count
+            let review = GlassButton(frame: NSRect(x: 16, y: rowY, width: 270, height: 28),
+                                     title: "Examiner et approuver · \(n) élément\(n > 1 ? "s" : "")",
+                                     icon: "hand.raised.fill", prominent: true, compact: true)
+            review.accentTint = NodeStatus.needsApproval.color
+            review.onClick = { [weak self] _ in self?.openApproval(a.id, req) }
+            inspector.addSubview(review)
+            let skip = GlassButton(frame: NSRect(x: 294, y: rowY, width: 96, height: 28),
+                                   title: "Ignorer", icon: "xmark", compact: true)
+            skip.onClick = { _ in m.decline(a.id) }
+            inspector.addSubview(skip)
+        } else if let sec = a as? SecurityAgent {
+            let f = NSTextField(frame: NSRect(x: 16, y: rowY + 2, width: W - 290, height: 24))
+            f.placeholderString = "Coller un lien ou un domaine à vérifier…"
+            f.bezelStyle = .roundedBezel
+            f.font = NSFont.systemFont(ofSize: 12)
+            f.target = self
+            f.action = #selector(analyzeLink)
+            inspector.addSubview(f)
+            linkField = f
+            let check = GlassButton(frame: NSRect(x: W - 266, y: rowY, width: 110, height: 28),
+                                    title: "Analyser", icon: "magnifyingglass", compact: true)
+            check.onClick = { [weak self] _ in self?.analyzeLink() }
+            inspector.addSubview(check)
+            let key = GlassButton(frame: NSRect(x: W - 148, y: rowY, width: 134, height: 28),
+                                  title: SafeBrowsing.key == nil ? "Safe Browsing…" : "Safe Browsing ✓",
+                                  icon: "key.fill", compact: true)
+            key.onClick = { [weak self] _ in self?.askSafeBrowsingKey() }
+            inspector.addSubview(key)
+            _ = sec
+        } else {
+            let srcs = a.sources.map { $0.title }.joined(separator: " · ")
+            inspector.addSubview(mkLabel("Lit : " + srcs, NSRect(x: 16, y: rowY + 6, width: W - 32, height: 16),
+                                         11, .medium, alpha: 0.5))
+        }
+
+        addCards(st.result?.cards ?? [], placeholder: running ? "Au travail…" : "Les cartes du résultat s'afficheront ici.")
+    }
+
+    private func inspectSource(_ s: FlowSource) {
+        let W = inspector.bounds.width, H = inspector.bounds.height
+        let users = BudAgentManager.shared.agents.filter { a in a.sources.contains { $0.id == s.id } }
+        header(icon: s.icon, tint: s.tint, title: s.title,
+               subtitle: "Source · lue par " + users.map { $0.name }.joined(separator: ", "), rightInset: 20)
+        let note = mkLabel(s.note, NSRect(x: 16, y: H - 100, width: W - 32, height: 34), 12, .medium, alpha: 0.75)
+        note.cell?.usesSingleLineMode = false
+        note.cell?.wraps = true
+        note.maximumNumberOfLines = 2
+        inspector.addSubview(note)
+        var x: CGFloat = 16
+        for a in users {
+            let b = GlassButton(frame: NSRect(x: x, y: H - 140, width: 200, height: 28),
+                                title: "Ouvrir « \(a.name) »", icon: a.icon, compact: true)
+            b.frame.size.width = b.idealWidth()
+            b.onClick = { [weak self] _ in self?.select(.agent(a.id)) }
+            inspector.addSubview(b)
+            x += b.frame.width + 8
+        }
+    }
+
+    private func inspectBud() {
+        let W = inspector.bounds.width, H = inspector.bounds.height
+        let e = canvas.expression
+        header(icon: "face.smiling", tint: e.color, title: "BUDs · \(e.label)",
+               subtitle: "La sortie de tous les agents : l'expression dit le résultat, les cartes le détaillent.",
+               rightInset: 20)
+        inspector.addSubview(mkLabel("APERÇU DES EXPRESSIONS", NSRect(x: 16, y: H - 84, width: 300, height: 14),
+                                     10, .bold, alpha: 0.5))
+        var x: CGFloat = 16, y = H - 120
+        for ex in BudExpression.allCases {
+            let b = GlassButton(frame: NSRect(x: x, y: y, width: 100, height: 28), title: ex.label, compact: true)
+            b.frame.size.width = b.idealWidth()
+            if x + b.frame.width > W - 16 { x = 16; y -= 36; b.frame.origin = NSPoint(x: x, y: y) }
+            b.accentTint = ex.color
+            b.selected = ex == e
+            b.onClick = { _ in BudAgentManager.shared.onExpression?(ex, 3) }
+            inspector.addSubview(b)
+            x += b.frame.width + 8
+        }
+        // Le dernier mot de chaque agent, en cartes.
+        let cards = BudAgentManager.shared.agents.map { a -> BudCard in
+            let st = BudAgentManager.shared.state(a.id)
+            return BudCard(icon: a.icon, title: a.name.uppercased(), value: st.status.label,
+                           detail: st.line.isEmpty ? "Pas encore lancé" : st.line, tint: a.tint)
+        }
+        addCards(cards, placeholder: "")
+    }
+
+    private func addCards(_ cards: [BudCard], placeholder: String) {
+        let W = inspector.bounds.width
+        let cw: CGFloat = 150, ch: CGFloat = 96, gapX: CGFloat = 10
+        guard !cards.isEmpty else {
+            if !placeholder.isEmpty {
+                inspector.addSubview(mkLabel(placeholder, NSRect(x: 16, y: 52, width: W - 32, height: 18),
+                                             12, .medium, alpha: 0.4, .center))
+            }
+            return
+        }
+        let scroll = NSScrollView(frame: NSRect(x: 12, y: 10, width: W - 24, height: ch + 4))
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        let docW = max(W - 24, CGFloat(cards.count) * (cw + gapX) + 4)
+        let doc = NSView(frame: NSRect(x: 0, y: 0, width: docW, height: ch + 4))
+        for (i, c) in cards.enumerated() {
+            doc.addSubview(BudCardView(frame: NSRect(x: 4 + CGFloat(i) * (cw + gapX), y: 2, width: cw, height: ch), card: c))
+        }
+        scroll.documentView = doc
+        inspector.addSubview(scroll)
+    }
+
+    private func select(_ s: FlowCanvasView.Selection) {
+        selection = s
+        canvas.selection = s
+        rebuildInspector()
+    }
+
+    // ═════════════ Actions ═════════════
+
+    @objc private func analyzeLink() {
+        guard let f = linkField, let sec = BudAgentManager.shared.agent("security") as? SecurityAgent else { return }
+        let text = f.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        sec.input = text
+        BudAgentManager.shared.run(sec.id)
+    }
+
+    /// La clé Safe Browsing se tape ici et file au trousseau. Elle n'est
+    /// jamais affichée en clair, jamais écrite sur disque.
+    private func askSafeBrowsingKey() {
+        let alert = NSAlert()
+        alert.messageText = "Clé Google Safe Browsing (facultative)"
+        alert.informativeText = "Avec une clé, les adresses des liens — et seulement elles — sont aussi vérifiées auprès de Google. Sans clé, l'analyse reste entièrement locale. Laissez vide pour retirer la clé."
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.placeholderString = SafeBrowsing.key == nil ? "Clé d'API" : "•••••••• (enregistrée)"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Enregistrer")
+        alert.addButton(withTitle: "Annuler")
+        guard let w = window else { return }
+        alert.beginSheetModal(for: w) { [weak self] r in
+            guard r == .alertFirstButtonReturn else { return }
+            let k = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if k.isEmpty { BudKeychain.delete(SafeBrowsing.account) }
+            else { BudKeychain.set(k, account: SafeBrowsing.account) }
+            self?.rebuildInspector()
+        }
+    }
+
+    private func openApproval(_ id: String, _ req: ApprovalRequest) {
+        guard sheet == nil else { return }
+        let s = ApprovalSheetView(frame: bounds, agentID: id, request: req)
+        s.alphaValue = 0
+        s.onClose = { [weak self] in self?.sheet = nil; self?.rebuildInspector() }
+        addSubview(s)
+        sheet = s
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            s.animator().alphaValue = 1
+        }
+        BudAgentManager.shared.onExpression?(.reflection, 6)
+    }
+}
+EOF_BUDFLOWVIEW_SWIFT
 
 cat << 'EOF_BUDGMAIL_SWIFT' > "$SRC_DIR/BudGmail.swift"
 import Foundation
@@ -10401,6 +12654,8 @@ final class MailPanelView: NSView {
     private var checked: Set<String> = []
     private var selected: MailMessage?
     private var lastMessages: [MailMessage] = []
+    /// Les derniers messages lus, pour l'agent de cybersécurité.
+    var recentMessages: [MailMessage] { lastMessages }
     private var replyRef: String = ""
     private var listHost = NSView(frame: .zero)
     private let scroll = NSScrollView(frame: .zero)

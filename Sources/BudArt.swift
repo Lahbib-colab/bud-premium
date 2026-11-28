@@ -63,7 +63,7 @@ enum BudArt {
             // échec — reste prioritaire pendant qu'elle dure.
             return music ? .cool : .happy
         case .proud:               return .cool
-        case .listening, .alert:   return .neutral
+        case .listening, .alert, .working: return .neutral
         case .thinking, .confused: return .thinking
         case .sad, .sleepy:        return .sad
         case .angry:               return .angry

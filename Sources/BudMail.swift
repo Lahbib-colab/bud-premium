@@ -910,6 +910,8 @@ final class MailPanelView: NSView {
     private var checked: Set<String> = []
     private var selected: MailMessage?
     private var lastMessages: [MailMessage] = []
+    /// Les derniers messages lus, pour l'agent de cybersécurité.
+    var recentMessages: [MailMessage] { lastMessages }
     private var replyRef: String = ""
     private var listHost = NSView(frame: .zero)
     private let scroll = NSScrollView(frame: .zero)
