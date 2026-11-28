@@ -1,12 +1,30 @@
 # BUD Premium
 
-Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur Intel comme sur Apple Silicon. Un petit compagnon blanc vit dans le notch, suit votre souris du regard, et déplie à la demande un tableau de bord de seize panneaux.
+Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur Intel comme sur Apple Silicon. **BUDs**, un petit compagnon blanc aux sept visages, vit dans le notch et déplie à la demande un tableau de bord de dix-huit panneaux : chat avec outils intégrés, agents en nœuds, courrier, musique, météo, maison connectée, stockage, nettoyage…
 
-Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie, aucune donnée qui quitte votre Mac sauf celles que vous adressez explicitement à Google.
+Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie. Ne quittent votre Mac que ce que vous adressez à Google (votre courrier Gmail), les coordonnées de la ville choisie pour la météo, et — seulement si vous y mettez une clé — les adresses des liens à vérifier.
 
-**Version 23.3** · by Lahbib.AI
+**Version 25.5** · by Lahbib.AI
 
 [![build](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml/badge.svg)](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml)
+
+---
+
+## Nouveautés
+
+| Version | Ce qui change |
+|---|---|
+| **25.5** | L'onglet Outils disparaît : capture, veille, verrouillage et agents passent dans le **chat**, derrière une pilule *Outils*. Compte à rebours avant la mise en veille, confirmation avant de vider la corbeille, miniature de la capture dans le fil. |
+| **25.4** | Le **Flux** : les agents en nœuds à la manière de n8n — sources, agents, BUDs — avec liens animés, badges d'état, cartes façon widgets iOS et fiche d'approbation obligatoire. Trois agents : *Nettoyage & Rangement*, *Cybersécurité*, *Météo & Maison*. |
+| **25.3** | **Météo** animée façon Apple (Open-Meteo, sans clé) et **Maison** : vos commandes HomeKit lancées par Raccourcis. |
+| **25.2** | La pastille Musique de l'aperçu se déplie en **lecteur réduit**, sur place. |
+| **25.1** | Le compagnon devient **BUDs** : sept visages rendus, des postures par humeur, et les deux billes du tréma qui vivent chacune leur vie. |
+| **24.8 – 25.0** | Écran de démarrage animé avec carillon, logo en deux encres, BUD harmonisé entre panneau et notch. |
+| **24.5** | **« Hey Bud, réponds au mail de Free »** : réponse au courrier à la voix, dans votre style, validée avant tout envoi. |
+| **24.4** | Musique réparée : titre, artiste et pochette fiables, commandes instantanées. |
+| **24.2** | **Sous-agents** : vos scripts locaux, branchés sur BUD par un contrat JSON — voir [AGENTS.md](AGENTS.md). |
+
+Le détail de chaque version, avec le pourquoi des choix, est dans **[CHANGELOG.md](CHANGELOG.md)**.
 
 ---
 
@@ -71,7 +89,7 @@ quatre niveaux d'élévation, trois durées de mouvement, et une seule
 fonction qui dessine toute surface de verre.
 
 BUD est une application AppKit : il n'y a pas de CSS, et les jetons en
-tiennent le rôle. Les seize panneaux partagent six primitives — bouton,
+tiennent le rôle. Les dix-huit panneaux partagent six primitives — bouton,
 carte, barre segmentée, entête, tuile, interrupteur — et c'est par elles
 que la charte se propage à Compagnon, Chat, Agents et Courrier sans
 avoir à les reprendre un par un.
@@ -82,16 +100,19 @@ avoir à les reprendre un par un.
 
 ```
 bud-premium/
-├── Sources/                 les 19 fichiers Swift de l'application
+├── Sources/                 les 37 fichiers Swift de l'application
+├── Art/                     les rendus de BUDs, le mot du démarrage, le carillon
 ├── Tools/
 │   ├── MakeIcon.swift       générateur d'icône, compilé seul
 │   ├── bud-ask              passerelle agents en ligne de commande
-│   └── make-installer.sh    fabrique dist/ depuis Sources/ + build.sh
+│   ├── braces.py            contrôle d'équilibre des accolades
+│   └── make-installer.sh    fabrique dist/ depuis Sources/ + Art/ + build.sh
 ├── build.sh                 compilation et installation — source unique
 ├── Makefile                 raccourcis
 ├── version.json             canal de mise à jour interrogé par BUD
 ├── dist/                    installeur en un fichier, versionné
-└── .github/workflows/       compilation vérifiée sur macOS 14 et 15
+├── CHANGELOG.md · AGENTS.md · DESIGN.md
+└── .github/workflows/       compilation vérifiée, publication des releases
 ```
 
 `MakeIcon.swift` vit dans `Tools/` et non dans `Sources/` pour une raison précise : il contient du code au niveau racine, ce que Swift n'autorise que dans `main.swift` ou dans un fichier compilé seul. Le laisser dans `Sources/` casserait la compilation de l'application.
@@ -106,7 +127,7 @@ bud-premium/
 | Processeurs | Intel (x86_64) et Apple Silicon (arm64) |
 | Cible de déploiement | 12.0 — compatible vers l'avant |
 
-L'installeur compile sur votre machine, pour son architecture (`uname -m`), et appose une signature ad hoc. Il n'y a pas de binaire universel à télécharger : le binaire produit est natif, jamais émulé.
+L'installeur `.command` compile sur votre machine, pour son architecture (`uname -m`), et appose une signature ad hoc : le binaire produit est natif, jamais émulé. Les `.dmg` et `.zip` des releases portent, eux, un binaire universel (Intel + Apple Silicon).
 
 **Ce qui change sur Sequoia et après**
 
@@ -132,7 +153,7 @@ BUD n'occupe qu'un seul objet à l'écran, qui grandit et rétrécit sur place.
 
 | État | Taille | Contenu |
 |---|---|---|
-| **Replié** | 214 × 36 | La brioche, l'heure, une pastille d'alerte |
+| **Replié** | 214 × 36 | BUDs, l'heure, une pastille d'alerte |
 | **Aperçu** | 470 × 160 | Salutation, date, disque libre, agents, focus, horloge |
 | **Approbation** | 600 × 210 | Carte de validation avec boutons cliquables |
 | **Ouvert** | 880 × 610 | Le tableau de bord complet |
@@ -141,7 +162,9 @@ Survolez le haut de l'écran pour l'aperçu, cliquez pour ouvrir. Il se replie �
 
 Devant une application en plein écran, BUD s'efface complètement — réglage désactivable.
 
-Les **quatre pastilles de l'aperçu** se choisissent parmi dix — espace libre, disques externes, agents, focus, heure, batterie, courrier non lu, prochain rappel, lecture en cours, mémoire libre. Chacune porte sa teinte et **se clique** pour ouvrir le panneau qui la concerne ; celle qu'on survole s'éclaire. Le réglage est dans la fenêtre *Raccourcis et aperçu*.
+Les **quatre pastilles de l'aperçu** se choisissent parmi onze — espace libre, disques externes, agents, focus, heure, batterie, courrier non lu, prochain rappel, lecture en cours, mémoire libre, météo. Chacune porte sa teinte et **se clique** pour ouvrir le panneau qui la concerne ; celle qu'on survole s'éclaire. La pastille Météo prend l'icône du ciel du moment. Le réglage est dans la fenêtre *Raccourcis et aperçu*.
+
+La pastille **Musique** ne quitte pas l'aperçu : elle se déplie sur place en **lecteur réduit** — pochette, titre, artiste, avancement, précédent, lecture, suivant. Le lecteur naît du rectangle de la pastille et s'y replie ; la pochette et le titre mènent au grand panneau.
 
 Dans la barre repliée, **l'heure se lit comme sur un iPhone** : en gras, collée à gauche, la date du jour à sa droite en plus discret. Les chiffres sont à largeur fixe, sinon l'heure tremblerait à chaque minute — un « 1 » est plus étroit qu'un « 8 ». Pendant la lecture d'un morceau, la pochette, l'égaliseur et le titre défilant prennent cette place.
 
@@ -149,19 +172,28 @@ Dans la barre repliée, **l'heure se lit comme sur un iPhone** : en gras, collé
 
 ## Le personnage
 
-Un squircle blanc aux coins très arrondis, deux joues rose pastel, deux yeux ronds et une bouche en « O » avec la langue rose. Dessiné entièrement en courbes de Bézier, net du 16 px au 1024 px.
+**BUDs** est un Ü blanc dont les deux points du tréma sont deux billes. Il a **sept visages rendus** — neutre, content, réfléchi, déçu, en colère, étourdi, cool — qui partagent exactement le même cadrage : le nouveau visage se pose sur l'ancien en un fondu de seize centièmes, la silhouette ne bouge pas, et un petit bond du corps fait passer le changement pour un geste.
 
-**Trois habillages**, au choix dans Compagnon → **Habillage** :
+**Le visage dit l'émotion, la posture dit le reste.** Quatorze humeurs se partagent les sept visages, chacune avec son corps : la colère se tasse et tremble, l'étourdi tangue sur deux sinus qui ne se recoupent jamais, le réfléchi penche d'un seul côté, la fierté se redresse, la tristesse s'affaisse. Chaque humeur est attachée à un fait — un message dangereux qui arrive, une commande comprise de travers, une tâche réussie — et s'éteint d'elle-même.
 
-- *À plat* — la coque blanche et son liseré interne.
-- *Nacré* — cadre champagne dégradé, coque nacrée en dégradé radial, reflet spéculaire et signature « BUD » gravée.
-- *Métal* — une tête de robot : coque ardoise, cadre argenté, écran facial sombre et yeux carrés lumineux avec halo. Un reflet balaie lentement la coque. Les yeux prennent votre couleur d'accent, sauf si elle est trop sombre pour l'écran noir — BUD retombe alors sur le cyan. En alerte ils virent au rose, avec sourcils froncés et symbole de colère pulsant.
+**Au travail**, quand un outil ou un agent s'exécute, le visage se concentre et **les deux billes jonglent** : quand l'une est en haut, l'autre touche le corps. Puis vient l'expression du résultat.
 
-**Animations permanentes** — flottement vertical sinusoïdal, respiration qui dilate le corps de 1,4 % en largeur et le comprime d'autant en hauteur, regard qui suit le curseur avec lissage exponentiel (et une curiosité lente au repos), clignements à intervalle aléatoire, ombre au sol qui se resserre quand le compagnon monte.
+| Expression des agents | Ce que montre BUDs |
+|---|---|
+| `neutral` | attentif, dressé |
+| `happy` | content |
+| `reflection` | réfléchi, tête penchée |
+| `annoyed` | en colère, tassé |
+| `dizzy` | étourdi, qui tangue |
+| `cool` | lunettes, fier |
+| `sad` | déçu, affaissé |
+| `working` | concentré, billes qui jonglent |
 
-**Au clic** — ressorts d'écrasement et de saut amortis en exponentielle, puis l'enchaînement clin d'œil → sourire.
+Pendant la lecture de musique, BUDs met ses lunettes et danse en mesure. En thème clair, une ombre douce le détache du panneau. Le même dessin vit dans le panneau, dans le notch replié et dans le nœud de sortie du Flux — un seul point d'entrée les dessine tous, pour qu'ils ne divergent jamais.
 
-**Six humeurs** — standard (la bouche en « O »), souriant (demi-lune ouverte), clin d'œil, en colère (paupières inclinées, sourcils froncés, symbole pulsant, tremblement), perdu (spirales contrarotatives et gouttes de sueur qui tombent en boucle), endormi après 23 h.
+**Le démarrage** : le mot BUD arrive lettre par lettre, avec un léger dépassement élastique, les billes tombent, un reflet traverse le mot, et un carillon de quatre notes — calculé, pas téléchargé — sonne s'il n'est pas coupé. Une seconde et demie, sans rien retenir : BUD finit de se construire derrière.
+
+Les habillages vectoriels d'origine — *À plat*, *Nacré*, *Métal* — restent disponibles dans Réglages → Habillage, et servent de secours si le paquet ne porte pas les rendus.
 
 ---
 
@@ -186,6 +218,8 @@ Un squircle blanc aux coins très arrondis, deux joues rose pastel, deux yeux ro
 « Ouvre les téléchargements »  ·  « L'heure »  ·  « Une blague »
 « Batterie »  ·  « Mon adresse IP »  ·  « Verrouille l'écran »
 « Passe en mode sombre »  ·  « Capture la fenêtre »
+« Mets le Mac en veille »  ·  « Analyse ce lien »
+« Quel temps fait-il ? »  ·  « Lumière salon »
 « Préviens-moi dans 15 minutes »
 « Cherche la recette du pain perdu »
 « 23 × 7 »  ·  « (120 + 80) / 4 »  ·  « 20 % de 480 »
@@ -193,9 +227,28 @@ Un squircle blanc aux coins très arrondis, deux joues rose pastel, deux yeux ro
 
 **BUD calcule**, et l'évaluateur est écrit à la main : descente récursive sur quatre niveaux de priorité, parenthèses, puissance associative à droite, modulo, virgule décimale. Il n'est **pas** confié à `NSExpression`, qui évalue bien plus qu'une opération — il sait instancier des classes et appeler des méthodes par leur nom. Lui passer une chaîne venue du champ de saisie serait lui donner les clés de l'application pour additionner deux nombres. Un chiffre **et** un opérateur sont exigés avant qu'une phrase soit traitée comme un calcul, sinon « mes 5 mails » reviendrait en résultat.
 
+**La pilule Outils** — au début de la rangée de suggestions, juste au-dessus du champ, une pilule en verre sombre ouvre le menu des outils vers le haut, par-dessus la conversation. Il remplace l'ancien onglet Outils :
+
+| Groupe | Outils |
+|---|---|
+| Capture | tout l'écran, une fenêtre, une zone, une zone vers le presse-papiers |
+| Système | veille du Mac, veille de l'écran, verrouillage, clair/sombre, vider la corbeille, réseau, batterie |
+| Agents | rangement & nettoyage, cybersécurité, météo & maison — ceux du Flux |
+| Plus | raccourcis clavier, Finder, Terminal |
+
+Un outil ne laisse **qu'une bulle** dans le fil : elle tourne pendant le travail, puis devient le résultat — coche ou point d'exclamation, texte, et selon l'outil une **miniature** (la capture) et un geste au clic (« Afficher dans le Finder », « Ouvrir les réglages », « Examiner dans le Flux »). BUDs passe au travail pendant l'exécution, puis content, attentif ou déçu.
+
+**Ce qui interrompt attend.** La mise en veille du Mac part après un compte à rebours de 5 s, le verrouillage après 3 s : une barre remplace les suggestions, avec un anneau qui se vide, *Annuler* et *Maintenant*. Vider la corbeille, irréversible, attend un clic. Demandés par écrit ou à la voix, ces outils passent par le même chemin que la pilule — même confirmation, même bulle.
+
+**La capture vérifie l'autorisation avant de capturer.** Sans « Enregistrement de l'écran », macOS rend une image vide au lieu de refuser : BUD vérifie, déclenche la demande du système la première fois, et sinon propose d'ouvrir le bon réglage. Le panneau se replie pendant la prise — sinon il figurerait sur la capture — puis revient sur le chat avec la miniature. La capture passe par `screencapture`, l'outil du système, qui gère déjà les écrans multiples et le Retina ; la miniature est réduite par ImageIO plutôt que chargée en entier.
+
+Pour ajouter un outil : un `BudTool` inscrit dans `BudToolCatalog.registerDefaults` (`Sources/BudTools.swift`). Le menu, la reconnaissance de la phrase, la bulle et les expressions suivent.
+
 **Dictée** — le micro à côté du champ transcrit votre parole, et le texte s'écrit au fil des mots pour que vous puissiez corriger au clavier plutôt que tout redire. Deux secondes de silence et BUD envoie.
 
 La reconnaissance se fait **sur votre Mac**. `requiresOnDeviceRecognition` est posé, mais la documentation d'Apple est explicite : le drapeau n'est honoré que si `supportsOnDeviceRecognition` est vrai. BUD le vérifie donc lui-même, et si ce Mac ne sait pas reconnaître le français hors ligne, **il refuse la dictée et dit pourquoi** au lieu d'envoyer votre voix aux serveurs d'Apple. Pour l'activer : Réglages Système → Clavier → Dictée, puis téléchargez le français.
+
+**« Hey Bud »** — une écoute permanente, à armer dans Réglages, reconnaît le mot d'activation puis la commande qui suit, avec le même moteur local que la dictée. L'interface le montre tant qu'elle est armée : le micro reste ouvert, et sur batterie cela se sent.
 
 **Agents** — vos agents IA demandent une validation et BUD la présente dans le notch. Protocole fichier, sans dépendance :
 
@@ -205,7 +258,25 @@ La reconnaissance se fait **sur votre Mac**. `requiresOnDeviceRecognition` est p
 # bloque jusqu'à réponse · 0 = validé, 1 = refusé, 2 = délai dépassé
 ```
 
-L'agent dépose `agents/<id>.json`, BUD écrit `<id>.reply`. Surveillance par `DispatchSource` sur le dossier, doublée d'un sondage de sécurité. À l'arrivée d'une demande, la brioche passe en alerte, le notch s'ouvre en carte **Autoriser / Refuser / Détails**.
+L'agent dépose `agents/<id>.json`, BUD écrit `<id>.reply`. Surveillance par `DispatchSource` sur le dossier, doublée d'un sondage de sécurité. À l'arrivée d'une demande, BUDs passe en alerte, le notch s'ouvre en carte **Autoriser / Refuser / Détails**.
+
+**Flux** — les agents de BUD en **nœuds connectés**, à la manière de n8n, sans serveur n8n. Trois colonnes sur une trame de points :
+
+```
+Sources  ──▶  Agents  ──▶  BUDs
+```
+
+Les liens sont des courbes qui s'animent dans la couleur de l'agent quand il travaille — des tirets qui avancent, une perle qui circule. Chaque nœud porte un badge : *Prêt*, *En cours*, *OK*, *Alerte*, *Échec*, *À valider*. Un clic sélectionne, un double clic exécute. Le nœud de sortie est un BUDs miniature, avec un halo de la couleur de son expression. Sous le graphe, l'inspecteur montre le nœud choisi et les **cartes** de son dernier résultat, compactes à la manière des widgets iOS — la carte météo y a son vrai ciel animé.
+
+| Agent | Ce qu'il fait |
+|---|---|
+| **Nettoyage & Rangement** | installeurs déjà utilisés, gros fichiers oubliés et fichiers suspects des téléchargements ; applications non ouvertes depuis 120 jours, avec leurs restes dans la bibliothèque. Jamais proposées : les apps d'Apple, les apps ouvertes, BUD lui-même. |
+| **Cybersécurité** | liens du presse-papiers, d'un champ de saisie et des derniers messages : IP nues, punycode, alphabets mêlés, raccourcisseurs, extensions à risque, « @ » trompeurs, sosies de marques (`paypa1`, `micros0ft`). Analyse locale ; en option, Google Safe Browsing avec votre propre clé, rangée dans le trousseau — seules les adresses des liens partent. |
+| **Météo & Maison** | le ciel du moment, et les commandes de chauffage, de lumières et de caméra trouvées dans votre dossier de raccourcis Maison. |
+
+**Rien ne se supprime sans fiche.** Ce qui toucherait au disque revient en fiche d'approbation : une case par élément, sa raison, sa taille, le total qui suit les coches. Seuls les installeurs anciens arrivent cochés ; tout part à la **corbeille**, jamais à la destruction.
+
+**Démo** lance les trois agents sur des données d'exemple (`Sources/BudFlowSamples.swift`) — la fiche se coche, la corbeille n'est pas touchée. **Visages** passe les huit expressions en revue. Un nouvel agent est une classe conforme à `BudAgent`, inscrite d'une ligne dans `BudAgentCatalog` : le graphe, les liens, les états et la fiche suivent seuls.
 
 ### Communication
 
@@ -242,6 +313,8 @@ Trois détails de lisibilité qui n'en sont pas :
 - **L'objet occupe toute la largeur.** La place réservée à la date et au verdict ne vaut que pour la première ligne ; l'objet en héritait et se trouvait tronqué pour rien.
 
 L'aperçu vient du corps déjà récupéré pour citer le message dans une réponse. Par la passerelle Mail.app, il est **coupé à 200 caractères du côté d'AppleScript** : un message de plusieurs mégaoctets n'a pas à traverser la sortie d'`osascript` pour qu'on n'en garde qu'une ligne.
+
+**Répondre à la voix** — « Hey Bud, réponds au mail de Free ». BUD retrouve le message par le nom de l'expéditeur, puis son domaine, puis l'objet, et propose trois réponses : accusé de réception, réponse sur le fond, demande de délai. Le corps est assemblé à partir de **vos propres phrases**, relevées dans vos messages envoyés et classées par fonction ; l'ouverture « Bonjour, Monsieur ou Madame, » et la clôture « Cordialement, merci. » sont imposées. Rien ne part seul : il faut **Valider** avant que **Envoyer** s'active, et les mêmes garde-fous qu'au clic s'appliquent.
 
 **Répondre** — sélectionnez un message, BUD préfixe l'objet par `Re:`, cite le corps d'origine et vise la bonne adresse. Le `Message-ID` est repris en `In-Reply-To` et `References`, sans quoi votre réponse arriverait comme un message isolé au lieu de se ranger dans le fil. Si le `Reply-To` diverge du `From`, BUD garde le `From` : c'est exactement la manœuvre qu'un hameçonneur utilise pour détourner la réponse. Répondre à un message classé dangereux demande une confirmation — répondre prouve à l'expéditeur que votre adresse est vivante.
 
@@ -293,6 +366,8 @@ L'illustration est exportée par son `raw data`, écrit dans un fichier de `Appl
 
 Le sondage ne coûte rien quand Musique est fermée : le test d'exécution passe par `NSWorkspace`, sans lancer de processus.
 
+Depuis 24.4, BUD écoute aussi la notification que Musique publie à chaque changement de morceau : le titre arrive au moment même, sans autorisation ni processus. AppleScript reste comme second témoin, toutes ses variables préfixées `bud` pour ne jamais buter sur un mot réservé. Ce que BUD ne sait pas — un volume illisible, une position inconnue — n'est plus affiché comme valant zéro : le contrôle se désactive.
+
 Spotify et Alexa ont été retirés en version 23. Alexa surtout : Amazon n'expose aucune interface locale sur macOS, et le piloter par les touches média d'un lecteur web était un bricolage qui réclamait l'autorisation Accessibilité pour un résultat imprévisible.
 
 ### Travail
@@ -313,25 +388,32 @@ La section **Stockage** colore l'alerte au lieu de l'écrire en gris : l'anneau,
 
 **Rangement** — glissez n'importe quel fichier sur le notch : il se classe en onze catégories dans `~/Documents/BUD Rangement`. Les dossiers sont parcourus en profondeur, les doublons renommés, et un bouton annule le dernier rangement.
 
+### Maison
+
+**Météo** — la disposition de l'application Météo d'Apple : la ville, la température en grand, le ciel en mots, maximum et minimum ; douze heures en bande avec ressenti, vent et humidité ; sept jours avec une barre qui situe chaque journée dans les températures de toute la semaine, du bleu froid à l'orange chaud. La probabilité de pluie s'affiche dès 20 %.
+
+Le fond est **un ciel qui bouge** : soleil qui respire, nuages sur trois plans à trois vitesses, pluie oblique plus ou moins dense, neige qui se balance, brouillard, orage qui illumine tout le ciel, lune et étoiles la nuit. La scène ne s'anime que si on la regarde.
+
+Les données viennent d'**Open-Meteo**, gratuit et sans clé pour un usage personnel, sous licence CC BY 4.0 — d'où la mention de la source en bas du panneau. WeatherKit, la météo d'Apple, exige un compte développeur payant. Seules partent les coordonnées de la ville choisie, arrondies au centième ; BUD ne demande pas la position du Mac. Relevé toutes les trente minutes au plus, le dernier gardé sur disque pour un affichage immédiat.
+
+**Maison** — vos objets HomeKit, en tuiles comme dans l'application Maison. HomeKit n'est pas ouvert aux applications AppKit : Apple le réserve sur Mac aux applications Catalyst munies d'un droit délivré à un compte payant. BUD passe donc par **Raccourcis**, qui sait « Contrôler la maison » :
+
+1. Dans Raccourcis, créez un dossier **BUD Maison**.
+2. Créez-y un raccourci par commande — « Lumière salon », « Bonne nuit », « Chauffage 20° »…
+3. Ajoutez-y l'action *Contrôler la maison* et choisissez la scène ou l'accessoire.
+4. Revenez dans BUD et cliquez sur **Recharger**.
+
+Chaque tuile prend une icône et une couleur d'après son nom — ampoule, lune, prise, thermomètre, serrure, volets… —, tourne pendant l'exécution, puis affiche une coche ou un point d'exclamation avec le message rendu par le raccourci. Au-delà de vingt secondes, il est arrêté. À la voix : « Hey Bud, lumière salon ». **BUD ne voit jamais vos appareils** : il ne peut lancer que ce que vous avez mis dans ce dossier.
+
 ### Système
 
-**Outils** — recherche web, veille écran, bascule clair/sombre du système, corbeille, IP locale et nom du Wi-Fi, lancement rapide de Finder, Safari, Mail et Terminal.
+**Réglages** — apparence (auto, clair, sombre), matière du panneau (opaque, verre dépoli, cristal), six couleurs d'accent dont le blanc, habillage du compagnon, écoute « Hey Bud », interrupteurs de comportement, et l'accès aux raccourcis clavier et aux pastilles de l'aperçu.
 
-S'y ajoutent le **verrouillage de l'écran** et l'accès aux **raccourcis clavier**. Le verrouillage passe par `CGSession -suspend` quand le système l'offre ; sinon BUD met l'écran en veille et le dit, parce qu'une mise en veille n'est un verrouillage que si votre réglage de mot de passe le veut — annoncer « verrouillé » dans ce cas serait un mensonge utile à personne.
-
-Les icônes sont **teintées par groupe** — indigo, ambre, orange, turquoise, bleu, violet — sans que les titres y perdent en lisibilité : colorer les deux rendrait le texte pâle.
-
-L'onglet est rangé en **groupes titrés** — Système, Applications, Capture d'écran — là où un seul des quatre portait un intertitre. Les rangées mesuraient 42, 44 et 48 pt selon l'endroit, et chaque ordonnée était calculée à la main, donc elles finissaient par se contredire ; elles descendent maintenant d'un pas constant. Les comptes rendus — apparence basculée, adresse IP, application ouverte, capture enregistrée — arrivent tous dans **une seule carte** au bas du panneau, au lieu de deux étiquettes concurrentes placées à deux endroits.
-
-**Capture d'écran** — tout l'écran, une fenêtre, ou une sélection au réticule, vers le **Bureau** ou le **presse-papiers**. BUD n'écrit pas son propre code de capture : il appelle `screencapture`, l'outil du système, qui sait déjà gérer les écrans multiples, les densités Retina et l'espace colorimétrique. Le notch se replie avant la prise, sinon il figurerait sur chaque capture plein écran. Un bouton **Révéler** ouvre la dernière image dans le Finder.
-
-Si l'image fait moins de 4 Ko, c'est que l'autorisation manque : BUD vous renvoie vers Réglages Système → Confidentialité et sécurité → **Enregistrement de l'écran**, au lieu de laisser un cadre noir sur votre Bureau.
-
-**Réglages** — apparence (auto, clair, sombre), matière du panneau (opaque, verre dépoli, cristal), six couleurs d'accent dont le blanc, treize interrupteurs de comportement, et l'accès aux raccourcis clavier et aux pastilles de l'aperçu.
+L'ancien onglet **Outils** n'existe plus : ses fonctions sont dans la pilule *Outils* du chat. Le verrouillage passe par `CGSession -suspend` quand le système l'offre ; sinon BUD met l'écran en veille et le dit, parce qu'une mise en veille n'est un verrouillage que si votre réglage de mot de passe le veut.
 
 Le texte posé sur la couleur d'accent choisit le noir ou le blanc d'après la **luminance réelle** de cette couleur. Les six accents d'usine sont clairs, mais « Blanc pur » devient graphite en thème clair, et le noir sur graphite ne se lit plus.
 
-L'habillage emprunte ses principes au verre d'iOS 26 sans prétendre l'imiter : il n'en existe aucune API en AppKit sur macOS 12, et BUD vise Monterey. Les boutons reçoivent un dégradé court plutôt qu'un aplat, un reflet spéculaire sur la moitié haute, et un liseré qui s'éteint vers le bas — c'est ce dernier qui donne l'épaisseur, un contour d'intensité constante se lisant comme un trait dessiné. AppKit ne sachant pas dégrader le long d'un tracé, il est peint en quatre bandes horizontales. Les deux primitives sont écrites une fois et partagées : vingt reflets réglés séparément finissent par diverger.
+L'habillage emprunte ses principes au verre d'iOS 26 sans prétendre l'imiter : il n'en existe aucune API en AppKit sur macOS 12, et BUD vise Monterey. Les boutons reçoivent un dégradé court plutôt qu'un aplat, un reflet spéculaire sur la moitié haute, et un liseré qui s'éteint vers le bas — c'est ce dernier qui donne l'épaisseur, un contour d'intensité constante se lisant comme un trait dessiné. Les deux primitives sont écrites une fois et partagées : vingt reflets réglés séparément finissent par diverger.
 
 ---
 
@@ -355,7 +437,7 @@ défaut) et `watch-local` (disque, corbeille, caches, sauvegarde).
 
 ## Raccourcis
 
-Ce sont les raccourcis d'usine. **Tous se changent** : onglet Outils → *Raccourcis clavier…*, puis cliquez celui à remplacer et tapez la combinaison. Échap annule.
+Ce sont les raccourcis d'usine. **Tous se changent** : Réglages → *Raccourcis clavier et pastilles de l'aperçu…* (ou pilule *Outils* du chat → *Raccourcis clavier…*), puis cliquez celui à remplacer et tapez la combinaison. Échap annule.
 
 | Touches | Action |
 |---|---|
@@ -389,11 +471,13 @@ Les choix vivent dans un dictionnaire indexé par action, et non dans un champ p
 ├── snippets.json           vos extraits
 ├── reminders.json          vos rappels
 ├── quicknotes.md           journal des captures
+├── weather.json            le dernier relevé météo
 ├── agents/                 demandes et réponses des agents
+├── scripts/                vos sous-agents
 └── bud-ask                 passerelle en ligne de commande
 ```
 
-Le trousseau macOS garde les jetons OAuth, l'identifiant client et les mots de passe d'application, sous le service `fr.lahbib.bud.gmail`. Rien de sensible n'est écrit sur disque.
+Le trousseau macOS garde les jetons OAuth, l'identifiant client, les mots de passe d'application et la clé Google Safe Browsing facultative, sous le service `fr.lahbib.bud.gmail`. Rien de sensible n'est écrit sur disque.
 
 Le schéma JSON est tolérant : chaque clé inconnue est ignorée, chaque clé absente prend sa valeur par défaut, et les clés devenues inutiles sont conservées. Une ancienne configuration survit à toutes les montées de version.
 
@@ -405,13 +489,12 @@ Le schéma JSON est tolérant : chaque clé inconnue est ignorée, chaque clé a
 |---|---|
 | Piloter Mail, Musique, apparence système | Confidentialité → Automatisation |
 | Collage automatique, dictée | Confidentialité → Accessibilité |
-| Capture d'écran | Confidentialité → Enregistrement de l'écran |
+| Capture d'écran | Confidentialité → Enregistrement de l'écran — BUD le vérifie avant et propose d'ouvrir le réglage |
+| Dictée et « Hey Bud » | Confidentialité → Microphone, et Reconnaissance vocale |
 | Ranger et nettoyer des fichiers | Confidentialité → Fichiers et dossiers |
+| Commandes Maison | Raccourcis peut demander votre accord à la première exécution d'un raccourci |
 
 Aucune n'est demandée au lancement : chacune arrive à la première utilisation réelle de la fonction concernée.
-
----
-
 
 ---
 
@@ -455,7 +538,7 @@ Un canal personnalisé à l'ancien format reste accepté, par le bouton **Canal*
 
 ```json
 {
-  "version": "23.2",
+  "version": "25.5",
   "notes": "Correctifs d'affichage",
   "url": "https://exemple.com/BUD-Premium.zip"
 }
@@ -474,5 +557,13 @@ L'analyse de courrier n'est pas un antivirus. BUD ne télécharge pas les pièce
 L'égaliseur ne mesure rien. macOS n'expose aucun niveau audio en sortie sans capturer le flux, ce que BUD ne fait pas. Les barres et le rythme sont synthétiques, pilotés par des sinusoïdes de fréquences premières entre elles pour éviter tout motif qui se répète visiblement. C'est un signe de vie, pas un instrument de mesure.
 
 L'appairage par téléphone ne peut pas se passer entièrement de copier-coller en mode OAuth : Google interdit son *device flow* pour le courrier. La voie « mot de passe d'application » est, elle, complète — seize lettres à recopier.
+
+Le Flux n'est pas n8n : c'est une façon de montrer et d'organiser les agents de BUD, qui tournent tous sur votre Mac. Il ne se connecte à aucun serveur d'automatisation.
+
+L'analyse des liens n'est pas un antivirus ni une liste noire à jour : elle reconnaît les formes d'hameçonnage. Pour confronter les liens à une base de menaces, ajoutez votre propre clé Google Safe Browsing.
+
+BUD ne parle pas à HomeKit directement : il lance les raccourcis que vous avez créés. Il ne connaît ni l'état de vos accessoires, ni leur liste.
+
+La météo n'est pas celle d'Apple : WeatherKit exige un compte développeur payant. Elle vient d'Open-Meteo.
 
 L'application n'est ni signée ni notarisée : elle est compilée sur votre machine, à partir de sources que vous pouvez lire intégralement.
