@@ -2,6 +2,26 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.6 — la mise à jour, de bout en bout
+
+**Une bannière dans la barre latérale.** Quand une version paraît, une carte de verre se pose au-dessus de la pastille d'état, visible depuis n'importe quel onglet : la version, la première ligne des notes, « Mettre à jour maintenant », et les notes complètes lisibles dans BUD. La navigation remonte d'autant au lieu d'être recouverte. Rien à dire, pas de bannière.
+
+**Une progression qui dit où l'on en est.** *Téléchargement… 42 %* avec « 8,1 Mo sur 19 Mo », puis *Vérification de l'empreinte*, *Extraction*, *Vérification du paquet*, *Installation et redémarrage*. La barre glisse vers sa valeur au lieu de sauter, un reflet la parcourt, et quand la durée est inconnue une navette remplace le pourcentage plutôt que d'en inventer un. Le téléchargement s'annule.
+
+**BUDs suit** : cool quand une version est trouvée, au travail pendant toute l'installation, déçu si le réseau lâche.
+
+**Un seul état pour toute l'application.** `BudUpdateManager` porte la vérification, le téléchargement — par une session à délégué, qui rapporte chaque bloc reçu — et l'installation. La carte « À propos » et la bannière l'observent : elles ne peuvent plus se contredire.
+
+**Le paquet extrait est interrogé avant de toucher à quoi que ce soit.** Exactement un `BUD.app` à la racine de l'archive, le même identifiant que l'application installée — une archive qui contiendrait autre chose ne prendra pas la place de BUD —, la version annoncée, et l'architecture de ce Mac. L'empreinte SHA-256 publiée avec la release est vérifiée avant l'extraction. Jusque-là, tout se passe dans un dossier temporaire : un échec ne coûte qu'un téléchargement.
+
+**Le script de remplacement attend BUD par son PID**, et non plus par son nom, qui désignait aussi un second BUD lancé à côté. Vingt secondes de politesse, puis il insiste. Il met l'ancien paquet de côté au lieu de l'effacer, pose le nouveau, le relance, et vérifie qu'il tient : présent en quinze secondes et encore là quatre secondes après. Sinon l'ancien revient et c'est lui qui redémarre. Au lancement suivant, BUD dit ce qui s'est passé.
+
+**Dans un dossier protégé, macOS demande le mot de passe, et BUD attend la réponse.** Si l'on refuse, BUD ne quitte pas. Le script tourne alors en administrateur, rend le paquet à son propriétaire d'origine, et relance BUD en votre nom — un BUD lancé par root aurait d'autres réglages et un autre trousseau.
+
+**Les cas qui ne peuvent pas marcher sont dits avant.** Lancé depuis l'image disque, ou isolé par Gatekeeper (translocation), BUD ne peut pas se remplacer : il le dit et explique quoi faire, au lieu d'échouer à mi-chemin.
+
+**Un journal** : `update.log` garde la trace de chaque remplacement.
+
 ## 25.5 — les outils dans le chat
 
 **L'onglet Outils disparaît ; ses outils passent dans le chat.** Une pilule « Outils », en verre sombre, ouvre la rangée de suggestions juste au-dessus du champ. Un clic ouvre le menu vers le haut, par-dessus la conversation : il sort du coin de la pilule avec un léger ressort, et y rentre plus vite qu'il n'en est sorti. Un clic ailleurs ou Échap le referme. Le chevron se retourne pour pointer vers le menu.

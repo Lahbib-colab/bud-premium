@@ -4,7 +4,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie. Ne quittent votre Mac que ce que vous adressez à Google (votre courrier Gmail), les coordonnées de la ville choisie pour la météo, et — seulement si vous y mettez une clé — les adresses des liens à vérifier.
 
-**Version 25.5** · by Lahbib.AI
+**Version 25.6** · by Lahbib.AI
 
 [![build](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml/badge.svg)](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml)
 
@@ -14,6 +14,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 | Version | Ce qui change |
 |---|---|
+| **25.6** | **Mise à jour intégrée** de bout en bout : bannière de verre dans la barre latérale, progression détaillée, paquet vérifié avant tout remplacement, mot de passe demandé si le dossier est protégé, retour automatique à l'ancienne version si la nouvelle ne démarre pas. |
 | **25.5** | L'onglet Outils disparaît : capture, veille, verrouillage et agents passent dans le **chat**, derrière une pilule *Outils*. Compte à rebours avant la mise en veille, confirmation avant de vider la corbeille, miniature de la capture dans le fil. |
 | **25.4** | Le **Flux** : les agents en nœuds à la manière de n8n — sources, agents, BUDs — avec liens animés, badges d'état, cartes façon widgets iOS et fiche d'approbation obligatoire. Trois agents : *Nettoyage & Rangement*, *Cybersécurité*, *Météo & Maison*. |
 | **25.3** | **Météo** animée façon Apple (Open-Meteo, sans clé) et **Maison** : vos commandes HomeKit lancées par Raccourcis. |
@@ -472,6 +473,7 @@ Les choix vivent dans un dictionnaire indexé par action, et non dans un champ p
 ├── reminders.json          vos rappels
 ├── quicknotes.md           journal des captures
 ├── weather.json            le dernier relevé météo
+├── update.log              le journal des mises à jour
 ├── agents/                 demandes et réponses des agents
 ├── scripts/                vos sous-agents
 └── bud-ask                 passerelle en ligne de commande
@@ -500,22 +502,35 @@ Aucune n'est demandée au lancement : chacune arrive à la première utilisation
 
 ## Mises à jour
 
-BUD interroge l'API des releases de ce dépôt, une fois par jour et à la demande depuis la carte « À propos ». La release est la source de vérité : elle porte à la fois le numéro de version et les installeurs, donc rien à tenir en parallèle.
+BUD se met à jour **depuis l'application**, sans navigateur. Il interroge l'API des releases de ce dépôt une fois par jour, et à la demande depuis la carte « À propos ». La release est la source de vérité : elle porte à la fois le numéro de version, l'archive et les empreintes.
 
-Le bouton **télécharge et installe**, sans passer par le Finder ni le Terminal. Une confirmation précède toujours le remplacement, et un bouton « Voir les notes » permet de lire d'abord. Ensuite BUD enchaîne quatre contrôles, avec une barre de progression dans la carte :
+Quand une version paraît, une **bannière de verre** se pose en bas de la barre latérale, visible depuis n'importe quel onglet : la version, la première ligne des notes, *Mettre à jour maintenant*, et les notes complètes lisibles dans BUD. Pendant l'installation, BUDs passe au travail — les billes du tréma jonglent — et la bannière déroule les étapes :
 
-| Étape | Contrôle |
+| Étape | Ce qui est vérifié |
 |---|---|
-| Téléchargement | barre qui se remplit, pourcentage réel |
+| Téléchargement | pourcentage et octets réels, annulable |
 | Empreinte | SHA-256 recalculé et comparé au `SHA256.txt` publié |
-| Architecture | `lipo -archs` doit contenir celle de cette machine |
-| Version | l'`Info.plist` de l'archive doit annoncer la version attendue |
+| Extraction | `ditto -x -k` dans un dossier temporaire |
+| Paquet | un seul `BUD.app` à la racine, **même identifiant** que l'application installée, version annoncée, architecture de ce Mac (`lipo -archs`) |
+| Installation et redémarrage | script détaché, voir ci-dessous |
 
-Une empreinte qui diffère interrompt tout : un téléchargement abîmé ne s'installe pas. Si la release ne publie aucune empreinte, l'installation continue mais l'annonce. Pour les étapes dont la durée est inconnue — empreinte, décompression — la barre passe en navette va-et-vient plutôt que d'inventer un pourcentage.
+**Jusqu'à l'installation, rien de ce qui est installé n'est touché** : un échec ne coûte qu'un téléchargement, et BUDs prend l'air déçu.
 
-Rien ne bloque l'interface : tout se déroule en arrière-plan et BUD reste utilisable.
+Une application ne peut pas se réécrire pendant qu'elle tourne. Le remplacement est confié à un script détaché qui :
 
-Une application ne peut pas se réécrire pendant qu'elle tourne. Le remplacement est donc confié à un petit script qui attend la fin de BUD, échange les paquets, puis **restaure l'ancien si le nouveau ne démarre pas**. Vos réglages, notes et rappels vivent ailleurs et ne sont pas touchés.
+1. attend la fin de BUD **par son PID**, vingt secondes, puis insiste ;
+2. met l'ancien paquet de côté (`BUD.app.bud-old`) au lieu de l'effacer ;
+3. pose le nouveau, retire la quarantaine (`xattr -dr com.apple.quarantine`), le signe ad hoc ;
+4. le relance (`open -n`) et vérifie qu'il **tient** — présent en quinze secondes, encore là quatre secondes après ;
+5. sinon, remet l'ancien et le relance.
+
+Au lancement suivant, BUD dit ce qui s'est passé. Le détail est dans `update.log`.
+
+**Dossier protégé.** Si BUD ne peut pas écrire là où il est installé — un `/Applications` réservé aux administrateurs, un paquet appartenant à root —, macOS demande le mot de passe **avant** que BUD ne quitte ; un refus le laisse ouvert. Le script tourne alors en administrateur, rend le paquet à son propriétaire d'origine et relance BUD en votre nom.
+
+**Ce qui ne peut pas marcher est dit avant** : BUD lancé depuis l'image disque, ou isolé par Gatekeeper (translocation), ne peut pas se remplacer — il explique quoi faire.
+
+Vos réglages, notes et rappels vivent dans `~/Library/Application Support/BUD-Assistant/` et ne sont pas touchés.
 
 ### Publier une version
 

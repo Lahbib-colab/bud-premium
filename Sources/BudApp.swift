@@ -77,6 +77,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var clipHero: HeroHeader!, sortHero: HeroHeader!, settingsHero: HeroHeader!
     private var bubbleLabel: NSTextField!
     private var updateCard: UpdateCardView!
+    private var navScroll: NSScrollView!
+    private var updateBanner: BudUpdateView!
     private var focusTime: NSTextField!, focusPhaseLabel: NSTextField!, focusStats: NSTextField!
     private var focusBar: ProgressBar!, focusBtn: GlassButton!
     fileprivate var notesView: NSTextView!
@@ -656,7 +658,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         content.addSubview(mkFitLabel("BUD Premium", x: 66, y: H - 50, 14.5, .bold))
         content.addSubview(mkFitLabel("\(budVersion) · \(budSignature)", x: 66, y: H - 66, 10.5, .medium, alpha: 0.42))
 
-        let navScroll = NSScrollView(frame: NSRect(x: 0, y: 58, width: sidebarW, height: H - 150))
+        navScroll = NSScrollView(frame: NSRect(x: 0, y: 58, width: sidebarW, height: H - 150))
         navScroll.hasVerticalScroller = true
         navScroll.scrollerStyle = .overlay
         navScroll.drawsBackground = false
@@ -705,6 +707,19 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         statusPill = mkLabel("Prêt · ⌘⌥D pour dicter", NSRect(x: 28, y: 10, width: sidebarW - 48, height: 16),
                              11, .medium, alpha: 0.6)
         pill.addSubview(statusPill)
+
+        // La bannière de mise à jour, au-dessus de la pastille d'état. Cachée
+        // tant qu'il n'y a rien à dire ; quand elle paraît, la navigation
+        // remonte d'autant au lieu d'être recouverte.
+        updateBanner = BudUpdateView(frame: NSRect(x: 10, y: 56, width: sidebarW - 20, height: BudUpdateView.height))
+        updateBanner.isHidden = true
+        updateBanner.onVisibility = { [weak self] shown in
+            guard let s = self else { return }
+            let bottom: CGFloat = shown ? 56 + BudUpdateView.height + 6 : 58
+            s.navScroll.frame = NSRect(x: 0, y: bottom, width: s.sidebarW, height: H - 92 - bottom)
+        }
+        content.addSubview(updateBanner)
+        wireUpdates()
 
         let closeBtn = GlassButton(frame: NSRect(x: W - 46, y: H - 44, width: 32, height: 28),
                                    title: "", icon: "chevron.up")
@@ -838,6 +853,31 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         return h
     }
 
+    /// La mise à jour parle par les mêmes canaux que le reste : la barre
+    /// d'état, et le visage de BUDs — au travail pendant le téléchargement,
+    /// déçu si le réseau lâche.
+    private func wireUpdates() {
+        let m = BudUpdateManager.shared
+        m.channel = { [weak self] in
+            let c = self?.state.updateChannel ?? ""
+            return c.isEmpty ? BudUpdater.defaultChannel : c
+        }
+        m.onStatus = { [weak self] msg in self?.setStatus(msg) }
+        m.onMood = { [weak self] e, hold in
+            guard let s = self else { return }
+            s.mood(e.mood, hold)
+            s.flowPanel?.show(e, hold: hold)
+        }
+        // Ce que le dernier remplacement a donné, dit une fois.
+        if let r = m.consumeLastResult() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                self?.setStatus(r.text)
+                self?.mood(r.ok ? BudMood.proud : BudMood.sad, 4)
+                self?.coucou(r.ok ? "Mis à jour" : "Mise à jour annulée", r.text, hold: 5)
+            }
+        }
+    }
+
     private func editUpdateChannel() {
         let al = NSAlert()
         al.messageText = "Canal de mise à jour"
@@ -917,11 +957,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
         mkSection(p, 106, W, "À propos")
         updateCard = UpdateCardView(frame: NSRect(x: 0, y: 32, width: W, height: 68))
-        updateCard.channel = { [weak self] in
-            let c = self?.state.updateChannel ?? ""
-            return c.isEmpty ? BudUpdater.defaultChannel : c
-        }
-        updateCard.onStatus = { [weak self] m in self?.setStatus(m) }
         updateCard.onChannelEdit = { [weak self] in self?.editUpdateChannel() }
         p.addSubview(updateCard)
 
