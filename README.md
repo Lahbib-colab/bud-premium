@@ -4,7 +4,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie. Ne quittent votre Mac que ce que vous adressez à Google (votre courrier Gmail), les coordonnées de la ville choisie pour la météo, et — seulement si vous y mettez une clé — les adresses des liens à vérifier.
 
-**Version 25.7** · by Lahbib.AI
+**Version 25.8** · by Lahbib.AI
 
 [![build](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml/badge.svg)](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml)
 
@@ -14,7 +14,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 | Version | Ce qui change |
 |---|---|
-| **25.6 – 25.7** | **Mise à jour intégrée** de bout en bout : bannière de verre dans la barre latérale, progression détaillée, paquet vérifié avant tout remplacement, mot de passe demandé si le dossier est protégé, retour automatique à l'ancienne version si la nouvelle ne démarre pas. |
+| **25.6 – 25.8** | **Mise à jour intégrée** de bout en bout : bannière de verre dans la barre latérale, progression détaillée, paquet vérifié avant tout remplacement, mot de passe demandé si le dossier est protégé, retour automatique à l'ancienne version si la nouvelle ne démarre pas. |
 | **25.5** | L'onglet Outils disparaît : capture, veille, verrouillage et agents passent dans le **chat**, derrière une pilule *Outils*. Compte à rebours avant la mise en veille, confirmation avant de vider la corbeille, miniature de la capture dans le fil. |
 | **25.4** | Le **Flux** : les agents en nœuds à la manière de n8n — sources, agents, BUDs — avec liens animés, badges d'état, cartes façon widgets iOS et fiche d'approbation obligatoire. Trois agents : *Nettoyage & Rangement*, *Cybersécurité*, *Météo & Maison*. |
 | **25.3** | **Météo** animée façon Apple (Open-Meteo, sans clé) et **Maison** : vos commandes HomeKit lancées par Raccourcis. |
@@ -504,7 +504,7 @@ Aucune n'est demandée au lancement : chacune arrive à la première utilisation
 
 BUD se met à jour **depuis l'application**, sans navigateur. Il interroge l'API des releases de ce dépôt une fois par jour, et à la demande depuis la carte « À propos ». La release est la source de vérité : elle porte à la fois le numéro de version, l'archive et les empreintes.
 
-Quand une version paraît, une **bannière de verre** se pose en bas de la barre latérale, visible depuis n'importe quel onglet : la version, la première ligne des notes, *Mettre à jour maintenant*, et les notes complètes lisibles dans BUD. Pendant l'installation, BUDs passe au travail — les billes du tréma jonglent — et la bannière déroule les étapes :
+Quand une version paraît, une **bannière de verre** se pose en bas de la barre latérale, visible depuis n'importe quel onglet : la version, la première ligne des notes, *Mettre à jour*, et les notes complètes lisibles dans BUD. Pendant l'installation, BUDs passe au travail — les billes du tréma jonglent — et la bannière déroule les étapes :
 
 | Étape | Ce qui est vérifié |
 |---|---|

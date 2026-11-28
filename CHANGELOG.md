@@ -2,6 +2,10 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.8 — un libellé qui tient
+
+Le bouton de la bannière disait « Mettre à jour maintenant » dans 118 points : le texte débordait. Il dit « Mettre à jour » ; la confirmation qui suit dit le reste.
+
 ## 25.7 — le contrôle de démarrage, sans expression régulière
 
 Le script de remplacement reconnaissait le nouveau BUD par `pgrep -f`, qui lit le chemin comme une expression régulière : installé dans un dossier dont le nom contient « + » ou des parenthèses, BUD aurait été jugé absent et la mise à jour annulée à tort. La comparaison est désormais exacte — la commande du processus doit *commencer* par le chemin de l'exécutable — et ne peut pas se trouver elle-même. Quatre scénarios ont été rejoués avec de vrais processus : paquet sain, paquet qui plante au lancement, paquet qui meurt après deux secondes, ancien BUD qui refuse de quitter.

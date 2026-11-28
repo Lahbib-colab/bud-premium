@@ -7,7 +7,7 @@ TOOLS_DIR="$SUPPORT_DIR/tools"
 ART_DIR="$SUPPORT_DIR/art"
 
 echo "============================================================"
-echo "   BUD Premium 25.7 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 25.8 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents" "$ART_DIR"
@@ -6536,7 +6536,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "25.7"
+let budVersion = "25.8"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -22733,7 +22733,7 @@ final class BudUpdateView: NSView {
         let W = frame.width
         bar = BudProgressBar(frame: NSRect(x: 14, y: 46, width: W - 28, height: 6))
         button = GlassButton(frame: NSRect(x: 12, y: 10, width: W - 24 - 34, height: 28),
-                             title: "Mettre à jour maintenant", icon: "arrow.down.circle.fill",
+                             title: "Mettre à jour", icon: "arrow.down.circle.fill",
                              prominent: true, compact: true)
         notes = GlassButton(frame: NSRect(x: W - 12 - 28, y: 10, width: 28, height: 28),
                             title: "", icon: "doc.text", compact: true)
@@ -22787,7 +22787,7 @@ final class BudUpdateView: NSView {
             button.title = "Réessayer"; button.iconName = "arrow.clockwise"; button.prominent = true
             button.enabledFlag = true
         default:
-            button.title = "Mettre à jour maintenant"; button.iconName = "arrow.down.circle.fill"
+            button.title = "Mettre à jour"; button.iconName = "arrow.down.circle.fill"
             button.prominent = true; button.enabledFlag = true
         }
         notes.isHidden = m.found?.notes.isEmpty ?? true

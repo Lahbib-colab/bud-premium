@@ -755,7 +755,7 @@ final class BudUpdateView: NSView {
         let W = frame.width
         bar = BudProgressBar(frame: NSRect(x: 14, y: 46, width: W - 28, height: 6))
         button = GlassButton(frame: NSRect(x: 12, y: 10, width: W - 24 - 34, height: 28),
-                             title: "Mettre à jour maintenant", icon: "arrow.down.circle.fill",
+                             title: "Mettre à jour", icon: "arrow.down.circle.fill",
                              prominent: true, compact: true)
         notes = GlassButton(frame: NSRect(x: W - 12 - 28, y: 10, width: 28, height: 28),
                             title: "", icon: "doc.text", compact: true)
@@ -809,7 +809,7 @@ final class BudUpdateView: NSView {
             button.title = "Réessayer"; button.iconName = "arrow.clockwise"; button.prominent = true
             button.enabledFlag = true
         default:
-            button.title = "Mettre à jour maintenant"; button.iconName = "arrow.down.circle.fill"
+            button.title = "Mettre à jour"; button.iconName = "arrow.down.circle.fill"
             button.prominent = true; button.enabledFlag = true
         }
         notes.isHidden = m.found?.notes.isEmpty ?? true
