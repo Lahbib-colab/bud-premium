@@ -7,7 +7,7 @@ TOOLS_DIR="$SUPPORT_DIR/tools"
 ART_DIR="$SUPPORT_DIR/art"
 
 echo "============================================================"
-echo "   BUD Premium 25.6 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 25.7 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents" "$ART_DIR"
@@ -6536,7 +6536,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "25.6"
+let budVersion = "25.7"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -22570,18 +22570,24 @@ final class BudUpdateManager: NSObject, URLSessionDownloadDelegate {
         /usr/bin/codesign --force --sign - "$APP" 2>/dev/null
 
         # 4. Relancer, et vérifier qu'il tient : présent en 15 s, encore là 4 s après.
-        launch "$APP"
+        #    Un processus est « le nôtre » si sa commande COMMENCE par le chemin
+        #    de l'exécutable : comparaison exacte, pas une expression régulière
+        #    (un chemin avec « + » ou des parenthèses fausserait pgrep -f), et
+        #    awk ne se trouve pas lui-même, sa commande commençant par « awk ».
         BIN="$APP/Contents/MacOS/"
+        pids() { /bin/ps -axo pid=,command= | /usr/bin/awk -v b="$BIN" \
+                   '{ p = $1; sub(/^ *[0-9]+ /, ""); if (index($0, b) == 1) print p }'; }
+        launch "$APP"
         up=0
-        for i in $(seq 1 30); do /usr/bin/pgrep -f "$BIN" >/dev/null && { up=1; break; }; sleep 0.5; done
-        [ $up = 1 ] && { sleep 4; /usr/bin/pgrep -f "$BIN" >/dev/null || up=0; }
+        for i in $(seq 1 30); do [ -n "$(pids)" ] && { up=1; break; }; sleep 0.5; done
+        [ $up = 1 ] && { sleep 4; [ -n "$(pids)" ] || up=0; }
 
         if [ $up = 1 ]; then
           rm -rf "$BACKUP"
           finish "ok $VERSION"
         else
           echo "le nouveau paquet ne démarre pas : retour à l'ancien"
-          /usr/bin/pkill -f "$BIN" 2>/dev/null
+          for p in $(pids); do kill "$p" 2>/dev/null; done
           rm -rf "$APP"; mv "$BACKUP" "$APP"
           finish "rollback $VERSION la nouvelle version ne démarrait pas"
           launch "$APP"

@@ -4,7 +4,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 Écrit en Swift et AppKit pur. Aucune dépendance externe, aucune télémétrie. Ne quittent votre Mac que ce que vous adressez à Google (votre courrier Gmail), les coordonnées de la ville choisie pour la météo, et — seulement si vous y mettez une clé — les adresses des liens à vérifier.
 
-**Version 25.6** · by Lahbib.AI
+**Version 25.7** · by Lahbib.AI
 
 [![build](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml/badge.svg)](https://github.com/Lahbib-colab/bud-premium/actions/workflows/build.yml)
 
@@ -14,7 +14,7 @@ Compagnon de bureau natif pour macOS, de Monterey à Sequoia et au-delà, sur In
 
 | Version | Ce qui change |
 |---|---|
-| **25.6** | **Mise à jour intégrée** de bout en bout : bannière de verre dans la barre latérale, progression détaillée, paquet vérifié avant tout remplacement, mot de passe demandé si le dossier est protégé, retour automatique à l'ancienne version si la nouvelle ne démarre pas. |
+| **25.6 – 25.7** | **Mise à jour intégrée** de bout en bout : bannière de verre dans la barre latérale, progression détaillée, paquet vérifié avant tout remplacement, mot de passe demandé si le dossier est protégé, retour automatique à l'ancienne version si la nouvelle ne démarre pas. |
 | **25.5** | L'onglet Outils disparaît : capture, veille, verrouillage et agents passent dans le **chat**, derrière une pilule *Outils*. Compte à rebours avant la mise en veille, confirmation avant de vider la corbeille, miniature de la capture dans le fil. |
 | **25.4** | Le **Flux** : les agents en nœuds à la manière de n8n — sources, agents, BUDs — avec liens animés, badges d'état, cartes façon widgets iOS et fiche d'approbation obligatoire. Trois agents : *Nettoyage & Rangement*, *Cybersécurité*, *Météo & Maison*. |
 | **25.3** | **Météo** animée façon Apple (Open-Meteo, sans clé) et **Maison** : vos commandes HomeKit lancées par Raccourcis. |
