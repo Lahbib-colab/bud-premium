@@ -2,6 +2,24 @@
 
 Les numéros suivent `budVersion` dans `Sources/BudCore.swift`.
 
+## 25.5 — les outils dans le chat
+
+**L'onglet Outils disparaît ; ses outils passent dans le chat.** Une pilule « Outils », en verre sombre, ouvre la rangée de suggestions juste au-dessus du champ. Un clic ouvre le menu vers le haut, par-dessus la conversation : il sort du coin de la pilule avec un léger ressort, et y rentre plus vite qu'il n'en est sorti. Un clic ailleurs ou Échap le referme. Le chevron se retourne pour pointer vers le menu.
+
+**Quatre familles** : Capture (écran, fenêtre, zone, zone vers le presse-papiers), Système (veille du Mac, veille de l'écran, verrouillage, clair/sombre, corbeille, réseau, batterie), Agents (rangement, cybersécurité, météo et maison, ceux du Flux), Plus (raccourcis clavier, Finder, Terminal). Une main ou un sablier, à droite d'un outil, annonce qu'il demandera votre accord.
+
+**Une seule bulle par outil.** Elle tourne pendant le travail, puis devient le résultat : une coche ou un point d'exclamation, le texte, et selon l'outil une miniature — la capture, réduite par ImageIO plutôt que chargée en entier — et un geste au clic : « Afficher dans le Finder », « Ouvrir les réglages », « Examiner dans le Flux ».
+
+**BUDs suit.** Réfléchi pendant une question, au travail pendant l'exécution — les billes du tréma jonglent —, puis content, attentif ou déçu selon le résultat. Les agents du Flux gardent la main sur leur propre expression.
+
+**Les gestes qui interrompent attendent.** La mise en veille du Mac part après un compte à rebours de cinq secondes, le verrouillage après trois : un anneau se vide dans une barre qui remplace les suggestions, avec « Annuler » et « Maintenant ». Vider la corbeille, irréversible, attend un clic. Le message part avant la veille, pour qu'on le lise au réveil.
+
+**La capture demande la permission avant, plutôt que de rater après.** Sans « Enregistrement de l'écran », macOS rend une image vide : BUD vérifie l'autorisation, déclenche la demande du système la première fois, et sinon propose d'ouvrir le bon réglage. Le panneau se replie pendant la prise, puis revient sur le chat avec la miniature.
+
+**Dit ou tapé, c'est le même chemin.** « Mets le Mac en veille », « capture la fenêtre », « verrouille », « vide la corbeille », « analyse ce lien » passent par les mêmes outils que la pilule : même confirmation, même bulle. La corbeille, vidée jusqu'ici sans question depuis le chat, demande maintenant confirmation.
+
+**Pour la suite** : un outil est un `BudTool` inscrit dans `BudToolCatalog`. La pilule, le menu, la reconnaissance des phrases et les expressions suivent.
+
 ## 25.4 — le Flux
 
 **Une vue des agents à la manière de n8n.** Nouvel onglet Flux, sous Agents : trois colonnes de nœuds sur une trame de points — les sources que les agents lisent, les agents, et BUDs en sortie. Les liens sont des courbes qui partent et arrivent à l'horizontale ; quand un agent travaille, les siens s'animent dans sa couleur, avec des tirets qui avancent et une perle qui circule. Chaque nœud porte un badge d'état : Prêt, En cours, OK, Alerte, Échec, À valider. Un clic sélectionne, un double clic exécute.

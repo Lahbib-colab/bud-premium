@@ -8,8 +8,25 @@ import Cocoa
 
 struct ChatMsg {
     let fromBud: Bool
-    let text: String
+    var text: String
     let date: Date
+
+    // ── Les bulles d'outil ──
+    //  Une bulle d'outil est une bulle de BUD avec une pastille à gauche,
+    //  qui tourne pendant le travail, puis dit oui ou non. Elle peut porter
+    //  une miniature, et un geste au clic.
+    var id = UUID()
+    var tool: ToolBubble? = nil
+    var image: NSImage? = nil
+    var tapLabel: String? = nil
+    var tap: (() -> Void)? = nil
+}
+
+struct ToolBubble {
+    enum Phase { case waiting, working, ok, failed }
+    var icon: String
+    var tint: NSColor
+    var phase: Phase
 }
 
 /// Actions que le délégué expose au cerveau de BUD.
@@ -510,29 +527,90 @@ enum Calc {
     }
 }
 
-/// Bulle de conversation, hauteur calculée sur le texte réel.
+/// Bulle de conversation, hauteur calculée sur le contenu réel.
 final class ChatBubble: NSView {
     private let msg: ChatMsg
-    private let textRect: NSRect
+    private var textRect = NSRect.zero
+    private var imageRect = NSRect.zero
+    private var tapRect = NSRect.zero
+    private var spin: CGFloat = 0
+    private var timer: Timer?
 
-    static func height(for text: String, width: CGFloat) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: 12.5)
+    private static let iconW: CGFloat = 34
+    private static let imageMaxH: CGFloat = 150
+
+    private static func textHeight(_ text: String, width: CGFloat) -> CGFloat {
         let p = NSMutableParagraphStyle()
         p.lineBreakMode = .byWordWrapping
         let r = (text as NSString).boundingRect(
-            with: NSSize(width: width - 32, height: 10_000),
+            with: NSSize(width: width, height: 10_000),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font, .paragraphStyle: p])
-        return ceil(r.height) + 26
+            attributes: [.font: NSFont.systemFont(ofSize: 12.5), .paragraphStyle: p])
+        return ceil(r.height)
+    }
+
+    private static func imageHeight(_ img: NSImage?, width: CGFloat) -> CGFloat {
+        guard let i = img, i.size.width > 0 else { return 0 }
+        return min(imageMaxH, width * i.size.height / i.size.width)
+    }
+
+    static func height(for m: ChatMsg, width: CGFloat) -> CGFloat {
+        let inner = width - 32 - (m.tool == nil ? 0 : iconW)
+        var h = textHeight(m.text, width: inner) + 26
+        let ih = imageHeight(m.image, width: inner)
+        if ih > 0 { h += ih + 10 }
+        if m.tapLabel != nil { h += 20 }
+        return h
     }
 
     init(frame: NSRect, msg: ChatMsg) {
         self.msg = msg
-        self.textRect = NSRect(x: 16, y: 13, width: frame.width - 32, height: frame.height - 26)
         super.init(frame: frame)
         wantsLayer = true
+        // Du bas vers le haut : le geste, la miniature, le texte.
+        let x: CGFloat = 16 + (msg.tool == nil ? 0 : ChatBubble.iconW)
+        let w = frame.width - 16 - x
+        var y: CGFloat = 13
+        if msg.tapLabel != nil {
+            tapRect = NSRect(x: x, y: y - 2, width: w, height: 16)
+            y += 20
+        }
+        let ih = ChatBubble.imageHeight(msg.image, width: w)
+        if ih > 0, let img = msg.image {
+            let iw = min(w, ih * img.size.width / img.size.height)
+            imageRect = NSRect(x: x, y: y, width: iw, height: ih)
+            y += ih + 10
+        }
+        textRect = NSRect(x: x, y: y, width: w, height: frame.height - y - 13)
+        if msg.tap != nil { toolTip = msg.tapLabel }
+        setAccessibilityLabel(msg.text)
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    // La pastille tourne pendant le travail, et seulement à l'écran.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let busy = msg.tool?.phase == .working || msg.tool?.phase == .waiting
+        if window != nil, busy, timer == nil {
+            let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                self?.spin += 0.2
+                self?.needsDisplay = true
+            }
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+        } else if window == nil {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    override func resetCursorRects() {
+        if msg.tap != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+    override func mouseUp(with e: NSEvent) {
+        guard let tap = msg.tap, bounds.contains(convert(e.locationInWindow, from: nil)) else { return }
+        tap()
+    }
 
     override func draw(_ dirty: NSRect) {
         let r = bounds
@@ -540,7 +618,13 @@ final class ChatBubble: NSView {
         if msg.fromBud {
             TH.fill(0.07).setFill()
             path.fill()
-            TH.fill(0.07).setStroke()
+            let edge: NSColor
+            switch msg.tool?.phase {
+            case .some(.failed): edge = dangerColor.withAlphaComponent(0.45)
+            case .some(.waiting): edge = (msg.tool?.tint ?? TH.accent).withAlphaComponent(0.45)
+            default: edge = TH.fill(0.07)
+            }
+            edge.setStroke()
             path.lineWidth = 1
             path.stroke()
         } else {
@@ -550,6 +634,35 @@ final class ChatBubble: NSView {
             path.lineWidth = 1
             path.stroke()
         }
+
+        if let t = msg.tool {
+            let c = NSPoint(x: 16 + 11, y: r.maxY - 13 - 10)
+            let disc = NSRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22)
+            switch t.phase {
+            case .working, .waiting:
+                t.tint.withAlphaComponent(0.25).setFill()
+                NSBezierPath(ovalIn: disc).fill()
+                let a = NSBezierPath()
+                let start = t.phase == .working ? spin * 57.3 : 90
+                a.appendArc(withCenter: c, radius: 8, startAngle: start, endAngle: start + (t.phase == .working ? 260 : 360))
+                a.lineWidth = 2
+                a.lineCapStyle = .round
+                t.tint.setStroke()
+                a.stroke()
+                if t.phase == .waiting {
+                    drawSymbol("hand.raised.fill", center: c, size: 8, weight: .bold, color: t.tint)
+                }
+            case .ok:
+                t.tint.setFill()
+                NSBezierPath(ovalIn: disc).fill()
+                drawSymbol("checkmark", center: c, size: 9, weight: .bold, color: .white)
+            case .failed:
+                dangerColor.setFill()
+                NSBezierPath(ovalIn: disc).fill()
+                drawSymbol("exclamationmark", center: c, size: 9, weight: .bold, color: .white)
+            }
+        }
+
         let p = NSMutableParagraphStyle()
         p.lineBreakMode = .byWordWrapping
         (msg.text as NSString).draw(
@@ -557,6 +670,20 @@ final class ChatBubble: NSView {
             attributes: [.font: NSFont.systemFont(ofSize: 12.5),
                          .foregroundColor: TH.text.withAlphaComponent(msg.fromBud ? 0.92 : 1),
                          .paragraphStyle: p])
+
+        if let img = msg.image, imageRect.width > 0 {
+            NSGraphicsContext.current?.saveGraphicsState()
+            let clip = NSBezierPath(roundedRect: imageRect, xRadius: 9, yRadius: 9)
+            clip.addClip()
+            img.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.restoreGraphicsState()
+            TH.fill(0.18).setStroke()
+            clip.lineWidth = 0.8
+            clip.stroke()
+        }
+        if let label = msg.tapLabel {
+            drawString(label + "  ›", in: tapRect, size: 11.5, weight: .semibold, color: TH.accent)
+        }
     }
 }
 
@@ -569,6 +696,10 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
     private var messages: [ChatMsg] = []
     private var chips: [GlassButton] = []
     private var mic: MicButton!
+    private var pill: ToolPillView!
+    private var toolMenu: ToolMenuView?
+    private var menuMonitor: Any?
+    private var confirmBar: ToolConfirmBar?
 
     var actions = ChatActions()
     var onStatus: ((String) -> Void)?
@@ -601,8 +732,14 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         scroll.documentView = listHost
         addSubview(scroll)
 
+        // La pilule Outils ouvre la rangée ; les suggestions suivent.
+        let pw = ToolPillView.idealWidth()
+        pill = ToolPillView(frame: NSRect(x: 0, y: 62, width: pw, height: 32))
+        pill.onClick = { [weak self] in self?.toggleToolMenu() }
+        addSubview(pill)
+
         // Suggestions rapides
-        var x: CGFloat = 0
+        var x: CGFloat = pw + 8
         for s in BudBrain.suggestions {
             let w = min(W - x, textWidth(s, size: 11.5, weight: .semibold) + 28)
             if x + w > W { break }
@@ -679,9 +816,17 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
 
     func send(_ text: String) {
         append(ChatMsg(fromBud: false, text: text, date: Date()))
+        // Un outil demandé en toutes lettres passe par le même chemin que
+        // la pilule : même confirmation, même bulle, mêmes expressions.
+        if let tool = BudToolManager.shared.intent(for: text) {
+            runTool(tool.id)
+            return
+        }
         let answer = BudBrain.reply(to: text, actions: actions) { [weak self] late in
             self?.append(ChatMsg(fromBud: true, text: late, date: Date()))
         }
+        // Une réponse vide : l'action a déjà parlé dans le fil.
+        if answer.isEmpty { return }
         // L'aveu d'incompréhension se reconnaît à sa première phrase, et
         // non au texte entier : elle est écrite une fois, au seul endroit
         // qui la produit, et comparer le début évite qu'un ajout d'exemple
@@ -692,6 +837,156 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
             self?.onSpoke?(!lost)
         }
         onStatus?("BUD réfléchit…")
+    }
+
+    // ═══════════ Les outils ═══════════
+
+    private func toggleToolMenu() {
+        if toolMenu == nil { openToolMenu() } else { closeToolMenu() }
+    }
+
+    private func openToolMenu() {
+        guard toolMenu == nil else { return }
+        // Vers le haut, par-dessus la conversation, depuis le coin de la
+        // pilule. Plafonné à la hauteur du fil : au-delà, le menu défile.
+        let maxH = scroll.frame.maxY - pill.frame.maxY - 8
+        let h = min(maxH, ToolMenuView.contentHeight())
+        let menu = ToolMenuView(frame: NSRect(x: pill.frame.minX, y: pill.frame.maxY + 8,
+                                              width: ToolMenuView.width, height: h))
+        menu.onPick = { [weak self] t in
+            self?.closeToolMenu()
+            self?.runTool(t.id)
+        }
+        addSubview(menu, positioned: .above, relativeTo: nil)
+        menu.present()
+        toolMenu = menu
+        pill.open = true
+
+        // Un clic hors du menu et de la pilule le referme ; Échap aussi.
+        menuMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self] e in
+            guard let s = self, let m = s.toolMenu else { return e }
+            if e.type == .keyDown {
+                if e.keyCode == 53 { s.closeToolMenu(); return nil }
+                return e
+            }
+            guard e.window == s.window else { s.closeToolMenu(); return e }
+            let p = s.convert(e.locationInWindow, from: nil)
+            if !m.frame.contains(p) && !s.pill.frame.contains(p) { s.closeToolMenu() }
+            return e
+        }
+    }
+
+    private func closeToolMenu() {
+        if let mon = menuMonitor { NSEvent.removeMonitor(mon); menuMonitor = nil }
+        guard let m = toolMenu else { return }
+        toolMenu = nil
+        pill.open = false
+        m.dismiss {}
+    }
+
+    /// Le point d'entrée unique : pilule, phrase du chat, voix.
+    func runTool(_ id: String) {
+        let mgr = BudToolManager.shared
+        guard let t = mgr.tool(id) else { return }
+        guard !mgr.isRunning(id), confirmBar == nil else {
+            append(ChatMsg(fromBud: true, text: "Un instant, « \(t.title) » est déjà en cours.", date: Date()))
+            return
+        }
+        switch t.risk {
+        case .none:
+            start(t, bubble: nil)
+        case .confirm(let q):
+            ask(t, question: q, seconds: nil)
+        case .countdown(let n):
+            ask(t, question: t.title, seconds: n)
+        }
+    }
+
+    private func ask(_ t: BudTool, question: String, seconds: Int?) {
+        var m = ChatMsg(fromBud: true,
+                        text: seconds.map { "\(t.title) dans \($0) secondes. Annulez si ce n'est pas le moment." }
+                              ?? question,
+                        date: Date())
+        m.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: .waiting)
+        let id = m.id
+        append(m)
+        // BUDs attend votre réponse : l'air réfléchi, le temps de la question.
+        mgr().onExpression?(.reflection, Double(seconds ?? 8) + 1)
+
+        // La barre prend la place des suggestions, juste au-dessus du champ.
+        let W = bounds.width
+        let bar = ToolConfirmBar(frame: NSRect(x: 0, y: 62, width: W, height: 32),
+                                 tool: t, question: question, seconds: seconds)
+        bar.onConfirm = { [weak self] in
+            self?.dismissConfirm()
+            self?.start(t, bubble: id)
+        }
+        bar.onCancel = { [weak self] in
+            guard let s = self else { return }
+            s.dismissConfirm()
+            s.update(id) {
+                $0.text = "\(t.title) : annulé."
+                $0.tool?.phase = .ok
+                $0.tool?.tint = NSColor(calibratedWhite: 0.55, alpha: 1)
+            }
+            s.mgr().onExpression?(.neutral, 2)
+        }
+        pill.isHidden = true
+        chips.forEach { $0.isHidden = true }
+        bar.alphaValue = 0
+        addSubview(bar)
+        confirmBar = bar
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            bar.animator().alphaValue = 1
+        }
+    }
+
+    private func dismissConfirm() {
+        confirmBar?.removeFromSuperview()
+        confirmBar = nil
+        pill.isHidden = false
+        chips.forEach { $0.isHidden = false }
+    }
+
+    private func mgr() -> BudToolManager { BudToolManager.shared }
+
+    /// La bulle « au travail », puis la même bulle, transformée en résultat :
+    /// le fil ne garde qu'une trace par outil.
+    private func start(_ t: BudTool, bubble existing: UUID?) {
+        let id: UUID
+        if let e = existing {
+            id = e
+            update(e) {
+                $0.text = t.working
+                $0.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: .working)
+            }
+        } else {
+            var m = ChatMsg(fromBud: true, text: t.working, date: Date())
+            m.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: .working)
+            id = m.id
+            append(m)
+        }
+        onStatus?("\(t.title)…")
+        mgr().execute(t, progress: { [weak self] line in
+            self?.update(id) { $0.text = line }
+        }, done: { [weak self] out in
+            guard let s = self else { return }
+            s.update(id) {
+                $0.text = out.text
+                $0.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: out.ok ? .ok : .failed)
+                $0.image = out.image
+                $0.tapLabel = out.tapLabel
+                $0.tap = out.tap
+            }
+            s.onStatus?(out.text.components(separatedBy: "\n").first ?? "")
+        })
+    }
+
+    private func update(_ id: UUID, _ change: (inout ChatMsg) -> Void) {
+        guard let i = messages.firstIndex(where: { $0.id == id }) else { return }
+        change(&messages[i])
+        rebuild()
     }
 
     private func append(_ m: ChatMsg) {
@@ -707,7 +1002,7 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         let W = scroll.bounds.width - 6
         let maxW = W * 0.82
         var heights: [CGFloat] = []
-        for m in messages { heights.append(ChatBubble.height(for: m.text, width: maxW)) }
+        for m in messages { heights.append(ChatBubble.height(for: m, width: maxW)) }
         let gap: CGFloat = 10
         let total = max(scroll.bounds.height, heights.reduce(0, +) + gap * CGFloat(max(0, messages.count)))
         listHost.frame = NSRect(x: 0, y: 0, width: W, height: total)

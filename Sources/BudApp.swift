@@ -49,14 +49,13 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                            NavEntry(icon: "text.badge.plus", title: "Snippets"),
                            NavEntry(icon: "doc.on.clipboard", title: "Presse-papiers"),
                            NavEntry(icon: "tray.full.fill", title: "Rangement")]),
-        ("Système",       [NavEntry(icon: "wrench.and.screwdriver", title: "Outils"),
-                           NavEntry(icon: "slider.horizontal.3", title: "Réglages")])
+        ("Système",       [NavEntry(icon: "slider.horizontal.3", title: "Réglages")])
     ]
     private let tabCompanion = 0, tabChat = 1, tabAgents = 2, tabFlow = 3, tabMail = 4,
                 tabPhone = 5, tabReminders = 6, tabMusic = 7, tabWeather = 8,
                 tabHome = 9, tabStorage = 10, tabClean = 11, tabFocus = 12,
                 tabNotes = 13, tabSnippets = 14, tabClipboard = 15, tabSorting = 16,
-                tabTools = 17, tabSettings = 18
+                tabSettings = 17
 
     // Modules
     private var storagePanel: StoragePanelView!
@@ -75,7 +74,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     // Panneaux maison
     private var companionHero: HeroHeader!, focusHero: HeroHeader!, notesHero: HeroHeader!
-    private var clipHero: HeroHeader!, sortHero: HeroHeader!, toolsHero: HeroHeader!, settingsHero: HeroHeader!
+    private var clipHero: HeroHeader!, sortHero: HeroHeader!, settingsHero: HeroHeader!
     private var bubbleLabel: NSTextField!
     private var updateCard: UpdateCardView!
     private var focusTime: NSTextField!, focusPhaseLabel: NSTextField!, focusStats: NSTextField!
@@ -85,9 +84,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var clipButtons: [GlassButton] = []
     private var clipHistory: [String] = []
     private var lastClipChange = NSPasteboard.general.changeCount
-    private var searchField: NSSearchField!
-    private var captureSeg: SegmentedBar!
-    private var lastCapture: URL?
     /// Le compte à rebours demandé depuis le chat. Un seul à la fois :
     /// en demander un second remplace le premier, et BUD le dit.
     private var countdown: Timer?
@@ -95,7 +91,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     // Une seule zone de compte rendu pour tout l'onglet : deux étiquettes
     // de statut dans le même panneau, l'une sous les outils système et
     // l'autre sous la capture, se faisaient concurrence.
-    private var revealBtn: GlassButton!, toolsInfo: NSTextField!
     private var sortPathLabel: NSTextField!, sortStatsLabel: NSTextField!
     private var sortLogLabels: [NSTextField] = []
     private var undoBtn: GlassButton!
@@ -644,33 +639,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
     }
 
-    // ── Capture d'écran ──
-    //
-    //  Le notch se replie et l'application se retire avant la prise :
-    //  sans ça, BUD figurerait sur toutes les captures plein écran.
-    private func capture(_ mode: CaptureMode) {
-        let target: CaptureTarget = captureSeg.selected == 1 ? .clipboard : .desktop
-        collapse()
-        toolsInfo.stringValue = mode.interactive
-            ? "Cliquez la fenêtre ou tracez la zone…"
-            : "Prise dans un instant…"
-        ScreenCapture.run(mode, to: target) { [weak self] r in
-            guard let s = self else { return }
-            s.toolsInfo.stringValue = r.message
-            s.lastCapture = r.url
-            s.revealBtn.enabledFlag = (r.url != nil)
-            if r.ok {
-                s.setStatus(r.message)
-                s.avatar?.react()
-                if let u = r.url {
-                    s.coucou("Capture enregistrée", u.lastPathComponent, hold: 5, push: false)
-                }
-            } else {
-                s.mood(.sad, 3)
-                s.setStatus(r.message)
-            }
-        }
-    }
 
     private func buildContent() {
         let W = sizeOpen.width, H = sizeOpen.height
@@ -764,12 +732,11 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         snippetsPanel = SnippetsPanelView(frame: pf)
         let clip = NSView(frame: pf)
         let sorting = NSView(frame: pf)
-        let tools = NSView(frame: pf)
         let settings = NSView(frame: pf)
 
         panels = [companion, chatPanel, agentsPanel, flowPanel, mailPanel, phonePanel, remindersPanel,
                   musicPanel, weatherPanel, homePanel, storagePanel, cleanPanel, focus, notes, snippetsPanel,
-                  clip, sorting, tools, settings]
+                  clip, sorting, settings]
         panels.forEach { p in
             p.isHidden = true
             content.addSubview(p)
@@ -861,7 +828,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         buildNotes(notes)
         buildClipboard(clip)
         buildSorting(sorting)
-        buildTools(tools)
         buildSettings(settings)
     }
 
@@ -1138,130 +1104,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     /// `row(_:)` et `section(_:)`, qui descendent d'un pas constant : les
     /// positions ne sont plus calculées une à une, donc elles ne peuvent
     /// plus se contredire.
-    private func buildTools(_ p: NSView) {
-        let W = p.bounds.width, H = p.bounds.height
-        toolsHero = addHero(p, "Outils", "Les raccourcis système dont vous vous servez tous les jours.")
-
-        // Une teinte par groupe : les icônes se distinguent d'un coup d'œil
-        // sans que les titres perdent en lisibilité.
-        func tone(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
-            NSColor(calibratedRed: r / 255, green: g / 255, blue: b / 255, alpha: 1)
-        }
-        let indigo = tone(124, 122, 255), amber = tone(240, 176, 70)
-        let orange = tone(245, 140, 80),  teal = tone(70, 205, 195)
-        let blue = tone(90, 165, 255),    violet = tone(190, 120, 255)
-        let cyan = tone(90, 205, 245),    green = tone(100, 210, 140)
-
-        var y = H - 92                       // sous le bandeau de titre
-        func section(_ t: String) {
-            y -= 26
-            mkSection(p, y, W, t)
-        }
-        /// Réserve une bande de `h` points et rend son ordonnée.
-        func row(_ h: CGFloat, gap: CGFloat = 8) -> CGFloat {
-            y -= gap + h
-            return y
-        }
-
-        // Le champ de recherche n'a pas d'intertitre : son texte d'invite
-        // dit déjà ce qu'il fait, et les 26 pt gagnés servent ailleurs.
-        searchField = NSSearchField(frame: NSRect(x: 0, y: row(32), width: W, height: 32))
-        searchField.placeholderString = "Rechercher sur le web…"
-        searchField.font = NSFont.systemFont(ofSize: 12.5)
-        searchField.target = self
-        searchField.action = #selector(webSearch(_:))
-        p.addSubview(searchField)
-
-        section("Système")
-        let bw = (W - 12) / 2
-        func tool(_ x: CGFloat, _ yy: CGFloat, _ t: String, _ i: String, _ c: NSColor,
-                  _ run: @escaping () -> Void) {
-            let b = GlassButton(frame: NSRect(x: x, y: yy, width: bw, height: 42), title: t, icon: i)
-            b.accentTint = c
-            b.onClick = { _ in run() }
-            p.addSubview(b)
-        }
-        let r1 = row(42)
-        tool(0, r1, "Veille écran", "moon.fill", indigo) {
-            runShell("/usr/bin/pmset", ["displaysleepnow"])
-        }
-        tool(bw + 12, r1, "Clair / sombre système", "circle.lefthalf.fill", amber) { [weak self] in
-            self?.toggleSystemDark()
-        }
-        let r2 = row(42)
-        tool(0, r2, "Corbeille", "trash.fill", orange) {
-            NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash"))
-        }
-        tool(bw + 12, r2, "Infos réseau", "wifi", teal) { [weak self] in self?.networkInfo() }
-        let r3 = row(42)
-        tool(0, r3, "Verrouiller l'écran", "lock.fill", blue) { [weak self] in
-            guard let s = self else { return }
-            s.toolsInfo.stringValue = s.lockScreenNow()
-        }
-        tool(bw + 12, r3, "Raccourcis clavier…", "keyboard", violet) { [weak self] in
-            self?.openShortcuts()
-        }
-
-        section("Applications")
-        let apps: [(String, String, NSColor)] = [("Finder", "folder.fill", blue),
-                                                 ("Safari", "safari.fill", cyan),
-                                                 ("Mail", "envelope.fill", indigo),
-                                                 ("Terminal", "terminal.fill", green)]
-        let aw = (W - 36) / 4
-        let ry = row(40)
-        for (i, a) in apps.enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: ry, width: aw, height: 40),
-                                title: a.0, icon: a.1, compact: true)
-            b.accentTint = a.2
-            b.idx = i
-            b.onClick = { [weak self] btn in self?.launchApp(btn.idx) }
-            p.addSubview(b)
-        }
-
-        section("Capture d'écran")
-        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: row(34, gap: 6), width: W, height: 34),
-                                  items: [SegmentedBar.Item(title: "Sur le Bureau", icon: "desktopcomputer"),
-                                          SegmentedBar.Item(title: "Presse-papiers", icon: "doc.on.clipboard")],
-                                  selected: 0)
-        p.addSubview(captureSeg)
-
-        let cw = (W - 36) / 4
-        let cy = row(44)
-        for (i, m) in [CaptureMode.screen, .window, .selection].enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: cy, width: cw, height: 44),
-                                title: m.label, icon: m.icon, prominent: i == 0)
-            if i != 0 { b.accentTint = teal }
-            b.idx = m.rawValue
-            b.onClick = { [weak self] btn in self?.capture(CaptureMode(rawValue: btn.idx) ?? .screen) }
-            p.addSubview(b)
-        }
-        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: cy, width: cw, height: 44),
-                                title: "Révéler", icon: "folder.badge.questionmark")
-        revealBtn.accentTint = amber
-        revealBtn.enabledFlag = false
-        revealBtn.onClick = { [weak self] _ in
-            guard let u = self?.lastCapture else { return }
-            ScreenCapture.reveal(u)
-        }
-        p.addSubview(revealBtn)
-
-        // Le compte rendu occupe la place qui reste, en bas, dans une carte
-        // qui le distingue des boutons : apparence système basculée, IP
-        // locale, application ouverte, capture enregistrée — tout arrive ici.
-        // Plafonnée à trois lignes : laisser la carte avaler toute la place
-        // restante lui donnait l'air vide sous une phrase d'une ligne.
-        let infoH = min(56, max(44, y - 18))
-        let card = mkCard(p, NSRect(x: 0, y: 10, width: W, height: infoH), radius: 13, alpha: 0.05)
-        toolsInfo = mkLabel("Le notch se replie avant une capture. « Une fenêtre » et « Sélection » attendent votre clic.",
-                            NSRect(x: 14, y: 6, width: W - 28, height: infoH - 12),
-                            11, .regular, alpha: 0.46, .center)
-        toolsInfo.lineBreakMode = .byWordWrapping
-        toolsInfo.maximumNumberOfLines = 3
-        toolsInfo.cell?.usesSingleLineMode = false
-        toolsInfo.cell?.wraps = true
-        card.addSubview(toolsInfo)
-    }
-
     private func buildSettings(_ p: NSView) {
         let W = p.bounds.width, H = p.bounds.height
         settingsHero = addHero(p, "Réglages", "Apparence, matière et comportement de BUD.")
@@ -1370,6 +1212,38 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
         homePanel.reload()
         wireFlow()
+        wireTools()
+    }
+
+    /// Les outils du chat reçoivent quelques gestes de l'application, et
+    /// rien d'autre.
+    private func wireTools() {
+        var h = ToolHost()
+        h.hidePanel = { [weak self] in self?.collapse() }
+        h.showChat = { [weak self] in
+            guard let s = self else { return }
+            s.openPanel()
+            s.selectTab(s.tabChat)
+        }
+        h.openTab = { [weak self] key in
+            guard let s = self else { return }
+            s.openPanel()
+            s.selectTab(key == "flow" ? s.tabFlow : s.tabChat)
+        }
+        h.lockScreen = { [weak self] in self?.lockScreenNow() ?? "" }
+        h.setAppearance = { [weak self] w in self?.setSystemAppearance(w) ?? "" }
+        h.emptyTrash = { [weak self] done in self?.cleanPanel.emptyTrashOnly(done) }
+        h.openKeyboardShortcuts = { [weak self] in self?.openShortcuts() }
+        h.battery = { batteryLine() }
+        h.network = { networkLine() }
+        let m = BudToolManager.shared
+        m.host = h
+        m.onExpression = { [weak self] e, hold in
+            guard let s = self else { return }
+            s.mood(e.mood, hold)
+            s.flowPanel.show(e, hold: hold)
+        }
+        BudToolCatalog.registerDefaults()
     }
 
     /// Le Flux : les agents s'inscrivent, et leurs expressions passent par
@@ -1579,19 +1453,16 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
         a.batteryReport = { batteryLine() }
         a.networkReport = { networkLine() }
-        a.lockScreen = { [weak self] in self?.lockScreenNow() ?? "" }
-        a.sleepDisplay = {
-            runShell("/usr/bin/pmset", ["displaysleepnow"])
-            return "Écran en veille."
-        }
+        // Ces trois-là passent par les outils : même confirmation, même
+        // bulle, mêmes expressions que la pilule. La réponse vide dit au
+        // chat que l'outil parle lui-même dans le fil.
+        a.lockScreen = { [weak self] in self?.chatPanel.runTool("lock"); return "" }
+        a.sleepDisplay = { [weak self] in self?.chatPanel.runTool("sleep-display"); return "" }
         a.setAppearance = { [weak self] which in self?.setSystemAppearance(which) ?? "" }
         a.screenshot = { [weak self] kind in
-            guard let s = self else { return "" }
-            let mode: CaptureMode = kind == "window" ? .window : (kind == "selection" ? .selection : .screen)
-            s.capture(mode)
-            return mode.interactive
-                ? "Cliquez la fenêtre ou tracez la zone — je replie le notch d'abord."
-                : "Capture en cours…"
+            let id = kind == "window" ? "capture-window" : (kind == "selection" ? "capture-zone" : "capture-screen")
+            self?.chatPanel.runTool(id)
+            return ""
         }
         a.startTimer = { [weak self] minutes, raw in self?.startCountdown(minutes, raw) ?? "" }
         a.webSearch = { q in
@@ -2749,24 +2620,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     // ═══════════ Outils ═══════════
 
-    @objc private func webSearch(_ s: NSSearchField) {
-        let q = s.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty,
-              let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://www.google.com/search?q=\(enc)") else { return }
-        NSWorkspace.shared.open(url)
-        s.stringValue = ""
-    }
 
-    private func toggleSystemDark() {
-        runShell("/usr/bin/osascript",
-                 ["-e", "tell application \"System Events\" to tell appearance preferences to set dark mode to not dark mode"])
-        toolsInfo.stringValue = "Apparence système basculée. Sans effet ? Autorisez BUD dans Confidentialité → Automatisation."
-    }
 
-    private func networkInfo() {
-        toolsInfo.stringValue = networkLine()
-    }
 
     /// Ouvre la fenêtre des raccourcis, ou la ramène devant si elle est
     /// déjà là. Une seule instance, sinon deux fenêtres se disputeraient
@@ -2808,15 +2663,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         shortcutsWin?.showWindow(nil)
         shortcutsWin?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        toolsInfo.stringValue = "Fenêtre des raccourcis ouverte."
     }
 
-    private func launchApp(_ i: Int) {
-        let names = ["Finder", "Safari", "Mail", "Terminal"]
-        guard i < names.count else { return }
-        runShell("/usr/bin/open", ["-a", names[i]])
-        toolsInfo.stringValue = "Ouverture de \(names[i])…"
-    }
 
     @objc private func quitApp() {
         BudStore.shared.save(state)

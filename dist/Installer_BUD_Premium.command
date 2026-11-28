@@ -7,7 +7,7 @@ TOOLS_DIR="$SUPPORT_DIR/tools"
 ART_DIR="$SUPPORT_DIR/art"
 
 echo "============================================================"
-echo "   BUD Premium 25.4 — macOS 12 Monterey à Sequoia"
+echo "   BUD Premium 25.5 — macOS 12 Monterey à Sequoia"
 echo "============================================================"
 
 mkdir -p "$SRC_DIR" "$TOOLS_DIR" "$SUPPORT_DIR/agents" "$ART_DIR"
@@ -325,14 +325,13 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
                            NavEntry(icon: "text.badge.plus", title: "Snippets"),
                            NavEntry(icon: "doc.on.clipboard", title: "Presse-papiers"),
                            NavEntry(icon: "tray.full.fill", title: "Rangement")]),
-        ("Système",       [NavEntry(icon: "wrench.and.screwdriver", title: "Outils"),
-                           NavEntry(icon: "slider.horizontal.3", title: "Réglages")])
+        ("Système",       [NavEntry(icon: "slider.horizontal.3", title: "Réglages")])
     ]
     private let tabCompanion = 0, tabChat = 1, tabAgents = 2, tabFlow = 3, tabMail = 4,
                 tabPhone = 5, tabReminders = 6, tabMusic = 7, tabWeather = 8,
                 tabHome = 9, tabStorage = 10, tabClean = 11, tabFocus = 12,
                 tabNotes = 13, tabSnippets = 14, tabClipboard = 15, tabSorting = 16,
-                tabTools = 17, tabSettings = 18
+                tabSettings = 17
 
     // Modules
     private var storagePanel: StoragePanelView!
@@ -351,7 +350,7 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     // Panneaux maison
     private var companionHero: HeroHeader!, focusHero: HeroHeader!, notesHero: HeroHeader!
-    private var clipHero: HeroHeader!, sortHero: HeroHeader!, toolsHero: HeroHeader!, settingsHero: HeroHeader!
+    private var clipHero: HeroHeader!, sortHero: HeroHeader!, settingsHero: HeroHeader!
     private var bubbleLabel: NSTextField!
     private var updateCard: UpdateCardView!
     private var focusTime: NSTextField!, focusPhaseLabel: NSTextField!, focusStats: NSTextField!
@@ -361,9 +360,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private var clipButtons: [GlassButton] = []
     private var clipHistory: [String] = []
     private var lastClipChange = NSPasteboard.general.changeCount
-    private var searchField: NSSearchField!
-    private var captureSeg: SegmentedBar!
-    private var lastCapture: URL?
     /// Le compte à rebours demandé depuis le chat. Un seul à la fois :
     /// en demander un second remplace le premier, et BUD le dit.
     private var countdown: Timer?
@@ -371,7 +367,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     // Une seule zone de compte rendu pour tout l'onglet : deux étiquettes
     // de statut dans le même panneau, l'une sous les outils système et
     // l'autre sous la capture, se faisaient concurrence.
-    private var revealBtn: GlassButton!, toolsInfo: NSTextField!
     private var sortPathLabel: NSTextField!, sortStatsLabel: NSTextField!
     private var sortLogLabels: [NSTextField] = []
     private var undoBtn: GlassButton!
@@ -920,33 +915,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
     }
 
-    // ── Capture d'écran ──
-    //
-    //  Le notch se replie et l'application se retire avant la prise :
-    //  sans ça, BUD figurerait sur toutes les captures plein écran.
-    private func capture(_ mode: CaptureMode) {
-        let target: CaptureTarget = captureSeg.selected == 1 ? .clipboard : .desktop
-        collapse()
-        toolsInfo.stringValue = mode.interactive
-            ? "Cliquez la fenêtre ou tracez la zone…"
-            : "Prise dans un instant…"
-        ScreenCapture.run(mode, to: target) { [weak self] r in
-            guard let s = self else { return }
-            s.toolsInfo.stringValue = r.message
-            s.lastCapture = r.url
-            s.revealBtn.enabledFlag = (r.url != nil)
-            if r.ok {
-                s.setStatus(r.message)
-                s.avatar?.react()
-                if let u = r.url {
-                    s.coucou("Capture enregistrée", u.lastPathComponent, hold: 5, push: false)
-                }
-            } else {
-                s.mood(.sad, 3)
-                s.setStatus(r.message)
-            }
-        }
-    }
 
     private func buildContent() {
         let W = sizeOpen.width, H = sizeOpen.height
@@ -1040,12 +1008,11 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         snippetsPanel = SnippetsPanelView(frame: pf)
         let clip = NSView(frame: pf)
         let sorting = NSView(frame: pf)
-        let tools = NSView(frame: pf)
         let settings = NSView(frame: pf)
 
         panels = [companion, chatPanel, agentsPanel, flowPanel, mailPanel, phonePanel, remindersPanel,
                   musicPanel, weatherPanel, homePanel, storagePanel, cleanPanel, focus, notes, snippetsPanel,
-                  clip, sorting, tools, settings]
+                  clip, sorting, settings]
         panels.forEach { p in
             p.isHidden = true
             content.addSubview(p)
@@ -1137,7 +1104,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         buildNotes(notes)
         buildClipboard(clip)
         buildSorting(sorting)
-        buildTools(tools)
         buildSettings(settings)
     }
 
@@ -1414,130 +1380,6 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     /// `row(_:)` et `section(_:)`, qui descendent d'un pas constant : les
     /// positions ne sont plus calculées une à une, donc elles ne peuvent
     /// plus se contredire.
-    private func buildTools(_ p: NSView) {
-        let W = p.bounds.width, H = p.bounds.height
-        toolsHero = addHero(p, "Outils", "Les raccourcis système dont vous vous servez tous les jours.")
-
-        // Une teinte par groupe : les icônes se distinguent d'un coup d'œil
-        // sans que les titres perdent en lisibilité.
-        func tone(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
-            NSColor(calibratedRed: r / 255, green: g / 255, blue: b / 255, alpha: 1)
-        }
-        let indigo = tone(124, 122, 255), amber = tone(240, 176, 70)
-        let orange = tone(245, 140, 80),  teal = tone(70, 205, 195)
-        let blue = tone(90, 165, 255),    violet = tone(190, 120, 255)
-        let cyan = tone(90, 205, 245),    green = tone(100, 210, 140)
-
-        var y = H - 92                       // sous le bandeau de titre
-        func section(_ t: String) {
-            y -= 26
-            mkSection(p, y, W, t)
-        }
-        /// Réserve une bande de `h` points et rend son ordonnée.
-        func row(_ h: CGFloat, gap: CGFloat = 8) -> CGFloat {
-            y -= gap + h
-            return y
-        }
-
-        // Le champ de recherche n'a pas d'intertitre : son texte d'invite
-        // dit déjà ce qu'il fait, et les 26 pt gagnés servent ailleurs.
-        searchField = NSSearchField(frame: NSRect(x: 0, y: row(32), width: W, height: 32))
-        searchField.placeholderString = "Rechercher sur le web…"
-        searchField.font = NSFont.systemFont(ofSize: 12.5)
-        searchField.target = self
-        searchField.action = #selector(webSearch(_:))
-        p.addSubview(searchField)
-
-        section("Système")
-        let bw = (W - 12) / 2
-        func tool(_ x: CGFloat, _ yy: CGFloat, _ t: String, _ i: String, _ c: NSColor,
-                  _ run: @escaping () -> Void) {
-            let b = GlassButton(frame: NSRect(x: x, y: yy, width: bw, height: 42), title: t, icon: i)
-            b.accentTint = c
-            b.onClick = { _ in run() }
-            p.addSubview(b)
-        }
-        let r1 = row(42)
-        tool(0, r1, "Veille écran", "moon.fill", indigo) {
-            runShell("/usr/bin/pmset", ["displaysleepnow"])
-        }
-        tool(bw + 12, r1, "Clair / sombre système", "circle.lefthalf.fill", amber) { [weak self] in
-            self?.toggleSystemDark()
-        }
-        let r2 = row(42)
-        tool(0, r2, "Corbeille", "trash.fill", orange) {
-            NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash"))
-        }
-        tool(bw + 12, r2, "Infos réseau", "wifi", teal) { [weak self] in self?.networkInfo() }
-        let r3 = row(42)
-        tool(0, r3, "Verrouiller l'écran", "lock.fill", blue) { [weak self] in
-            guard let s = self else { return }
-            s.toolsInfo.stringValue = s.lockScreenNow()
-        }
-        tool(bw + 12, r3, "Raccourcis clavier…", "keyboard", violet) { [weak self] in
-            self?.openShortcuts()
-        }
-
-        section("Applications")
-        let apps: [(String, String, NSColor)] = [("Finder", "folder.fill", blue),
-                                                 ("Safari", "safari.fill", cyan),
-                                                 ("Mail", "envelope.fill", indigo),
-                                                 ("Terminal", "terminal.fill", green)]
-        let aw = (W - 36) / 4
-        let ry = row(40)
-        for (i, a) in apps.enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (aw + 12), y: ry, width: aw, height: 40),
-                                title: a.0, icon: a.1, compact: true)
-            b.accentTint = a.2
-            b.idx = i
-            b.onClick = { [weak self] btn in self?.launchApp(btn.idx) }
-            p.addSubview(b)
-        }
-
-        section("Capture d'écran")
-        captureSeg = SegmentedBar(frame: NSRect(x: 0, y: row(34, gap: 6), width: W, height: 34),
-                                  items: [SegmentedBar.Item(title: "Sur le Bureau", icon: "desktopcomputer"),
-                                          SegmentedBar.Item(title: "Presse-papiers", icon: "doc.on.clipboard")],
-                                  selected: 0)
-        p.addSubview(captureSeg)
-
-        let cw = (W - 36) / 4
-        let cy = row(44)
-        for (i, m) in [CaptureMode.screen, .window, .selection].enumerated() {
-            let b = GlassButton(frame: NSRect(x: CGFloat(i) * (cw + 12), y: cy, width: cw, height: 44),
-                                title: m.label, icon: m.icon, prominent: i == 0)
-            if i != 0 { b.accentTint = teal }
-            b.idx = m.rawValue
-            b.onClick = { [weak self] btn in self?.capture(CaptureMode(rawValue: btn.idx) ?? .screen) }
-            p.addSubview(b)
-        }
-        revealBtn = GlassButton(frame: NSRect(x: (cw + 12) * 3, y: cy, width: cw, height: 44),
-                                title: "Révéler", icon: "folder.badge.questionmark")
-        revealBtn.accentTint = amber
-        revealBtn.enabledFlag = false
-        revealBtn.onClick = { [weak self] _ in
-            guard let u = self?.lastCapture else { return }
-            ScreenCapture.reveal(u)
-        }
-        p.addSubview(revealBtn)
-
-        // Le compte rendu occupe la place qui reste, en bas, dans une carte
-        // qui le distingue des boutons : apparence système basculée, IP
-        // locale, application ouverte, capture enregistrée — tout arrive ici.
-        // Plafonnée à trois lignes : laisser la carte avaler toute la place
-        // restante lui donnait l'air vide sous une phrase d'une ligne.
-        let infoH = min(56, max(44, y - 18))
-        let card = mkCard(p, NSRect(x: 0, y: 10, width: W, height: infoH), radius: 13, alpha: 0.05)
-        toolsInfo = mkLabel("Le notch se replie avant une capture. « Une fenêtre » et « Sélection » attendent votre clic.",
-                            NSRect(x: 14, y: 6, width: W - 28, height: infoH - 12),
-                            11, .regular, alpha: 0.46, .center)
-        toolsInfo.lineBreakMode = .byWordWrapping
-        toolsInfo.maximumNumberOfLines = 3
-        toolsInfo.cell?.usesSingleLineMode = false
-        toolsInfo.cell?.wraps = true
-        card.addSubview(toolsInfo)
-    }
-
     private func buildSettings(_ p: NSView) {
         let W = p.bounds.width, H = p.bounds.height
         settingsHero = addHero(p, "Réglages", "Apparence, matière et comportement de BUD.")
@@ -1646,6 +1488,38 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
         homePanel.reload()
         wireFlow()
+        wireTools()
+    }
+
+    /// Les outils du chat reçoivent quelques gestes de l'application, et
+    /// rien d'autre.
+    private func wireTools() {
+        var h = ToolHost()
+        h.hidePanel = { [weak self] in self?.collapse() }
+        h.showChat = { [weak self] in
+            guard let s = self else { return }
+            s.openPanel()
+            s.selectTab(s.tabChat)
+        }
+        h.openTab = { [weak self] key in
+            guard let s = self else { return }
+            s.openPanel()
+            s.selectTab(key == "flow" ? s.tabFlow : s.tabChat)
+        }
+        h.lockScreen = { [weak self] in self?.lockScreenNow() ?? "" }
+        h.setAppearance = { [weak self] w in self?.setSystemAppearance(w) ?? "" }
+        h.emptyTrash = { [weak self] done in self?.cleanPanel.emptyTrashOnly(done) }
+        h.openKeyboardShortcuts = { [weak self] in self?.openShortcuts() }
+        h.battery = { batteryLine() }
+        h.network = { networkLine() }
+        let m = BudToolManager.shared
+        m.host = h
+        m.onExpression = { [weak self] e, hold in
+            guard let s = self else { return }
+            s.mood(e.mood, hold)
+            s.flowPanel.show(e, hold: hold)
+        }
+        BudToolCatalog.registerDefaults()
     }
 
     /// Le Flux : les agents s'inscrivent, et leurs expressions passent par
@@ -1855,19 +1729,16 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         }
         a.batteryReport = { batteryLine() }
         a.networkReport = { networkLine() }
-        a.lockScreen = { [weak self] in self?.lockScreenNow() ?? "" }
-        a.sleepDisplay = {
-            runShell("/usr/bin/pmset", ["displaysleepnow"])
-            return "Écran en veille."
-        }
+        // Ces trois-là passent par les outils : même confirmation, même
+        // bulle, mêmes expressions que la pilule. La réponse vide dit au
+        // chat que l'outil parle lui-même dans le fil.
+        a.lockScreen = { [weak self] in self?.chatPanel.runTool("lock"); return "" }
+        a.sleepDisplay = { [weak self] in self?.chatPanel.runTool("sleep-display"); return "" }
         a.setAppearance = { [weak self] which in self?.setSystemAppearance(which) ?? "" }
         a.screenshot = { [weak self] kind in
-            guard let s = self else { return "" }
-            let mode: CaptureMode = kind == "window" ? .window : (kind == "selection" ? .selection : .screen)
-            s.capture(mode)
-            return mode.interactive
-                ? "Cliquez la fenêtre ou tracez la zone — je replie le notch d'abord."
-                : "Capture en cours…"
+            let id = kind == "window" ? "capture-window" : (kind == "selection" ? "capture-zone" : "capture-screen")
+            self?.chatPanel.runTool(id)
+            return ""
         }
         a.startTimer = { [weak self] minutes, raw in self?.startCountdown(minutes, raw) ?? "" }
         a.webSearch = { q in
@@ -3025,24 +2896,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     // ═══════════ Outils ═══════════
 
-    @objc private func webSearch(_ s: NSSearchField) {
-        let q = s.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty,
-              let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://www.google.com/search?q=\(enc)") else { return }
-        NSWorkspace.shared.open(url)
-        s.stringValue = ""
-    }
 
-    private func toggleSystemDark() {
-        runShell("/usr/bin/osascript",
-                 ["-e", "tell application \"System Events\" to tell appearance preferences to set dark mode to not dark mode"])
-        toolsInfo.stringValue = "Apparence système basculée. Sans effet ? Autorisez BUD dans Confidentialité → Automatisation."
-    }
 
-    private func networkInfo() {
-        toolsInfo.stringValue = networkLine()
-    }
 
     /// Ouvre la fenêtre des raccourcis, ou la ramène devant si elle est
     /// déjà là. Une seule instance, sinon deux fenêtres se disputeraient
@@ -3084,15 +2939,8 @@ final class BudDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         shortcutsWin?.showWindow(nil)
         shortcutsWin?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        toolsInfo.stringValue = "Fenêtre des raccourcis ouverte."
     }
 
-    private func launchApp(_ i: Int) {
-        let names = ["Finder", "Safari", "Mail", "Terminal"]
-        guard i < names.count else { return }
-        runShell("/usr/bin/open", ["-a", names[i]])
-        toolsInfo.stringValue = "Ouverture de \(names[i])…"
-    }
 
     @objc private func quitApp() {
         BudStore.shared.save(state)
@@ -3947,8 +3795,25 @@ import Cocoa
 
 struct ChatMsg {
     let fromBud: Bool
-    let text: String
+    var text: String
     let date: Date
+
+    // ── Les bulles d'outil ──
+    //  Une bulle d'outil est une bulle de BUD avec une pastille à gauche,
+    //  qui tourne pendant le travail, puis dit oui ou non. Elle peut porter
+    //  une miniature, et un geste au clic.
+    var id = UUID()
+    var tool: ToolBubble? = nil
+    var image: NSImage? = nil
+    var tapLabel: String? = nil
+    var tap: (() -> Void)? = nil
+}
+
+struct ToolBubble {
+    enum Phase { case waiting, working, ok, failed }
+    var icon: String
+    var tint: NSColor
+    var phase: Phase
 }
 
 /// Actions que le délégué expose au cerveau de BUD.
@@ -4449,29 +4314,90 @@ enum Calc {
     }
 }
 
-/// Bulle de conversation, hauteur calculée sur le texte réel.
+/// Bulle de conversation, hauteur calculée sur le contenu réel.
 final class ChatBubble: NSView {
     private let msg: ChatMsg
-    private let textRect: NSRect
+    private var textRect = NSRect.zero
+    private var imageRect = NSRect.zero
+    private var tapRect = NSRect.zero
+    private var spin: CGFloat = 0
+    private var timer: Timer?
 
-    static func height(for text: String, width: CGFloat) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: 12.5)
+    private static let iconW: CGFloat = 34
+    private static let imageMaxH: CGFloat = 150
+
+    private static func textHeight(_ text: String, width: CGFloat) -> CGFloat {
         let p = NSMutableParagraphStyle()
         p.lineBreakMode = .byWordWrapping
         let r = (text as NSString).boundingRect(
-            with: NSSize(width: width - 32, height: 10_000),
+            with: NSSize(width: width, height: 10_000),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font, .paragraphStyle: p])
-        return ceil(r.height) + 26
+            attributes: [.font: NSFont.systemFont(ofSize: 12.5), .paragraphStyle: p])
+        return ceil(r.height)
+    }
+
+    private static func imageHeight(_ img: NSImage?, width: CGFloat) -> CGFloat {
+        guard let i = img, i.size.width > 0 else { return 0 }
+        return min(imageMaxH, width * i.size.height / i.size.width)
+    }
+
+    static func height(for m: ChatMsg, width: CGFloat) -> CGFloat {
+        let inner = width - 32 - (m.tool == nil ? 0 : iconW)
+        var h = textHeight(m.text, width: inner) + 26
+        let ih = imageHeight(m.image, width: inner)
+        if ih > 0 { h += ih + 10 }
+        if m.tapLabel != nil { h += 20 }
+        return h
     }
 
     init(frame: NSRect, msg: ChatMsg) {
         self.msg = msg
-        self.textRect = NSRect(x: 16, y: 13, width: frame.width - 32, height: frame.height - 26)
         super.init(frame: frame)
         wantsLayer = true
+        // Du bas vers le haut : le geste, la miniature, le texte.
+        let x: CGFloat = 16 + (msg.tool == nil ? 0 : ChatBubble.iconW)
+        let w = frame.width - 16 - x
+        var y: CGFloat = 13
+        if msg.tapLabel != nil {
+            tapRect = NSRect(x: x, y: y - 2, width: w, height: 16)
+            y += 20
+        }
+        let ih = ChatBubble.imageHeight(msg.image, width: w)
+        if ih > 0, let img = msg.image {
+            let iw = min(w, ih * img.size.width / img.size.height)
+            imageRect = NSRect(x: x, y: y, width: iw, height: ih)
+            y += ih + 10
+        }
+        textRect = NSRect(x: x, y: y, width: w, height: frame.height - y - 13)
+        if msg.tap != nil { toolTip = msg.tapLabel }
+        setAccessibilityLabel(msg.text)
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    // La pastille tourne pendant le travail, et seulement à l'écran.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let busy = msg.tool?.phase == .working || msg.tool?.phase == .waiting
+        if window != nil, busy, timer == nil {
+            let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                self?.spin += 0.2
+                self?.needsDisplay = true
+            }
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+        } else if window == nil {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
+    override func resetCursorRects() {
+        if msg.tap != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+    override func mouseUp(with e: NSEvent) {
+        guard let tap = msg.tap, bounds.contains(convert(e.locationInWindow, from: nil)) else { return }
+        tap()
+    }
 
     override func draw(_ dirty: NSRect) {
         let r = bounds
@@ -4479,7 +4405,13 @@ final class ChatBubble: NSView {
         if msg.fromBud {
             TH.fill(0.07).setFill()
             path.fill()
-            TH.fill(0.07).setStroke()
+            let edge: NSColor
+            switch msg.tool?.phase {
+            case .some(.failed): edge = dangerColor.withAlphaComponent(0.45)
+            case .some(.waiting): edge = (msg.tool?.tint ?? TH.accent).withAlphaComponent(0.45)
+            default: edge = TH.fill(0.07)
+            }
+            edge.setStroke()
             path.lineWidth = 1
             path.stroke()
         } else {
@@ -4489,6 +4421,35 @@ final class ChatBubble: NSView {
             path.lineWidth = 1
             path.stroke()
         }
+
+        if let t = msg.tool {
+            let c = NSPoint(x: 16 + 11, y: r.maxY - 13 - 10)
+            let disc = NSRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22)
+            switch t.phase {
+            case .working, .waiting:
+                t.tint.withAlphaComponent(0.25).setFill()
+                NSBezierPath(ovalIn: disc).fill()
+                let a = NSBezierPath()
+                let start = t.phase == .working ? spin * 57.3 : 90
+                a.appendArc(withCenter: c, radius: 8, startAngle: start, endAngle: start + (t.phase == .working ? 260 : 360))
+                a.lineWidth = 2
+                a.lineCapStyle = .round
+                t.tint.setStroke()
+                a.stroke()
+                if t.phase == .waiting {
+                    drawSymbol("hand.raised.fill", center: c, size: 8, weight: .bold, color: t.tint)
+                }
+            case .ok:
+                t.tint.setFill()
+                NSBezierPath(ovalIn: disc).fill()
+                drawSymbol("checkmark", center: c, size: 9, weight: .bold, color: .white)
+            case .failed:
+                dangerColor.setFill()
+                NSBezierPath(ovalIn: disc).fill()
+                drawSymbol("exclamationmark", center: c, size: 9, weight: .bold, color: .white)
+            }
+        }
+
         let p = NSMutableParagraphStyle()
         p.lineBreakMode = .byWordWrapping
         (msg.text as NSString).draw(
@@ -4496,6 +4457,20 @@ final class ChatBubble: NSView {
             attributes: [.font: NSFont.systemFont(ofSize: 12.5),
                          .foregroundColor: TH.text.withAlphaComponent(msg.fromBud ? 0.92 : 1),
                          .paragraphStyle: p])
+
+        if let img = msg.image, imageRect.width > 0 {
+            NSGraphicsContext.current?.saveGraphicsState()
+            let clip = NSBezierPath(roundedRect: imageRect, xRadius: 9, yRadius: 9)
+            clip.addClip()
+            img.draw(in: imageRect, from: .zero, operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.restoreGraphicsState()
+            TH.fill(0.18).setStroke()
+            clip.lineWidth = 0.8
+            clip.stroke()
+        }
+        if let label = msg.tapLabel {
+            drawString(label + "  ›", in: tapRect, size: 11.5, weight: .semibold, color: TH.accent)
+        }
     }
 }
 
@@ -4508,6 +4483,10 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
     private var messages: [ChatMsg] = []
     private var chips: [GlassButton] = []
     private var mic: MicButton!
+    private var pill: ToolPillView!
+    private var toolMenu: ToolMenuView?
+    private var menuMonitor: Any?
+    private var confirmBar: ToolConfirmBar?
 
     var actions = ChatActions()
     var onStatus: ((String) -> Void)?
@@ -4540,8 +4519,14 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         scroll.documentView = listHost
         addSubview(scroll)
 
+        // La pilule Outils ouvre la rangée ; les suggestions suivent.
+        let pw = ToolPillView.idealWidth()
+        pill = ToolPillView(frame: NSRect(x: 0, y: 62, width: pw, height: 32))
+        pill.onClick = { [weak self] in self?.toggleToolMenu() }
+        addSubview(pill)
+
         // Suggestions rapides
-        var x: CGFloat = 0
+        var x: CGFloat = pw + 8
         for s in BudBrain.suggestions {
             let w = min(W - x, textWidth(s, size: 11.5, weight: .semibold) + 28)
             if x + w > W { break }
@@ -4618,9 +4603,17 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
 
     func send(_ text: String) {
         append(ChatMsg(fromBud: false, text: text, date: Date()))
+        // Un outil demandé en toutes lettres passe par le même chemin que
+        // la pilule : même confirmation, même bulle, mêmes expressions.
+        if let tool = BudToolManager.shared.intent(for: text) {
+            runTool(tool.id)
+            return
+        }
         let answer = BudBrain.reply(to: text, actions: actions) { [weak self] late in
             self?.append(ChatMsg(fromBud: true, text: late, date: Date()))
         }
+        // Une réponse vide : l'action a déjà parlé dans le fil.
+        if answer.isEmpty { return }
         // L'aveu d'incompréhension se reconnaît à sa première phrase, et
         // non au texte entier : elle est écrite une fois, au seul endroit
         // qui la produit, et comparer le début évite qu'un ajout d'exemple
@@ -4631,6 +4624,156 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
             self?.onSpoke?(!lost)
         }
         onStatus?("BUD réfléchit…")
+    }
+
+    // ═══════════ Les outils ═══════════
+
+    private func toggleToolMenu() {
+        if toolMenu == nil { openToolMenu() } else { closeToolMenu() }
+    }
+
+    private func openToolMenu() {
+        guard toolMenu == nil else { return }
+        // Vers le haut, par-dessus la conversation, depuis le coin de la
+        // pilule. Plafonné à la hauteur du fil : au-delà, le menu défile.
+        let maxH = scroll.frame.maxY - pill.frame.maxY - 8
+        let h = min(maxH, ToolMenuView.contentHeight())
+        let menu = ToolMenuView(frame: NSRect(x: pill.frame.minX, y: pill.frame.maxY + 8,
+                                              width: ToolMenuView.width, height: h))
+        menu.onPick = { [weak self] t in
+            self?.closeToolMenu()
+            self?.runTool(t.id)
+        }
+        addSubview(menu, positioned: .above, relativeTo: nil)
+        menu.present()
+        toolMenu = menu
+        pill.open = true
+
+        // Un clic hors du menu et de la pilule le referme ; Échap aussi.
+        menuMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self] e in
+            guard let s = self, let m = s.toolMenu else { return e }
+            if e.type == .keyDown {
+                if e.keyCode == 53 { s.closeToolMenu(); return nil }
+                return e
+            }
+            guard e.window == s.window else { s.closeToolMenu(); return e }
+            let p = s.convert(e.locationInWindow, from: nil)
+            if !m.frame.contains(p) && !s.pill.frame.contains(p) { s.closeToolMenu() }
+            return e
+        }
+    }
+
+    private func closeToolMenu() {
+        if let mon = menuMonitor { NSEvent.removeMonitor(mon); menuMonitor = nil }
+        guard let m = toolMenu else { return }
+        toolMenu = nil
+        pill.open = false
+        m.dismiss {}
+    }
+
+    /// Le point d'entrée unique : pilule, phrase du chat, voix.
+    func runTool(_ id: String) {
+        let mgr = BudToolManager.shared
+        guard let t = mgr.tool(id) else { return }
+        guard !mgr.isRunning(id), confirmBar == nil else {
+            append(ChatMsg(fromBud: true, text: "Un instant, « \(t.title) » est déjà en cours.", date: Date()))
+            return
+        }
+        switch t.risk {
+        case .none:
+            start(t, bubble: nil)
+        case .confirm(let q):
+            ask(t, question: q, seconds: nil)
+        case .countdown(let n):
+            ask(t, question: t.title, seconds: n)
+        }
+    }
+
+    private func ask(_ t: BudTool, question: String, seconds: Int?) {
+        var m = ChatMsg(fromBud: true,
+                        text: seconds.map { "\(t.title) dans \($0) secondes. Annulez si ce n'est pas le moment." }
+                              ?? question,
+                        date: Date())
+        m.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: .waiting)
+        let id = m.id
+        append(m)
+        // BUDs attend votre réponse : l'air réfléchi, le temps de la question.
+        mgr().onExpression?(.reflection, Double(seconds ?? 8) + 1)
+
+        // La barre prend la place des suggestions, juste au-dessus du champ.
+        let W = bounds.width
+        let bar = ToolConfirmBar(frame: NSRect(x: 0, y: 62, width: W, height: 32),
+                                 tool: t, question: question, seconds: seconds)
+        bar.onConfirm = { [weak self] in
+            self?.dismissConfirm()
+            self?.start(t, bubble: id)
+        }
+        bar.onCancel = { [weak self] in
+            guard let s = self else { return }
+            s.dismissConfirm()
+            s.update(id) {
+                $0.text = "\(t.title) : annulé."
+                $0.tool?.phase = .ok
+                $0.tool?.tint = NSColor(calibratedWhite: 0.55, alpha: 1)
+            }
+            s.mgr().onExpression?(.neutral, 2)
+        }
+        pill.isHidden = true
+        chips.forEach { $0.isHidden = true }
+        bar.alphaValue = 0
+        addSubview(bar)
+        confirmBar = bar
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            bar.animator().alphaValue = 1
+        }
+    }
+
+    private func dismissConfirm() {
+        confirmBar?.removeFromSuperview()
+        confirmBar = nil
+        pill.isHidden = false
+        chips.forEach { $0.isHidden = false }
+    }
+
+    private func mgr() -> BudToolManager { BudToolManager.shared }
+
+    /// La bulle « au travail », puis la même bulle, transformée en résultat :
+    /// le fil ne garde qu'une trace par outil.
+    private func start(_ t: BudTool, bubble existing: UUID?) {
+        let id: UUID
+        if let e = existing {
+            id = e
+            update(e) {
+                $0.text = t.working
+                $0.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: .working)
+            }
+        } else {
+            var m = ChatMsg(fromBud: true, text: t.working, date: Date())
+            m.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: .working)
+            id = m.id
+            append(m)
+        }
+        onStatus?("\(t.title)…")
+        mgr().execute(t, progress: { [weak self] line in
+            self?.update(id) { $0.text = line }
+        }, done: { [weak self] out in
+            guard let s = self else { return }
+            s.update(id) {
+                $0.text = out.text
+                $0.tool = ToolBubble(icon: t.icon, tint: t.tint, phase: out.ok ? .ok : .failed)
+                $0.image = out.image
+                $0.tapLabel = out.tapLabel
+                $0.tap = out.tap
+            }
+            s.onStatus?(out.text.components(separatedBy: "\n").first ?? "")
+        })
+    }
+
+    private func update(_ id: UUID, _ change: (inout ChatMsg) -> Void) {
+        guard let i = messages.firstIndex(where: { $0.id == id }) else { return }
+        change(&messages[i])
+        rebuild()
     }
 
     private func append(_ m: ChatMsg) {
@@ -4646,7 +4789,7 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
         let W = scroll.bounds.width - 6
         let maxW = W * 0.82
         var heights: [CGFloat] = []
-        for m in messages { heights.append(ChatBubble.height(for: m.text, width: maxW)) }
+        for m in messages { heights.append(ChatBubble.height(for: m, width: maxW)) }
         let gap: CGFloat = 10
         let total = max(scroll.bounds.height, heights.reduce(0, +) + gap * CGFloat(max(0, messages.count)))
         listHost.frame = NSRect(x: 0, y: 0, width: W, height: total)
@@ -4666,6 +4809,429 @@ final class ChatPanelView: NSView, NSTextFieldDelegate {
     }
 }
 EOF_BUDCHAT_SWIFT
+
+cat << 'EOF_BUDCHATTOOLS_SWIFT' > "$SRC_DIR/BudChatTools.swift"
+import Cocoa
+import QuartzCore
+
+// ═══════════════════════════════════════════════════════════
+//  La pilule Outils et son menu
+//
+//  La pilule se tient au début de la rangée de suggestions,
+//  juste au-dessus du champ : là où l'œil est déjà quand on
+//  écrit à BUD. Un clic ouvre le menu vers le haut, par-dessus
+//  la conversation, depuis le coin de la pilule — il en sort,
+//  il ne tombe pas du ciel. Un clic ailleurs ou Échap le
+//  referme.
+//
+//  Le menu ne connaît aucun outil : il lit `BudToolManager`
+//  par catégorie. Un outil ajouté apparaît à sa place.
+// ═══════════════════════════════════════════════════════════
+
+/// Le verre sombre commun à la pilule, au menu et à la barre de
+/// confirmation : un dégradé presque transparent, un liseré clair, et un
+/// reflet d'un point en haut — ce qui donne l'épaisseur.
+func drawLiquidGlass(_ path: NSBezierPath, in r: NSRect, active: Bool, hover: CGFloat) {
+    let top = TH.dark ? NSColor(calibratedWhite: 1, alpha: 0.13 + hover * 0.06)
+                      : NSColor(calibratedWhite: 1, alpha: 0.75)
+    let bottom = TH.dark ? NSColor(calibratedWhite: 1, alpha: 0.04 + hover * 0.03)
+                         : NSColor(calibratedWhite: 0.94, alpha: 0.70)
+    NSGradient(colors: [bottom, top])?.draw(in: path, angle: 90)
+    if active {
+        TH.accent.withAlphaComponent(0.20).setFill()
+        path.fill()
+    }
+    NSGraphicsContext.current?.saveGraphicsState()
+    path.addClip()
+    // Le reflet : une ligne claire posée sur le bord haut, intérieur.
+    let hl = NSBezierPath()
+    hl.move(to: NSPoint(x: r.minX + r.height / 2, y: r.maxY - 0.75))
+    hl.line(to: NSPoint(x: r.maxX - r.height / 2, y: r.maxY - 0.75))
+    hl.lineWidth = 1
+    NSColor(calibratedWhite: 1, alpha: TH.dark ? 0.28 : 0.9).setStroke()
+    hl.stroke()
+    NSGraphicsContext.current?.restoreGraphicsState()
+    (active ? TH.accent.withAlphaComponent(0.65) : TH.fill(0.22)).setStroke()
+    path.lineWidth = 0.9
+    path.stroke()
+}
+
+// ─────────────────────────────────────────────────────────
+//  La pilule
+// ─────────────────────────────────────────────────────────
+
+final class ToolPillView: NSView {
+    var open = false { didSet { animate() } }
+    var onClick: (() -> Void)?
+
+    private var hoverT: CGFloat = 0, hovering = false
+    private var spin: CGFloat = 0          // 0 fermé, 1 ouvert : le chevron se retourne
+    private var pressed = false
+    private var timer: Timer?
+
+    static let label = "Outils"
+    static func idealWidth() -> CGFloat { textWidth(label, size: 12, weight: .semibold) + 62 }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Outils de BUD")
+        toolTip = "Capture, veille, agents…"
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+    override func mouseEntered(with e: NSEvent) { hovering = true; animate() }
+    override func mouseExited(with e: NSEvent) { hovering = false; animate() }
+    override func mouseDown(with e: NSEvent) { pressed = true; needsDisplay = true }
+    override func mouseUp(with e: NSEvent) {
+        pressed = false
+        needsDisplay = true
+        if bounds.contains(convert(e.locationInWindow, from: nil)) { onClick?() }
+    }
+
+    private func animate() {
+        guard timer == nil else { return }
+        let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] tm in
+            guard let s = self else { tm.invalidate(); return }
+            let h: CGFloat = s.hovering ? 1 : 0, o: CGFloat = s.open ? 1 : 0
+            s.hoverT += (h - s.hoverT) * 0.25
+            s.spin += (o - s.spin) * 0.28
+            if abs(h - s.hoverT) < 0.01 && abs(o - s.spin) < 0.01 {
+                s.hoverT = h; s.spin = o
+                tm.invalidate(); s.timer = nil
+            }
+            s.needsDisplay = true
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    override func draw(_ dirty: NSRect) {
+        var r = bounds.insetBy(dx: 1, dy: 1)
+        if pressed { r = r.insetBy(dx: 1.5, dy: 1) }
+        drawLiquidGlass(capsule(r), in: r, active: open, hover: hoverT)
+
+        let ink = open ? TH.accent : TH.text
+        drawSymbol("square.grid.2x2.fill", center: NSPoint(x: r.minX + 17, y: r.midY),
+                   size: 11, weight: .semibold, color: ink)
+        drawString(ToolPillView.label, in: NSRect(x: r.minX + 30, y: r.midY - 8, width: r.width - 50, height: 16),
+                   size: 12, weight: .semibold, color: TH.text)
+
+        // Le chevron tourne d'un demi-tour à l'ouverture : il pointe vers
+        // le menu, qui s'ouvre vers le haut.
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let c = NSPoint(x: r.maxX - 15, y: r.midY)
+        ctx.saveGState()
+        ctx.translateBy(x: c.x, y: c.y)
+        ctx.rotate(by: .pi * spin)
+        drawSymbol("chevron.down", center: .zero, size: 8.5, weight: .bold, color: TH.dim(0.7))
+        ctx.restoreGState()
+    }
+}
+
+// ─────────────────────────────────────────────────────────
+//  Le menu
+// ─────────────────────────────────────────────────────────
+
+private final class ToolRowView: NSView {
+    let tool: BudTool
+    var onPick: ((BudTool) -> Void)?
+    private var hover = false
+
+    init(frame: NSRect, tool: BudTool) {
+        self.tool = tool
+        super.init(frame: frame)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(tool.title)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+    override func mouseEntered(with e: NSEvent) { hover = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hover = false; needsDisplay = true }
+    override func mouseUp(with e: NSEvent) {
+        if bounds.contains(convert(e.locationInWindow, from: nil)) { onPick?(tool) }
+    }
+
+    override func draw(_ dirty: NSRect) {
+        let b = bounds
+        let busy = BudToolManager.shared.isRunning(tool.id)
+        if hover && !busy {
+            TH.fill(0.10).setFill()
+            NSBezierPath(roundedRect: b.insetBy(dx: 6, dy: 1), xRadius: 10, yRadius: 10).fill()
+        }
+        let tile = NSRect(x: 14, y: b.midY - 14, width: 28, height: 28)
+        NSGradient(colors: [tool.tint, tool.tint.blended(withFraction: 0.35, of: .black) ?? tool.tint])?
+            .draw(in: NSBezierPath(roundedRect: tile, xRadius: 8, yRadius: 8), angle: -90)
+        drawSymbol(tool.icon, center: NSPoint(x: tile.midX, y: tile.midY), size: 12.5, weight: .semibold, color: .white)
+
+        let tx = tile.maxX + 11
+        drawString(tool.title, in: NSRect(x: tx, y: b.midY, width: b.width - tx - 40, height: 16),
+                   size: 12.5, weight: .semibold, color: TH.text.withAlphaComponent(busy ? 0.5 : 1))
+        drawString(busy ? "En cours…" : tool.subtitle,
+                   in: NSRect(x: tx, y: b.midY - 15, width: b.width - tx - 40, height: 14),
+                   size: 10.5, weight: .medium, color: TH.dim(0.5))
+
+        // À droite, ce qui attend avant d'agir : une main pour une
+        // question, un sablier pour un compte à rebours.
+        let mark: String?
+        switch tool.risk {
+        case .none: mark = nil
+        case .confirm: mark = "hand.raised.fill"
+        case .countdown: mark = "timer"
+        }
+        if let m = mark {
+            drawSymbol(m, center: NSPoint(x: b.maxX - 24, y: b.midY), size: 10, weight: .semibold, color: TH.dim(0.45))
+        }
+    }
+}
+
+final class ToolMenuView: NSView {
+    var onPick: ((BudTool) -> Void)?
+    private let glass = NSVisualEffectView()
+
+    static let width: CGFloat = 300
+    private static let rowH: CGFloat = 46, headH: CGFloat = 24
+
+    /// La hauteur qu'il faut pour tout montrer, plafonnée par l'appelant.
+    static func contentHeight() -> CGFloat {
+        let m = BudToolManager.shared
+        var h: CGFloat = 12
+        for c in ToolCategory.allCases {
+            let n = m.tools(in: c).count
+            if n > 0 { h += headH + CGFloat(n) * rowH }
+        }
+        return h + 6
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 18
+        layer?.masksToBounds = true
+
+        // Le flou du système, puis notre teinte par-dessus : le flou seul
+        // est trop clair sur un fond de conversation sombre.
+        glass.frame = bounds
+        glass.autoresizingMask = [.width, .height]
+        glass.material = .hudWindow
+        glass.blendingMode = .withinWindow
+        glass.state = .active
+        addSubview(glass)
+        let tint = GlassTint(frame: bounds)
+        tint.autoresizingMask = [.width, .height]
+        addSubview(tint)
+
+        let scroll = NSScrollView(frame: bounds.insetBy(dx: 0, dy: 4))
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: bounds.width,
+                                            height: max(scroll.frame.height, ToolMenuView.contentHeight() - 8)))
+        var y: CGFloat = 4
+        let m = BudToolManager.shared
+        for c in ToolCategory.allCases {
+            let list = m.tools(in: c)
+            guard !list.isEmpty else { continue }
+            let head = mkLabel(c.title, NSRect(x: 18, y: y + 6, width: 200, height: 14), 9.5, .bold, alpha: 0.45)
+            doc.addSubview(head)
+            y += ToolMenuView.headH
+            for t in list {
+                let row = ToolRowView(frame: NSRect(x: 0, y: y, width: bounds.width, height: ToolMenuView.rowH), tool: t)
+                row.onPick = { [weak self] t in self?.onPick?(t) }
+                doc.addSubview(row)
+                y += ToolMenuView.rowH
+            }
+        }
+        scroll.documentView = doc
+        addSubview(scroll)
+        setAccessibilityRole(.menu)
+        setAccessibilityLabel("Outils")
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Sort de la pilule : du coin bas gauche, avec un ressort. Le calque
+    /// d'une vue AppKit a son point d'ancrage en bas à gauche, ce qui est
+    /// justement le coin de la pilule.
+    func present() {
+        guard let l = layer else { return }
+        let scale = CASpringAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.88
+        scale.toValue = 1
+        scale.damping = 20
+        scale.stiffness = 320
+        scale.mass = 1
+        scale.duration = scale.settlingDuration
+        let lift = CABasicAnimation(keyPath: "transform.translation.y")
+        lift.fromValue = -10
+        lift.toValue = 0
+        lift.duration = 0.22
+        lift.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        fade.duration = 0.16
+        l.add(scale, forKey: "pop")
+        l.add(lift, forKey: "lift")
+        l.add(fade, forKey: "fade")
+    }
+
+    /// Rentre dans la pilule, plus vite qu'il n'en est sorti.
+    func dismiss(_ done: @escaping () -> Void) {
+        guard let l = layer else { removeFromSuperview(); done(); return }
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in self?.removeFromSuperview(); done() }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        let shrink = CABasicAnimation(keyPath: "transform.scale")
+        shrink.fromValue = 1
+        shrink.toValue = 0.94
+        let g = CAAnimationGroup()
+        g.animations = [fade, shrink]
+        g.duration = 0.13
+        g.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        g.fillMode = .forwards
+        g.isRemovedOnCompletion = false
+        l.add(g, forKey: "out")
+        CATransaction.commit()
+    }
+}
+
+/// La teinte sombre et le liseré, par-dessus le flou.
+private final class GlassTint: NSView {
+    override func hitTest(_ p: NSPoint) -> NSView? { nil }
+    override func draw(_ dirty: NSRect) {
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let p = NSBezierPath(roundedRect: r, xRadius: 18, yRadius: 18)
+        (TH.dark ? NSColor(calibratedWhite: 0.06, alpha: 0.55) : NSColor(calibratedWhite: 1, alpha: 0.45)).setFill()
+        p.fill()
+        NSGradient(colors: [NSColor(calibratedWhite: 1, alpha: 0), NSColor(calibratedWhite: 1, alpha: TH.dark ? 0.06 : 0.2)])?
+            .draw(in: p, angle: 90)
+        TH.fill(0.20).setStroke()
+        p.lineWidth = 0.9
+        p.stroke()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  La barre de confirmation
+//
+//  Elle prend la place de la rangée de suggestions, juste au-
+//  dessus du champ : on ne cherche pas où répondre. Pour un
+//  compte à rebours, un anneau se vide et l'action part à zéro
+//  — « Maintenant » n'attend pas, « Annuler » arrête tout.
+//  Pour une question, rien ne part sans le bouton.
+// ═══════════════════════════════════════════════════════════
+
+final class ToolConfirmBar: NSView {
+    private let tool: BudTool
+    private let question: String
+    private let seconds: Int?
+    private var started = Date()
+    private var timer: Timer?
+    private var finished = false
+    var onConfirm: (() -> Void)?
+    var onCancel: (() -> Void)?
+
+    init(frame: NSRect, tool: BudTool, question: String, seconds: Int?) {
+        self.tool = tool
+        self.question = question
+        self.seconds = seconds
+        super.init(frame: frame)
+        wantsLayer = true
+        let W = frame.width, H = frame.height
+        let go = GlassButton(frame: NSRect(x: W - 104, y: 0, width: 104, height: H),
+                             title: seconds == nil ? "Confirmer" : "Maintenant",
+                             icon: seconds == nil ? "checkmark" : "bolt.fill", prominent: true, compact: true)
+        go.destructive = seconds == nil
+        go.onClick = { [weak self] _ in self?.confirm() }
+        addSubview(go)
+        let no = GlassButton(frame: NSRect(x: W - 196, y: 0, width: 86, height: H),
+                             title: "Annuler", icon: "xmark", compact: true)
+        no.onClick = { [weak self] _ in self?.cancel() }
+        addSubview(no)
+        setAccessibilityLabel(question)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, timer == nil, seconds != nil else { return }
+        started = Date()
+        let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    private var remaining: Double {
+        guard let s = seconds else { return 0 }
+        return max(0, Double(s) - Date().timeIntervalSince(started))
+    }
+
+    private func tick() {
+        needsDisplay = true
+        if remaining <= 0 { confirm() }
+    }
+
+    private func confirm() {
+        guard !finished else { return }
+        finished = true
+        timer?.invalidate()
+        onConfirm?()
+    }
+
+    func cancel() {
+        guard !finished else { return }
+        finished = true
+        timer?.invalidate()
+        onCancel?()
+    }
+
+    override func draw(_ dirty: NSRect) {
+        let r = NSRect(x: 0, y: 0, width: bounds.width - 204, height: bounds.height).insetBy(dx: 0.5, dy: 0.5)
+        drawLiquidGlass(capsule(r), in: r, active: false, hover: 0)
+        let c = NSPoint(x: r.minX + 17, y: r.midY)
+        if let s = seconds {
+            // L'anneau du temps qui reste, et le chiffre au centre.
+            let left = remaining
+            let track = NSBezierPath(ovalIn: NSRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22))
+            TH.fill(0.15).setStroke()
+            track.lineWidth = 2.4
+            track.stroke()
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: c, radius: 11, startAngle: 90,
+                          endAngle: 90 - 360 * CGFloat(left / Double(s)), clockwise: true)
+            arc.lineWidth = 2.4
+            arc.lineCapStyle = .round
+            tool.tint.setStroke()
+            arc.stroke()
+            drawString("\(Int(ceil(left)))", in: NSRect(x: c.x - 11, y: c.y - 7.5, width: 22, height: 15),
+                       size: 10.5, weight: .bold, color: TH.text, align: .center, mono: true)
+        } else {
+            tool.tint.setFill()
+            NSBezierPath(ovalIn: NSRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22)).fill()
+            drawSymbol(tool.icon, center: c, size: 10, weight: .semibold, color: .white)
+        }
+        let text = seconds == nil ? question : "\(question) dans \(Int(ceil(remaining))) s"
+        drawString(text, in: NSRect(x: r.minX + 36, y: r.midY - 8, width: r.width - 46, height: 16),
+                   size: 12, weight: .semibold, color: TH.text)
+    }
+}
+EOF_BUDCHATTOOLS_SWIFT
 
 cat << 'EOF_BUDCLEAN_SWIFT' > "$SRC_DIR/BudClean.swift"
 import Cocoa
@@ -5935,7 +6501,7 @@ func formatBytes(_ b: Int64) -> String {
 }
 
 /// Version de l'application, affichée dans la barre latérale.
-let budVersion = "25.4"
+let budVersion = "25.5"
 let budSignature = "by Lahbib.AI"
 
 @discardableResult
@@ -19227,6 +19793,426 @@ final class StoragePanelView: NSView {
     }
 }
 EOF_BUDSTORAGE_SWIFT
+
+cat << 'EOF_BUDTOOLS_SWIFT' > "$SRC_DIR/BudTools.swift"
+import Cocoa
+import ImageIO
+
+// ═══════════════════════════════════════════════════════════
+//  Les outils du chat
+//
+//  L'onglet Outils a disparu : ses boutons vivent maintenant
+//  dans le chat, derrière une pilule. Un outil est une action
+//  en un clic — capture, veille, verrouillage, un agent du
+//  Flux — que BUD exécute et dont il rend compte dans le fil.
+//
+//  Le partage des rôles :
+//    • `BudTool` décrit un outil et sait l'exécuter ;
+//    • `BudToolManager` les range, les retrouve à partir d'une
+//      phrase du chat, et pilote l'expression de BUDs ;
+//    • le chat, lui, présente : la confirmation, la bulle qui
+//      tourne, la bulle du résultat.
+//
+//  Ajouter un outil, c'est écrire un `BudTool` et l'inscrire
+//  dans `BudToolCatalog.registerDefaults` : la pilule, le menu,
+//  la reconnaissance dans le chat et les expressions suivent.
+// ═══════════════════════════════════════════════════════════
+
+/// Le niveau de prudence avant d'exécuter.
+enum ToolRisk: Equatable {
+    /// Exécuté au clic.
+    case none
+    /// Une question, un bouton : pour l'irréversible.
+    case confirm(String)
+    /// Un compte à rebours annulable : pour ce qui interrompt le travail
+    /// mais ne détruit rien, comme la veille.
+    case countdown(Int)
+}
+
+enum ToolCategory: Int, CaseIterable {
+    case capture, system, agents, more
+    var title: String {
+        switch self {
+        case .capture: return "CAPTURE"
+        case .system:  return "SYSTÈME"
+        case .agents:  return "AGENTS"
+        case .more:    return "PLUS"
+        }
+    }
+}
+
+/// Ce qu'un outil rend. Le chat en fait une bulle.
+struct ToolOutcome {
+    var ok: Bool
+    var text: String
+    /// Une miniature à montrer dans la bulle.
+    var image: NSImage? = nil
+    /// Un geste au clic sur la bulle : révéler la capture, ouvrir les
+    /// réglages d'autorisation, ouvrir le Flux…
+    var tapLabel: String? = nil
+    var tap: (() -> Void)? = nil
+    /// L'expression de BUDs. `nil` : celle par défaut (content ou déçu).
+    var expression: BudExpression? = nil
+    /// Vrai quand l'outil a déjà réglé l'expression lui-même — un agent
+    /// du Flux le fait, et le doubler ferait sauter le visage.
+    var expressionHandled = false
+
+    static func cancelled(_ why: String = "Annulé.") -> ToolOutcome {
+        ToolOutcome(ok: true, text: why, expression: .neutral)
+    }
+}
+
+/// Ce que l'application prête aux outils. Les outils n'ont pas accès à
+/// `BudApp` : ils reçoivent ces quelques gestes, et rien d'autre.
+struct ToolHost {
+    /// Replie le panneau et l'encoche, pour que BUD ne figure pas sur la
+    /// capture.
+    var hidePanel: () -> Void = {}
+    /// Les ramène, sur l'onglet Chat.
+    var showChat: () -> Void = {}
+    var openTab: (String) -> Void = { _ in }
+    var lockScreen: () -> String = { "" }
+    var setAppearance: (String) -> String = { _ in "" }
+    var emptyTrash: (@escaping (String) -> Void) -> Void = { _ in }
+    var openKeyboardShortcuts: () -> Void = {}
+    var battery: () -> String = { "" }
+    var network: () -> String = { "" }
+}
+
+final class BudTool {
+    let id: String
+    let title: String
+    let subtitle: String
+    let icon: String
+    let tint: NSColor
+    let category: ToolCategory
+    let risk: ToolRisk
+    /// Les tournures du chat qui le déclenchent, sans accents ni
+    /// ponctuation. La plus longue qui correspond l'emporte : « capture la
+    /// fenêtre » bat « capture ».
+    let phrases: [String]
+    /// Libellé de la bulle pendant le travail.
+    let working: String
+    private let body: (@escaping (String) -> Void, @escaping (ToolOutcome) -> Void) -> Void
+
+    /// `body` reçoit une fonction d'avancement et la fonction de fin ; il
+    /// peut appeler la fin de n'importe quel fil.
+    init(id: String, title: String, subtitle: String, icon: String, tint: NSColor,
+         category: ToolCategory, risk: ToolRisk = .none, phrases: [String] = [],
+         working: String = "Un instant…",
+         body: @escaping (@escaping (String) -> Void, @escaping (ToolOutcome) -> Void) -> Void) {
+        self.id = id; self.title = title; self.subtitle = subtitle; self.icon = icon
+        self.tint = tint; self.category = category; self.risk = risk
+        self.phrases = phrases; self.working = working; self.body = body
+    }
+
+    fileprivate func execute(progress: @escaping (String) -> Void, done: @escaping (ToolOutcome) -> Void) {
+        body(progress, done)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Le gestionnaire
+// ═══════════════════════════════════════════════════════════
+
+final class BudToolManager {
+    static let shared = BudToolManager()
+
+    private(set) var tools: [BudTool] = []
+    private var running = Set<String>()
+    var host = ToolHost()
+    /// Le même chemin que les agents : bureau, encoche et Flux ensemble.
+    var onExpression: ((BudExpression, TimeInterval) -> Void)?
+
+    func register(_ t: BudTool) {
+        tools.removeAll { $0.id == t.id }
+        tools.append(t)
+    }
+
+    func tool(_ id: String) -> BudTool? { tools.first { $0.id == id } }
+
+    func tools(in c: ToolCategory) -> [BudTool] { tools.filter { $0.category == c } }
+
+    func isRunning(_ id: String) -> Bool { running.contains(id) }
+
+    /// Minuscules, sans accents, ponctuation remplacée par des espaces :
+    /// « Mets le Mac en veille ! » → « mets le mac en veille ».
+    static func normalize(_ s: String) -> String {
+        let f = s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "fr_FR"))
+        let cleaned = f.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? Character($0) : " " }
+        return String(cleaned).split(separator: " ").joined(separator: " ")
+    }
+
+    /// L'outil qu'une phrase demande, s'il y en a un.
+    func intent(for phrase: String) -> BudTool? {
+        let t = " " + BudToolManager.normalize(phrase) + " "
+        var best: (BudTool, Int)?
+        for tool in tools {
+            for p in tool.phrases where t.contains(" " + p + " ") || (p.count >= 9 && t.contains(p)) {
+                if best == nil || p.count > best!.1 { best = (tool, p.count) }
+            }
+        }
+        return best?.0
+    }
+
+    /// Exécute, en pilotant BUDs : au travail pendant, puis le résultat.
+    /// La confirmation a déjà eu lieu — c'est le rôle de la vue.
+    func execute(_ t: BudTool, progress: @escaping (String) -> Void,
+                 done: @escaping (ToolOutcome) -> Void) {
+        guard !running.contains(t.id) else { return }
+        running.insert(t.id)
+        onExpression?(.working, 60)
+        t.execute(progress: { p in DispatchQueue.main.async { progress(p) } }) { [weak self] out in
+            DispatchQueue.main.async {
+                guard let s = self else { return }
+                s.running.remove(t.id)
+                if !out.expressionHandled {
+                    let e = out.expression ?? (out.ok ? .happy : .sad)
+                    s.onExpression?(e, out.ok ? 2.6 : 3.5)
+                }
+                done(out)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Les outils d'origine
+// ═══════════════════════════════════════════════════════════
+
+enum BudToolCatalog {
+
+    private static func c(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
+        NSColor(calibratedRed: r / 255, green: g / 255, blue: b / 255, alpha: 1)
+    }
+
+    static func registerDefaults() {
+        let m = BudToolManager.shared
+        let indigo = c(124, 122, 255), amber = c(240, 176, 70), teal = c(70, 205, 195)
+        let blue = c(90, 165, 255), violet = c(190, 120, 255), green = c(100, 210, 140)
+        let red = c(255, 110, 100), cyan = c(90, 205, 245), orange = c(245, 140, 80)
+
+        // ── Capture ──
+        m.register(captureTool(id: "capture-screen", title: "Capture d'écran",
+                               subtitle: "Tout l'écran, sur le Bureau", mode: .screen, target: .desktop,
+                               tint: teal, phrases: ["capture", "capture d ecran", "copie d ecran",
+                                                     "screenshot", "photo de l ecran", "capture l ecran"]))
+        m.register(captureTool(id: "capture-window", title: "Capturer une fenêtre",
+                               subtitle: "Cliquez la fenêtre voulue", mode: .window, target: .desktop,
+                               tint: teal, phrases: ["capture la fenetre", "capture une fenetre",
+                                                     "capture de la fenetre", "capture fenetre"]))
+        m.register(captureTool(id: "capture-zone", title: "Capturer une zone",
+                               subtitle: "Tracez le rectangle", mode: .selection, target: .desktop,
+                               tint: teal, phrases: ["capture une zone", "capture la zone", "capture une selection",
+                                                     "capture la selection", "capture un morceau"]))
+        m.register(captureTool(id: "capture-clip", title: "Capture vers le presse-papiers",
+                               subtitle: "Une zone, prête à coller", mode: .selection, target: .clipboard,
+                               tint: cyan, phrases: ["capture dans le presse papiers",
+                                                     "capture vers le presse papiers"]))
+
+        // ── Système ──
+        m.register(BudTool(id: "sleep-mac", title: "Mettre le Mac en veille",
+                           subtitle: "Après un compte à rebours de 5 s", icon: "moon.zzz.fill", tint: indigo,
+                           category: .system, risk: .countdown(5),
+                           phrases: ["mets le mac en veille", "mac en veille", "endors le mac", "mets en veille",
+                                     "mise en veille", "suspends le mac", "veille le mac"],
+                           working: "Mise en veille…") { _, done in
+            done(ToolOutcome(ok: true, text: "Bonne nuit. Le Mac s'endort.", expression: .happy))
+            // Le message d'abord, la veille ensuite : on veut le lire au
+            // réveil, pas le perdre dans la mise en veille.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.9) {
+                let r = runShellDetailed("/usr/bin/pmset", ["sleepnow"])
+                if r.status != 0 {
+                    _ = runShellDetailed("/usr/bin/osascript",
+                                         ["-e", "tell application \"System Events\" to sleep"])
+                }
+            }
+        })
+        m.register(BudTool(id: "sleep-display", title: "Veille de l'écran",
+                           subtitle: "Le Mac continue de tourner", icon: "display", tint: blue,
+                           category: .system,
+                           phrases: ["eteins l ecran", "veille ecran", "veille de l ecran", "coupe l ecran",
+                                     "endors l ecran", "ecran en veille"],
+                           working: "Extinction de l'écran…") { _, done in
+            done(ToolOutcome(ok: true, text: "Écran éteint. Touchez une touche pour le rallumer."))
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.6) {
+                _ = runShellDetailed("/usr/bin/pmset", ["displaysleepnow"])
+            }
+        })
+        m.register(BudTool(id: "lock", title: "Verrouiller l'écran",
+                           subtitle: "Après 3 s, annulable", icon: "lock.fill", tint: violet,
+                           category: .system, risk: .countdown(3),
+                           phrases: ["verrouille", "verrouiller", "bloque l ecran", "bloque la session",
+                                     "verrouille l ecran"],
+                           working: "Verrouillage…") { _, done in
+            let r = m.host.lockScreen()
+            done(ToolOutcome(ok: true, text: r))
+        })
+        m.register(BudTool(id: "appearance", title: "Basculer clair / sombre",
+                           subtitle: "L'apparence de tout macOS", icon: "circle.lefthalf.fill", tint: amber,
+                           category: .system, phrases: ["bascule le theme", "clair sombre", "apparence"]) { _, done in
+            let r = m.host.setAppearance("toggle")
+            done(ToolOutcome(ok: true, text: r, expression: .cool))
+        })
+        m.register(BudTool(id: "trash", title: "Vider la corbeille",
+                           subtitle: "Définitif, avec confirmation", icon: "trash.fill", tint: orange,
+                           category: .system,
+                           risk: .confirm("Vider la corbeille ? Ce qu'elle contient sera supprimé définitivement."),
+                           phrases: ["vide la corbeille", "vider la corbeille", "purge la corbeille"],
+                           working: "Vidage de la corbeille…") { _, done in
+            m.host.emptyTrash { msg in done(ToolOutcome(ok: true, text: "Corbeille vidée : \(msg)")) }
+        })
+        m.register(BudTool(id: "network", title: "Infos réseau", subtitle: "Wi-Fi, adresse locale",
+                           icon: "wifi", tint: teal, category: .system) { _, done in
+            done(ToolOutcome(ok: true, text: m.host.network(), expression: .neutral))
+        })
+        m.register(BudTool(id: "battery", title: "Batterie", subtitle: "Charge et autonomie",
+                           icon: "battery.75", tint: green, category: .system) { _, done in
+            done(ToolOutcome(ok: true, text: m.host.battery(), expression: .neutral))
+        })
+
+        // ── Agents du Flux ──
+        m.register(agentTool(id: "agent-cleanup", agent: "cleanup", title: "Rangement & nettoyage",
+                             subtitle: "Téléchargements, apps dormantes", icon: "sparkles", tint: green,
+                             phrases: ["agent de rangement", "lance le rangement", "range mon mac",
+                                       "apps inutiles", "applications inutiles"]))
+        m.register(agentTool(id: "agent-security", agent: "security", title: "Cybersécurité",
+                             subtitle: "Liens du presse-papiers et courrier", icon: "lock.shield.fill", tint: red,
+                             phrases: ["cybersecurite", "verifie ce lien", "analyse ce lien",
+                                       "ce lien est il sur", "phishing", "hameconnage"]))
+        m.register(agentTool(id: "agent-weather", agent: "weatherhome", title: "Météo & Maison",
+                             subtitle: "Le ciel et vos commandes", icon: "cloud.sun.fill", tint: blue,
+                             phrases: []))
+
+        // ── Plus ──
+        m.register(BudTool(id: "keys", title: "Raccourcis clavier…",
+                           subtitle: "Et les pastilles de l'aperçu", icon: "keyboard", tint: violet,
+                           category: .more) { _, done in
+            m.host.openKeyboardShortcuts()
+            done(ToolOutcome(ok: true, text: "Fenêtre des raccourcis ouverte.", expression: .neutral))
+        })
+        for (name, icon, tint) in [("Finder", "folder.fill", blue), ("Terminal", "terminal.fill", green)] {
+            m.register(BudTool(id: "open-\(name.lowercased())", title: "Ouvrir \(name)", subtitle: "Application",
+                               icon: icon, tint: tint, category: .more,
+                               phrases: ["ouvre \(name.lowercased())", "lance \(name.lowercased())"]) { _, done in
+                let r = runShellDetailed("/usr/bin/open", ["-a", name])
+                done(r.status == 0 ? ToolOutcome(ok: true, text: "\(name) ouvert.", expression: .neutral)
+                                   : ToolOutcome(ok: false, text: "\(name) n'a pas pu s'ouvrir."))
+            })
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  La capture
+    //
+    //  L'autorisation d'abord. Sans « Enregistrement de l'écran »,
+    //  macOS ne refuse pas : il rend une image vide ou le seul fond
+    //  d'écran. On le demande donc avant, et on dit où l'accorder
+    //  plutôt que de laisser une capture inutile sur le Bureau.
+    // ─────────────────────────────────────────────────────────
+
+    static let screenSettings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+
+    static func captureTool(id: String, title: String, subtitle: String, mode: CaptureMode,
+                            target: CaptureTarget, tint: NSColor, phrases: [String]) -> BudTool {
+        let m = BudToolManager.shared
+        return BudTool(id: id, title: title, subtitle: subtitle, icon: mode.icon, tint: tint,
+                       category: .capture, phrases: phrases,
+                       working: mode.interactive ? "Cliquez la fenêtre ou tracez la zone…" : "Capture dans un instant…") { _, done in
+            if !CGPreflightScreenCaptureAccess() {
+                // Montre la demande du système la première fois ; ensuite
+                // macOS ne la remontre plus, d'où le lien vers les réglages.
+                _ = CGRequestScreenCaptureAccess()
+                done(ToolOutcome(ok: false,
+                                 text: "BUD n'a pas encore le droit d'enregistrer l'écran. Autorisez-le dans "
+                                     + "Confidentialité et sécurité → Enregistrement de l'écran, puis relancez BUD.",
+                                 tapLabel: "Ouvrir les réglages",
+                                 tap: { BudToolCatalog.screenSettingsOpen() }))
+                return
+            }
+            m.host.hidePanel()
+            ScreenCapture.run(mode, to: target) { r in
+                m.host.showChat()
+                guard r.ok else {
+                    let cancelled = r.message.hasPrefix("Capture annulée")
+                    var out = ToolOutcome(ok: cancelled, text: r.message,
+                                          expression: cancelled ? .neutral : .sad)
+                    if r.message.contains("Enregistrement de l'écran") {
+                        out.tapLabel = "Ouvrir les réglages"
+                        out.tap = { BudToolCatalog.screenSettingsOpen() }
+                    }
+                    done(out)
+                    return
+                }
+                guard let u = r.url else {
+                    done(ToolOutcome(ok: true, text: r.message))
+                    return
+                }
+                done(ToolOutcome(ok: true, text: "Capture enregistrée sur le Bureau.\n\(u.lastPathComponent)",
+                                 image: BudToolCatalog.thumbnail(u, max: 520),
+                                 tapLabel: "Afficher dans le Finder",
+                                 tap: { ScreenCapture.reveal(u) }))
+            }
+        }
+    }
+
+    static func screenSettingsOpen() { NSWorkspace.shared.open(screenSettings) }
+
+    /// Une miniature légère : une capture 5K pèse des dizaines de
+    /// mégaoctets en mémoire, la bulle n'en montre que quelques centaines
+    /// de points.
+    static func thumbnail(_ u: URL, max: Int) -> NSImage? {
+        guard let src = CGImageSourceCreateWithURL(u as CFURL, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: max,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Un agent du Flux, en outil
+    //
+    //  L'agent pilote lui-même l'expression de BUDs ; l'outil se
+    //  contente d'attendre qu'il ait fini et d'en rapporter la
+    //  ligne, avec un accès direct au Flux pour les cartes et la
+    //  fiche d'approbation.
+    // ─────────────────────────────────────────────────────────
+
+    static func agentTool(id: String, agent: String, title: String, subtitle: String,
+                          icon: String, tint: NSColor, phrases: [String]) -> BudTool {
+        let m = BudToolManager.shared
+        return BudTool(id: id, title: title, subtitle: subtitle, icon: icon, tint: tint,
+                       category: .agents, phrases: phrases, working: "\(title) au travail…") { progress, done in
+            let am = BudAgentManager.shared
+            guard am.agent(agent) != nil else {
+                done(ToolOutcome(ok: false, text: "Cet agent n'est pas disponible."))
+                return
+            }
+            am.run(agent)
+            var ticks = 0
+            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { tm in
+                ticks += 1
+                let st = am.state(agent)
+                if st.status == .running {
+                    if !st.line.isEmpty { progress(st.line) }
+                    if ticks < 400 { return }
+                }
+                tm.invalidate()
+                let ok = st.status != .failure
+                let open: () -> Void = { m.host.openTab("flow") }
+                var text = st.line.isEmpty ? "Terminé." : st.line
+                if st.status == .needsApproval { text += "\nRien n'a été touché : la fiche attend votre accord dans le Flux." }
+                done(ToolOutcome(ok: ok, text: text,
+                                 tapLabel: st.status == .needsApproval ? "Examiner dans le Flux" : "Voir les cartes",
+                                 tap: open, expressionHandled: true))
+            }
+        }
+    }
+}
+EOF_BUDTOOLS_SWIFT
 
 cat << 'EOF_BUDUI_SWIFT' > "$SRC_DIR/BudUI.swift"
 import Cocoa
